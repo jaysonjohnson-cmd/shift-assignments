@@ -1,0 +1,172 @@
+@import "tailwindcss";
+
+/* Use class-based dark mode so the ThemeToggle component controls it. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: var(--font-geist-sans), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  /* Brand */
+  --color-storesight-primary: #4e339c;
+  --color-storesight-primary-dark: #463572;
+  --color-storesight-primary-deep: #2f00ff;
+  --color-storesight-accent: #9c5cff;
+  --color-storesight-accent-light: #c39cff;
+  --color-storesight-violet: #7554c2;
+  --color-storesight-lilac: #9c77ea;
+
+  /* Surfaces — light */
+  --color-storesight-bg: #f7f5fd;
+  --color-storesight-bg-soft: #f4f9ff;
+  --color-storesight-bg-tint: #ece5ff;
+  --color-storesight-surface: #ffffff;
+  --color-storesight-surface-raised: #ffffff;
+  --color-storesight-border: #e4dcf5;
+
+  /* Surfaces — dark (screenshot-inspired deep purple/navy) */
+  --color-storesight-bg-dark: #0f0d1f;
+  --color-storesight-surface-dark: #161329;
+  --color-storesight-surface-raised-dark: #1f1b38;
+  --color-storesight-border-dark: #2a2748;
+
+  /* Ink */
+  --color-storesight-ink: #171325;
+  --color-storesight-ink-muted: #5b5773;
+  --color-storesight-ink-dark: #f3f1fb;
+  --color-storesight-ink-muted-dark: #a29fbe;
+
+  /* Accents */
+  --color-storesight-hot-pink: #f8005e;
+  --color-storesight-sun: #ffdf50;
+  --color-storesight-sky: #d9e2ff;
+  --color-storesight-mint: #81d994;
+  --color-storesight-peach: #ffa450;
+}
+
+:root {
+  --background: #f7f5fd;
+  --foreground: #171325;
+
+  /* Dashed grid (light) */
+  --grid-color: rgba(78, 51, 156, 0.07);
+}
+
+:root.dark {
+  --background: #0f0d1f;
+  --foreground: #f3f1fb;
+
+  /* Dashed grid (dark) */
+  --grid-color: rgba(156, 92, 255, 0.08);
+}
+
+html,
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+body {
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+}
+
+@keyframes tasklist-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Subtle dashed grid behind the main content — matches the screenshot. */
+.storesight-grid-bg {
+  background-image:
+    linear-gradient(to right, var(--grid-color) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-color) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+/* Status badges */
+.ss-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.ss-badge-new {
+  background: rgba(156, 92, 255, 0.15);
+  color: #7a4de0;
+}
+:root.dark .ss-badge-new {
+  background: rgba(156, 92, 255, 0.22);
+  color: #c39cff;
+}
+.ss-badge-in-progress {
+  background: rgba(255, 164, 80, 0.2);
+  color: #b86300;
+}
+:root.dark .ss-badge-in-progress {
+  background: rgba(255, 164, 80, 0.2);
+  color: #ffc48a;
+}
+.ss-badge-resolved {
+  background: rgba(129, 217, 148, 0.25);
+  color: #1e7a3c;
+}
+:root.dark .ss-badge-resolved {
+  background: rgba(129, 217, 148, 0.18);
+  color: #8fe6a3;
+}
+.ss-badge-escalated {
+  background: rgba(248, 0, 94, 0.15);
+  color: #c40051;
+}
+:root.dark .ss-badge-escalated {
+  background: rgba(248, 0, 94, 0.22);
+  color: #ff6aa0;
+}
+
+/* Branded scrollbar inside person columns */
+.ss-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.ss-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.ss-scroll::-webkit-scrollbar-thumb {
+  background: #d6cbf0;
+  border-radius: 999px;
+}
+.ss-scroll::-webkit-scrollbar-thumb:hover {
+  background: #b9a6e4;
+}
+:root.dark .ss-scroll::-webkit-scrollbar-thumb {
+  background: #36315a;
+}
+:root.dark .ss-scroll::-webkit-scrollbar-thumb:hover {
+  background: #4a4377;
+}
+
+@media print {
+  @page {
+    size: Letter landscape;
+    margin: 0.4in;
+  }
+  html,
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-break {
+    break-before: page;
+  }
+  /* Kill the dashed grid in print */
+  .storesight-grid-bg {
+    background-image: none;
+  }
+}

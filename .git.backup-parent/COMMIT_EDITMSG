@@ -1,0 +1,5 @@
+update shift assignment workflow with reviewer management and overflow routing
+
+Add a dedicated reviewers management experience and switch crew assignment names to controlled dropdowns. This keeps uploads reset-ready, enforces automatic overflow handling for unmatched afternoon rows, and improves assignment consistency across dashboard, print, and export outputs.
+
+Made-with: Cursor

@@ -1,0 +1,325 @@
+"use client";
+
+import { useEffect, useMemo } from "react";
+import {
+  countPinnedJids,
+  effectiveSlotCount,
+  evenDistribute,
+  plannedTotal,
+  rebalance,
+} from "@/lib/assign";
+import {
+  MAX_SLOTS_PER_SHIFT,
+  accentFor,
+  type ProjectSummary,
+  type Reviewer,
+  type ReviewerSlot,
+  type Row,
+  type ShiftDraft,
+} from "@/lib/types";
+import { ReviewerPicker } from "./ReviewerPicker";
+import { CountEditor } from "./CountEditor";
+import { ProjectAssignmentPanel } from "./ProjectAssignmentPanel";
+
+export function ShiftComposer({
+  draft,
+  onChange,
+  pool,
+  poolRows,
+  reviewers,
+  projects = [],
+  pinsForOtherShift,
+}: {
+  draft: ShiftDraft;
+  onChange: (next: ShiftDraft) => void;
+  /** Rows available to this shift (already priority-sorted). */
+  pool: number;
+  /** The actual row objects — needed to count pinned JIDs accurately. */
+  poolRows?: Row[];
+  reviewers: Reviewer[];
+  projects?: ProjectSummary[];
+  pinsForOtherShift?: Set<string>;
+}) {
+  // Keep totalTarget bound to the pool when "Assign All" is on.
+  useEffect(() => {
+    if (draft.assignAll && draft.totalTarget !== pool) {
+      const next: ShiftDraft = {
+        ...draft,
+        totalTarget: pool,
+        slots: evenDistribute(draft.slots, pool),
+      };
+      onChange(next);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pool, draft.assignAll]);
+
+  const planned = plannedTotal(draft);
+  const overflow = Math.max(0, pool - planned);
+
+  const commit = (patch: Partial<ShiftDraft>) => onChange({ ...draft, ...patch });
+
+  const addSlot = () => {
+    if (draft.slots.length >= MAX_SLOTS_PER_SHIFT) return;
+    const nextSlots: ReviewerSlot[] = [
+      ...draft.slots,
+      { reviewerId: "", count: 0, locked: false },
+    ];
+    commit({ slots: evenDistribute(nextSlots, draft.totalTarget) });
+  };
+
+  const removeSlot = (idx: number) => {
+    const removed = draft.slots[idx]?.reviewerId;
+    const nextSlots = draft.slots.filter((_, i) => i !== idx);
+    const nextPins = { ...draft.projectPins };
+    if (removed) delete nextPins[removed];
+    commit({
+      slots: evenDistribute(nextSlots, draft.totalTarget),
+      projectPins: nextPins,
+    });
+  };
+
+  const setReviewer = (idx: number, reviewerId: string) => {
+    const previous = draft.slots[idx]?.reviewerId;
+    const nextPins = { ...draft.projectPins };
+    if (previous && previous !== reviewerId) {
+      const carry = nextPins[previous] ?? [];
+      delete nextPins[previous];
+      if (reviewerId) nextPins[reviewerId] = carry;
+    }
+    commit({
+      slots: draft.slots.map((s, i) =>
+        i === idx ? { ...s, reviewerId } : s,
+      ),
+      projectPins: nextPins,
+    });
+  };
+
+  const setCount = (idx: number, count: number) => {
+    const clamped = Math.min(Math.max(0, count), draft.totalTarget);
+    const nextSlots = draft.slots.map((s, i) =>
+      i === idx ? { ...s, count: clamped } : s,
+    );
+    commit({ slots: rebalance(nextSlots, idx, draft.totalTarget) });
+  };
+
+  const toggleLock = (idx: number) => {
+    commit({
+      slots: draft.slots.map((s, i) =>
+        i === idx ? { ...s, locked: !s.locked } : s,
+      ),
+    });
+  };
+
+  const setTotalTarget = (raw: number) => {
+    const clamped = Math.min(Math.max(0, Math.floor(raw)), pool);
+    commit({
+      totalTarget: clamped,
+      slots: evenDistribute(draft.slots, clamped),
+    });
+  };
+
+  const toggleAssignAll = () => {
+    const nextAll = !draft.assignAll;
+    const target = nextAll ? pool : Math.min(draft.totalTarget, pool);
+    commit({
+      assignAll: nextAll,
+      totalTarget: target,
+      slots: evenDistribute(draft.slots, target),
+    });
+  };
+
+  const pickedIds = draft.slots
+    .map((s) => s.reviewerId)
+    .filter((id): id is string => !!id);
+
+  const reviewerById = useMemo(
+    () => new Map(reviewers.map((r) => [r.id, r])),
+    [reviewers],
+  );
+
+  const projectById = useMemo(
+    () => new Map(projects.map((p) => [p.projectId, p])),
+    [projects],
+  );
+
+  const pinnedJidCountByReviewer = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [reviewerId, pids] of Object.entries(draft.projectPins ?? {})) {
+      if (poolRows) {
+        out[reviewerId] = countPinnedJids(poolRows, pids);
+      } else {
+        // Fall back to summing jidCount from the project list.
+        out[reviewerId] = pids.reduce(
+          (a, pid) => a + (projectById.get(pid)?.jidCount ?? 0),
+          0,
+        );
+      }
+    }
+    return out;
+  }, [draft.projectPins, poolRows, projectById]);
+
+  return (
+    <section className="rounded-2xl border border-storesight-border bg-white/90 p-5 shadow-[0_1px_0_0_rgba(78,51,156,0.04),0_6px_24px_-12px_rgba(78,51,156,0.18)] dark:border-storesight-border-dark dark:bg-storesight-surface-dark/80">
+      <header className="flex flex-wrap items-baseline justify-between gap-3 border-b border-storesight-border pb-3 dark:border-storesight-border-dark">
+        <div>
+          <h2 className="text-base font-semibold tracking-tight text-storesight-primary-dark dark:text-storesight-ink-dark">
+            Shift
+          </h2>
+          <p className="mt-0.5 text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+            {pool} task{pool === 1 ? "" : "s"} available · {planned} planned · {overflow} → overflow
+          </p>
+        </div>
+        <label className="flex items-center gap-2 text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+          <input
+            type="checkbox"
+            checked={draft.assignAll}
+            onChange={toggleAssignAll}
+            className="h-4 w-4 rounded border-storesight-border accent-storesight-accent"
+          />
+          Assign all available tasks
+        </label>
+      </header>
+
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <label className="text-xs font-medium text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+          Total to assign
+          <input
+            type="number"
+            min={0}
+            max={pool}
+            value={draft.totalTarget}
+            disabled={draft.assignAll}
+            onChange={(e) => setTotalTarget(Number(e.target.value) || 0)}
+            className="ml-2 h-8 w-20 rounded-md border border-storesight-border bg-white px-2 text-right text-sm outline-none transition focus:border-storesight-accent disabled:opacity-50 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={addSlot}
+          disabled={draft.slots.length >= MAX_SLOTS_PER_SHIFT}
+          className="ml-auto rounded-md border border-storesight-border bg-white px-2.5 py-1.5 text-xs font-medium text-storesight-ink-muted transition hover:border-storesight-accent hover:text-storesight-primary disabled:opacity-40 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
+        >
+          + Add reviewer ({draft.slots.length}/{MAX_SLOTS_PER_SHIFT})
+        </button>
+      </div>
+
+      {draft.slots.length === 0 ? (
+        <p className="mt-4 rounded-lg border border-dashed border-storesight-border px-4 py-6 text-center text-xs text-storesight-ink-muted dark:border-storesight-border-dark dark:text-storesight-ink-muted-dark">
+          No reviewers assigned yet. Add up to {MAX_SLOTS_PER_SHIFT} reviewers
+          for this shift.
+        </p>
+      ) : (
+        <ul className="mt-4 space-y-2">
+          {draft.slots.map((slot, idx) => {
+            const pinnedPids = draft.projectPins[slot.reviewerId] ?? [];
+            const pinnedCount = pinnedJidCountByReviewer[slot.reviewerId] ?? 0;
+            const displayedCount = effectiveSlotCount(slot, pinnedCount);
+            const bumped = pinnedCount > slot.count;
+            return (
+              <li
+                key={idx}
+                className="flex flex-col gap-1.5 rounded-lg border border-storesight-border bg-white/60 px-2.5 py-2 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark/60"
+              >
+                <div className="flex items-center gap-2">
+                  <span
+                    aria-hidden
+                    className="h-2.5 w-2.5 shrink-0 rounded-full"
+                    style={{ background: accentFor(idx) }}
+                  />
+                  <ReviewerPicker
+                    value={slot.reviewerId}
+                    onChange={(id) => setReviewer(idx, id)}
+                    reviewers={reviewers}
+                    exclude={pickedIds.filter((id) => id !== slot.reviewerId)}
+                  />
+                  <CountEditor
+                    value={displayedCount}
+                    max={Math.max(draft.totalTarget, pinnedCount)}
+                    onChange={(v) => setCount(idx, Math.max(v, pinnedCount))}
+                    disabled={
+                      draft.assignAll &&
+                      slot.locked === false &&
+                      draft.slots.length === 1
+                    }
+                  />
+                  {bumped && (
+                    <span
+                      className="rounded-full border border-storesight-accent/50 bg-storesight-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-storesight-primary dark:text-storesight-accent-light"
+                      title={`Auto-bumped from ${slot.count} to fit ${pinnedCount} pinned JIDs`}
+                    >
+                      bumped +{pinnedCount - slot.count}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => toggleLock(idx)}
+                    className={`rounded-md border px-2 py-1 text-[11px] font-medium transition ${
+                      slot.locked
+                        ? "border-storesight-accent bg-storesight-accent/10 text-storesight-primary dark:border-storesight-accent-light dark:text-storesight-accent-light"
+                        : "border-storesight-border text-storesight-ink-muted hover:border-storesight-accent hover:text-storesight-primary dark:border-storesight-border-dark dark:text-storesight-ink-muted-dark"
+                    }`}
+                    title={slot.locked ? "Locked (won't rebalance)" : "Lock count"}
+                  >
+                    {slot.locked ? "Locked" : "Lock"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => removeSlot(idx)}
+                    className="rounded-md border border-transparent px-1.5 py-0.5 text-xs text-storesight-ink-muted transition hover:border-storesight-hot-pink hover:text-storesight-hot-pink dark:text-storesight-ink-muted-dark"
+                    aria-label="Remove reviewer"
+                  >
+                    ✕
+                  </button>
+                </div>
+                {pinnedPids.length > 0 && (
+                  <div className="ml-4 flex flex-wrap items-center gap-1 text-[10px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                    <span>Projects:</span>
+                    {pinnedPids.map((pid) => {
+                      const p = projectById.get(pid);
+                      return (
+                        <span
+                          key={pid}
+                          className="inline-flex items-center gap-1 rounded-full border border-storesight-border bg-white px-1.5 py-0.5 text-[10px] dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark"
+                        >
+                          {p?.projectName || `PID ${pid}`}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              commit({
+                                projectPins: {
+                                  ...draft.projectPins,
+                                  [slot.reviewerId]: (
+                                    draft.projectPins[slot.reviewerId] ?? []
+                                  ).filter((x) => x !== pid),
+                                },
+                              })
+                            }
+                            aria-label="Unpin"
+                            className="opacity-60 hover:opacity-100"
+                          >
+                            ✕
+                          </button>
+                        </span>
+                      );
+                    })}
+                    <span>(+{pinnedCount} JIDs)</span>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {projects.length > 0 && (
+        <ProjectAssignmentPanel
+          draft={draft}
+          projects={projects}
+          reviewers={reviewers}
+          pinsForOtherShift={pinsForOtherShift ?? new Set()}
+          onChange={(nextPins) => commit({ projectPins: nextPins })}
+        />
+      )}
+    </section>
+  );
+}
