@@ -1,5 +1,5 @@
 substitutions:
-    _SERVICE_NAME: placeholder
+    _SERVICE_NAME: qc-shift-assignments
     _REGION: us-central1
 
 steps:
