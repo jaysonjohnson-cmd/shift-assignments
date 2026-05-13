@@ -163,45 +163,45 @@ export default function AssignmentsPage() {
           <p className="mt-0.5 text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
             {priorityPool.length} task{priorityPool.length === 1 ? "" : "s"} pulled from Bloom
           </p>
-          <div className="mt-3 space-y-2">
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2">
-                <label className="text-xs font-medium text-storesight-ink dark:text-storesight-ink-dark">
-                  Filter by status:
-                </label>
-                <select
-                  value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value)}
-                  className="rounded border border-storesight-border bg-white px-2 py-1 text-xs text-storesight-ink dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark"
-                >
-                  <option value="">All (Default)</option>
-                  <option value="N">Unreviewed (N)</option>
-                  <option value="P">In Progress (P)</option>
-                </select>
-              </div>
-              <label className="flex items-center gap-2 text-xs">
-                <input
-                  type="checkbox"
-                  checked={prioritizeFilter}
-                  onChange={(e) => setPrioritizeFilter(e.target.checked)}
-                  className="rounded"
-                />
-                <span className="text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-                  Then fill with higher priority
-                </span>
+          <div className="mt-3 space-y-3">
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-medium text-storesight-ink dark:text-storesight-ink-dark">
+                Filter by status:
               </label>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="rounded border border-storesight-border bg-white px-2 py-1 text-xs text-storesight-ink dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark"
+              >
+                <option value="">All (Default)</option>
+                <option value="N">Unreviewed (N)</option>
+                <option value="P">In Progress (P)</option>
+              </select>
             </div>
-            <label className="flex items-center gap-2 text-xs">
-              <input
-                type="checkbox"
-                checked={balanceByResponses}
-                onChange={(e) => setBalanceByResponses(e.target.checked)}
-                className="rounded"
-              />
-              <span className="text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-                Balance by response count (not just job count)
-              </span>
-            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPrioritizeFilter(!prioritizeFilter)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                  prioritizeFilter
+                    ? "border border-storesight-primary bg-storesight-primary/10 text-storesight-primary dark:border-storesight-accent-light dark:bg-storesight-accent/20 dark:text-storesight-accent-light"
+                    : "border border-storesight-border bg-white text-storesight-ink-muted hover:border-storesight-primary/40 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
+                }`}
+              >
+                {prioritizeFilter ? "✓ " : ""}Fill with higher priority
+              </button>
+              <button
+                type="button"
+                onClick={() => setBalanceByResponses(!balanceByResponses)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                  balanceByResponses
+                    ? "border border-storesight-primary bg-storesight-primary/10 text-storesight-primary dark:border-storesight-accent-light dark:bg-storesight-accent/20 dark:text-storesight-accent-light"
+                    : "border border-storesight-border bg-white text-storesight-ink-muted hover:border-storesight-primary/40 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
+                }`}
+              >
+                {balanceByResponses ? "✓ " : ""}Balance by responses
+              </button>
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-2">
