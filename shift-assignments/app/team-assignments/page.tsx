@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { getShiftJobs, type ShiftJobs, type ShiftJob } from "@/lib/api";
 import { formatRelative } from "@/lib/relativeTime";
+import { ProgressTrackerTile } from "@/components/assign/ProgressTrackerTile";
 
 const PRIORITY_META: Record<number, { label: string; tint: string; text: string }> = {
   1: { label: "P1", tint: "bg-[#FF4D4D]/15", text: "text-[#FF4D4D]" },
@@ -26,8 +27,8 @@ function truncate(s: string | undefined, n: number): string {
 function buildJobUrl(row: ShiftJob): string {
   const MEDIA_REVIEW_URL = "https://my.fieldagent.net/admin/fieldagent/media-review/";
   const params = new URLSearchParams();
+  if (row.jobId) params.set("job", row.jobId);
   if (row.projectId) params.set("project_id", row.projectId);
-  if (row.jobId) params.set("job_id", row.jobId);
   if (row.groupIds && row.groupIds.length) {
     params.set("group_ids", row.groupIds.join(","));
   }
@@ -40,8 +41,9 @@ export default function TeamAssignmentsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<"reviewer" | "priority">("reviewer");
-  const [filterCompleted, setFilterCompleted] = useState(false);
+  const [filterCompleted, setFilterCompleted] = useState(true);
   const [expandedReviewers, setExpandedReviewers] = useState<Set<string>>(new Set());
+  const progressRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -66,6 +68,10 @@ export default function TeamAssignmentsPage() {
       }
       return next;
     });
+  };
+
+  const handleProgressClick = () => {
+    progressRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   useEffect(() => {
@@ -113,6 +119,12 @@ export default function TeamAssignmentsPage() {
 
   return (
     <div className="mx-auto w-full max-w-7xl flex-1 px-6 py-8">
+      <div className="mb-6 flex flex-col gap-6">
+        <div ref={progressRef}>
+          <ProgressTrackerTile onClick={handleProgressClick} disabled={false} />
+        </div>
+      </div>
+
       <header className="mb-6 flex flex-wrap items-start justify-between gap-3">
         <div>
           <Link

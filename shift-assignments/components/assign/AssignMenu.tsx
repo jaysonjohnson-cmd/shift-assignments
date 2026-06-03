@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useStore } from "@/lib/store";
 import { clearShift, getBloomJobs, type ClearMode } from "@/lib/api";
 import { formatRelative } from "@/lib/relativeTime";
+import { TeamProgressDashboard } from "./TeamProgressDashboard";
+import { ProgressTrackerTile } from "./ProgressTrackerTile";
 
 type StartMode = { kind: "shift" } | { kind: "overview" };
 
@@ -72,14 +74,15 @@ export function AssignMenu({
   const [error, setError] = useState<string | null>(null);
   const [pickingClear, setPickingClear] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const dashboardRef = useRef<HTMLDivElement>(null);
 
   const handleRefresh = async () => {
     setBusy(true);
     setError(null);
     try {
-      const fetched = await getBloomJobs(true);
-      setRows(fetched, `Bloom · ${fetched.length} jobs`);
-      setToast(`Loaded ${fetched.length} jobs from Bloom`);
+      const fetched = await getBloomJobs(true, "N");
+      setRows(fetched, `Bloom · ${fetched.length} jobs (unreviewed)`);
+      setToast(`Loaded ${fetched.length} unreviewed jobs from Bloom`);
       setTimeout(() => setToast(null), 3000);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load from Bloom");
@@ -119,6 +122,10 @@ export function AssignMenu({
     }
   };
 
+  const handleProgressClick = () => {
+    dashboardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   return (
     <div className="mx-auto w-full max-w-6xl flex-1 px-6 py-10">
       <header className="mb-8">
@@ -153,40 +160,50 @@ export function AssignMenu({
         )}
       </header>
 
+      {/* Team Progress Dashboard */}
+      <div className="mb-8" ref={dashboardRef}>
+        <TeamProgressDashboard />
+      </div>
+
       {isAdmin ? (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <Tile
-            title="Assign a Shift"
-            description="Choose reviewers, pin projects, and publish the queue."
-            icon={SunIcon}
-            accent="from-storesight-primary/10 to-storesight-accent/10"
-            onClick={() => onStart({ kind: "shift" })}
-            disabled={!hasRows || busy}
-          />
-          <Tile
-            title={busy ? "Refreshing…" : "Refresh from Bloom"}
-            description="Pull the latest prioritized job list before assigning."
-            icon={RefreshIcon}
-            accent="from-emerald-400/15 to-storesight-mint/20"
-            onClick={handleRefresh}
-            disabled={busy}
-          />
-          <Tile
-            title="View Current Assignments"
-            description="Live check-in — who's on shift and how far they've gotten."
-            icon={ChartIcon}
-            accent="from-storesight-sky/40 to-storesight-sky/15"
-            onClick={() => onStart({ kind: "overview" })}
-          />
-          <Tile
-            title="Clear tasks"
-            description="Wipe active, completed, or both across every reviewer's queue."
-            icon={TrashIcon}
-            accent="from-storesight-peach/20 to-storesight-sun/20"
-            onClick={() => setPickingClear(true)}
-            disabled={busy}
-            danger
-          />
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <Tile
+              title="Assign a Shift"
+              description="Choose reviewers, pin projects, and publish the queue."
+              icon={SunIcon}
+              accent="from-storesight-primary/10 to-storesight-accent/10"
+              onClick={() => onStart({ kind: "shift" })}
+              disabled={!hasRows || busy}
+            />
+            <Tile
+              title={busy ? "Refreshing…" : "Refresh from Bloom"}
+              description="Pull the latest prioritized job list before assigning."
+              icon={RefreshIcon}
+              accent="from-emerald-400/15 to-storesight-mint/20"
+              onClick={handleRefresh}
+              disabled={busy}
+            />
+            <Tile
+              title="View Current Assignments"
+              description="Live check-in — who's on shift and how far they've gotten."
+              icon={ChartIcon}
+              accent="from-storesight-sky/40 to-storesight-sky/15"
+              onClick={() => onStart({ kind: "overview" })}
+            />
+            <Tile
+              title="Clear tasks"
+              description="Wipe active, completed, or both across every reviewer's queue."
+              icon={TrashIcon}
+              accent="from-storesight-peach/20 to-storesight-sun/20"
+              onClick={() => setPickingClear(true)}
+              disabled={busy}
+              danger
+            />
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <ProgressTrackerTile onClick={handleProgressClick} disabled={busy} />
+          </div>
         </div>
       ) : (
         <div className="rounded-2xl border border-dashed border-storesight-border bg-white/60 px-6 py-10 text-center text-sm text-storesight-ink-muted dark:border-storesight-border-dark dark:bg-storesight-surface-dark/60 dark:text-storesight-ink-muted-dark">
