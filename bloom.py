@@ -1,20 +1,19 @@
 """Bloom (Internal Tool API) proxy for the QC shift feed.
 
-Drives the assignments dashboard from `/api/responsegroups` filtered to
-unreviewed status (default `N`). Groups response groups by `job_id`, counts
-the unreviewed backlog per job, and fetches job names separately so each
-row in the dashboard represents one job with an unreviewed RG count.
+Drives the assignments dashboard from `/api/prioritized-jobs`, which returns
+jobs ranked by FA-web's algorithm (jicco, close date, submission age,
+reimbursement, P&G store-walk, part-one, plus relative sub-count /
+pending-ratio / days-remaining weighting). Each row represents one job with
+unreviewed submissions, already prioritized by the API.
 
-Response shape — one Row per *job that has at least one unreviewed RG*:
+Response shape — one Row per job with unreviewed submissions:
 
     {
-      id, projectId, jobId, groupIds,
+      id, jobId, projectId, projectName,
       priority, name,
       unreviewedCount, oldestSubmission,
-      extras,
+      groupIds, extras,
     }
-
-Priority: rank by `unreviewedCount` descending (biggest backlog = 1).
 """
 
 import logging
@@ -22,19 +21,16 @@ import time
 
 import internal_api
 
-# Default response-group status treated as "unreviewed". FA admin uses a
-# single-letter code; flip via the ?status= query param if it turns out to
-# be something else (e.g. 'New', or multiple codes comma-separated).
-DEFAULT_STATUS = "N"
-# Bloom silently caps per_page at 100 regardless of request.
-PAGE_SIZE = 100
-# Cap on response-group pagination. 5000 RGs is plenty of headroom for today's
-# ~3.7k unreviewed backlog; bump if that grows.
-MAX_RG_PAGES = 50
-_CACHE = {"fetched_at": 0.0, "status": None, "rows": []}
+# No status filtering needed — /api/prioritized-jobs only returns jobs with
+# new submissions. Kept for backward compatibility.
+DEFAULT_STATUS = None
+_CACHE = {"fetched_at": 0.0, "rows": []}
 _CACHE_TTL_SECONDS = 60
 # Project-name cache: {project_id: name}. Shares the 60s TTL pattern.
 _PROJECT_NAME_CACHE = {"fetched_at": 0.0, "names": {}}
+# Constants for project name pagination
+PAGE_SIZE = 100
+MAX_RG_PAGES = 50
 
 
 def _g(d, *keys):
@@ -46,84 +42,35 @@ def _g(d, *keys):
     return ""
 
 
-def _fetch_response_groups(status):
-    """Paginate /api/responsegroups filtered to the given status. Returns list."""
-    # Accept comma-separated status codes ("N,P") — Bloom takes them as-is and
-    # falls back to per-code requests if the API only honors one at a time.
-    statuses = [s.strip() for s in (status or "").split(",") if s.strip()]
-    if not statuses:
-        statuses = [DEFAULT_STATUS]
+def _fetch_prioritized_jobs_raw():
+    """Fetch jobs from /api/prioritized-jobs (unpaginated, pre-prioritized).
 
-    all_rgs = []
-    for s in statuses:
-        for page in range(1, MAX_RG_PAGES + 1):
-            params = {"page": page, "per_page": PAGE_SIZE, "status": s}
-            resp = internal_api.get("/api/responsegroups", params=params)
-            batch = resp.get("data", []) if isinstance(resp, dict) else []
-            if not batch:
-                break
-            all_rgs.extend(batch)
-            if len(batch) < PAGE_SIZE:
-                break
-    return all_rgs
-
-
-def _group_by_job(rgs):
-    """Collapse response-group records into one entry per job_id.
-
-    Returns dict keyed on str(job_id):
-      {
-        "job_id": str, "project_id": str,
-        "count": int, "group_ids": [str, ...],
-        "oldest_submission": "YYYY-MM-DD..." or "",
-      }
+    Returns list of job records already ranked by FA-web's algorithm.
     """
-    by_job = {}
-    for rg in rgs:
-        jid = rg.get("job_id")
-        if jid in (None, ""):
-            continue
-        key = str(jid)
-        entry = by_job.get(key)
-        if entry is None:
-            entry = {
-                "job_id": key,
-                "project_id": str(rg.get("project_id") or ""),
-                "count": 0,
-                "group_ids": [],
-                "oldest_submission": "",
-            }
-            by_job[key] = entry
-        entry["count"] += 1
-        rg_id = rg.get("id")
-        if rg_id not in (None, ""):
-            entry["group_ids"].append(str(rg_id))
-        submitted = _g(rg, "submission_date", "local_submission_date", "create_ts")
-        if submitted:
-            prev = entry["oldest_submission"]
-            if not prev or str(submitted) < str(prev):
-                entry["oldest_submission"] = str(submitted)
-        # Fill project_id if it was empty on earlier RG but present here.
-        if not entry["project_id"] and rg.get("project_id") not in (None, ""):
-            entry["project_id"] = str(rg.get("project_id"))
-    return by_job
+    resp = internal_api.get("/api/prioritized-jobs")
+    return resp.get("data", []) if isinstance(resp, dict) else []
 
 
-def _row_from_entry(entry, priority, project_names=None):
-    project_id = entry["project_id"]
-    project_name = ""
-    if project_names and project_id:
-        project_name = project_names.get(project_id, "")
+def _row_from_api(job):
+    """Map a job from /api/prioritized-jobs to the Row shape the UI expects.
+
+    /api/prioritized-jobs already includes:
+      - id (job_id), name, priority, project_id
+      - new (unreviewed count)
+      - All other metadata (activeReviewers, subsPerDay, etc.)
+    """
+    project_id = str(job.get("project_id") or "")
+    project_name = ""  # Will be populated separately if needed
     return {
-        "id": entry["job_id"],
+        "id": str(job.get("id") or ""),
         "projectId": project_id,
         "projectName": project_name,
-        "jobId": entry["job_id"],
-        "groupIds": entry["group_ids"],
-        "priority": priority,
-        "name": "",
-        "unreviewedCount": entry["count"],
-        "oldestSubmission": entry["oldest_submission"],
+        "jobId": str(job.get("id") or ""),
+        "groupIds": [],  # Not provided by this API; can be fetched separately if needed
+        "priority": int(job.get("priority") or 0),
+        "name": str(job.get("name") or ""),
+        "unreviewedCount": int(job.get("new") or 0),
+        "oldestSubmission": "",  # Not provided by this API
         "extras": {},
     }
 
@@ -217,53 +164,40 @@ def project_summaries(rows=None):
 
 
 def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True):
-    """Return Rows for every job that has ≥1 unreviewed response group.
+    """Return Rows for every job with unreviewed submissions, pre-prioritized by FA-web.
 
-    One Row per job, sorted by `unreviewedCount` descending (priority 1 = biggest
-    backlog). A 60-second in-process cache keeps the Internal-API rate limit
-    headroom comfortable.
+    Calls /api/prioritized-jobs which returns jobs ranked by jicco, close date,
+    submission age, reimbursement, P&G store-walk, part-one, plus relative
+    sub-count / pending-ratio / days-remaining weighting.
+
+    A 60-second in-process cache keeps the Internal-API rate limit headroom
+    comfortable. The `status` parameter is kept for backward compatibility but
+    unused (the API only returns jobs with new submissions).
     """
     now = time.time()
-    if (
-        use_cache
-        and _CACHE["status"] == status
-        and _CACHE["rows"]
-        and (now - _CACHE["fetched_at"]) < _CACHE_TTL_SECONDS
-    ):
+    if use_cache and _CACHE["rows"] and (now - _CACHE["fetched_at"]) < _CACHE_TTL_SECONDS:
         return _CACHE["rows"]
 
-    rgs = _fetch_response_groups(status)
-    by_job = _group_by_job(rgs)
+    jobs = _fetch_prioritized_jobs_raw()
+    rows = [_row_from_api(job) for job in jobs]
 
-    # NOTE: We intentionally do NOT hit /api/jobs — that endpoint's full-list
-    # pagination takes 7+ minutes and the only thing it adds is job name +
-    # filtering out a handful of inactive jobs (619 → 616 locally). Users
-    # chose raw speed; names stay empty and counts land within ~0.5% of
-    # Admin. Revisit if a lightweight job-lookup endpoint becomes available.
-
-    # Sort: unreviewedCount desc, then oldest submission asc (older backlog wins ties),
-    # then job_id asc for deterministic ordering.
-    ordered = sorted(
-        by_job.values(),
-        key=lambda e: (-e["count"], e["oldest_submission"] or "9999", int(e["job_id"]) if e["job_id"].isdigit() else 0),
-    )
-
-    # Resolve project names via the bulk list endpoint (one request per 100
-    # projects, typically 6–10 total). Failures are non-fatal — rows just
-    # carry an empty projectName and the UI falls back to `Project {id}`.
-    project_ids = {e["project_id"] for e in ordered if e["project_id"]}
-    try:
-        project_names = fetch_project_names(project_ids)
-    except Exception:  # noqa: BLE001 — names are a nicety, never block the feed
-        project_names = {}
-    rows = [_row_from_entry(e, idx, project_names) for idx, e in enumerate(ordered, start=1)]
+    # Optionally resolve project names if they're not already populated by the API.
+    # Most projects should come through with names now, but keeping this for robustness.
+    project_ids = {r["projectId"] for r in rows if r["projectId"]}
+    if project_ids:
+        try:
+            project_names = fetch_project_names(project_ids)
+            for r in rows:
+                if r["projectId"] and not r["projectName"]:
+                    r["projectName"] = project_names.get(r["projectId"], "")
+        except Exception:  # noqa: BLE001 — names are a nicety, never block the feed
+            pass
 
     _CACHE["fetched_at"] = now
-    _CACHE["status"] = status
     _CACHE["rows"] = rows
     logging.info(
-        "bloom.fetch_prioritized_jobs status=%s rgs=%d jobs=%d",
-        status, len(rgs), len(rows),
+        "bloom.fetch_prioritized_jobs jobs=%d",
+        len(rows),
     )
     return rows
 
@@ -271,6 +205,5 @@ def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True):
 def clear_cache():
     """Reset the in-process cache. Used by tests and the 'Force refresh' path."""
     _CACHE["fetched_at"] = 0.0
-    _CACHE["status"] = None
     _CACHE["rows"] = []
     clear_project_name_cache()
