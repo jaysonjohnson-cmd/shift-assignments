@@ -192,6 +192,26 @@ export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
                                             />
                                           </svg>
                                         </a>
+                                        <span>·</span>
+                                        <a
+                                          href={buildFAWebUrl(job)}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          onClick={(e) => e.stopPropagation()}
+                                          className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-storesight-primary hover:bg-storesight-accent/10 dark:text-storesight-accent-light dark:hover:bg-storesight-accent/20"
+                                          title={`Open Job ${job.jobId} in FA-web Collection Review`}
+                                        >
+                                          Collection Review
+                                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>
+                                            <path
+                                              d="M14 3h7v7M10 14 21 3M19 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6"
+                                              stroke="currentColor"
+                                              strokeWidth="1.6"
+                                              strokeLinecap="round"
+                                              strokeLinejoin="round"
+                                            />
+                                          </svg>
+                                        </a>
                                       </>
                                     )}
                                   </div>
@@ -287,13 +307,19 @@ function truncate(s: string | undefined, n: number): string {
 function buildJobUrl(row: ShiftJob): string {
   const MEDIA_REVIEW_URL = "https://my.fieldagent.net/admin/fieldagent/media-review/";
   const params = new URLSearchParams();
+  if (row.jobId) params.set("job", row.jobId);
   if (row.projectId) params.set("project_id", row.projectId);
-  if (row.jobId) params.set("job_id", row.jobId);
   if (row.groupIds && row.groupIds.length) {
     params.set("group_ids", row.groupIds.join(","));
   }
   const qs = params.toString();
   return qs ? `${MEDIA_REVIEW_URL}?${qs}` : MEDIA_REVIEW_URL;
+}
+
+function buildFAWebUrl(row: ShiftJob): string {
+  const FA_WEB_URL = "https://prod.fieldagent.net/admin/fieldagent/collection-review/";
+  if (!row.jobId) return FA_WEB_URL;
+  return `${FA_WEB_URL}?job=${encodeURIComponent(row.jobId)}#/`;
 }
 
 function OverallBar({ completed, total }: { completed: number; total: number }) {
