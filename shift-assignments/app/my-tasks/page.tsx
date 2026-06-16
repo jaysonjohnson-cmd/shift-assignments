@@ -130,16 +130,10 @@ function truncate(value: string | null | undefined, max: number): string {
 }
 
 function buildJobUrl(row: Row): string {
-  const MEDIA_REVIEW_URL = "https://my.fieldagent.net/admin/fieldagent/media-review/";
-  const params = new URLSearchParams();
-  const pid = row.projectId || row.id;
-  if (pid) params.set("project_id", pid);
-  if (row.jobId) params.set("job_id", row.jobId);
-  if (row.groupIds && row.groupIds.length) {
-    params.set("group_ids", row.groupIds.join(","));
-  }
-  const qs = params.toString();
-  return qs ? `${MEDIA_REVIEW_URL}?${qs}` : MEDIA_REVIEW_URL;
+  const COLLECTION_REVIEW_URL =
+    "https://prod.fieldagent.net/admin/fieldagent/collection-review/";
+  if (!row.jobId) return COLLECTION_REVIEW_URL;
+  return `${COLLECTION_REVIEW_URL}?job=${encodeURIComponent(row.jobId)}#/`;
 }
 
 function primaryHeading(row: Row, grouped: boolean): string {
@@ -575,7 +569,7 @@ function TaskCard({
               target="_blank"
               rel="noopener noreferrer"
               className="ml-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-storesight-primary hover:bg-storesight-accent/10 dark:text-storesight-accent-light dark:hover:bg-storesight-accent/20"
-              title={`Open Job ${row.jobId} in Media Review`}
+              title={`Open Job ${row.jobId} in Collection Review`}
             >
               {truncate(row.jobId, 10)}
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -625,7 +619,7 @@ function TaskCard({
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-storesight-primary hover:bg-storesight-accent/10 dark:text-storesight-accent-light dark:hover:bg-storesight-accent/20"
-                title={`Open Job ${row.jobId} in Media Review`}
+                title={`Open Job ${row.jobId} in Collection Review`}
               >
                 Job {truncate(row.jobId, 14)}
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>

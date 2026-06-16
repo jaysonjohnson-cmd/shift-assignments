@@ -49,7 +49,7 @@ Before writing any feature code, verify the local environment is ready:
 - **Live URL:** https://qc-shift-assignments.storesight.org
 - **Cloud Run service:** qc-shift-assignments (project: storesight-internal-tools, region: us-central1)
 - **GitHub repo:** https://github.com/storesight/qc-shift-assignments
-- **Owner:** micah.mccollum@storesight.com
+- **Owner:** jayson.johnson@storesight.com
 
 ---
 

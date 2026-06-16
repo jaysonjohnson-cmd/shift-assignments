@@ -1,0 +1,13 @@
+{
+  "name": "shift-assignments-root",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Root wrapper — forwards build/dev/start/lint into the Next.js frontend in ./shift-assignments",
+  "scripts": {
+    "dev": "npm --prefix shift-assignments run dev",
+    "build": "npm --prefix shift-assignments run build",
+    "start": "npm --prefix shift-assignments run start",
+    "lint": "npm --prefix shift-assignments run lint",
+    "install:frontend": "npm --prefix shift-assignments ci"
+  }
+}

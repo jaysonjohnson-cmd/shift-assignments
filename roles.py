@@ -13,7 +13,7 @@ import logging
 
 import internal_api
 
-ROOT_ADMIN_EMAIL = "micah.mccollum@storesight.com"
+ROOT_ADMIN_EMAIL = "jayson.johnson@storesight.com"
 
 _STORAGE_PATH = "/api/storage/qc-shift-assignments"
 _PAGE_SIZE = 200

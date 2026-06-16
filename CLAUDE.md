@@ -13,7 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Live:** https://qc-shift-assignments.storesight.org  
 **Cloud Run service:** `qc-shift-assignments` (storesight-internal-tools, us-central1)  
 **GitHub:** https://github.com/jaysonjohnson-cmd/shift-assignments  
-**Owner:** micah.mccollum@storesight.com
+**Owner:** jayson.johnson@storesight.com
 
 ---
 
