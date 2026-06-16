@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   countPinnedJids,
   effectiveSlotCount,
@@ -20,6 +20,7 @@ import {
 import { ReviewerPicker } from "./ReviewerPicker";
 import { CountEditor } from "./CountEditor";
 import { ProjectAssignmentPanel } from "./ProjectAssignmentPanel";
+import { ReviewerMultiSelectModal } from "./ReviewerMultiSelectModal";
 
 export function ShiftComposer({
   draft,
@@ -40,6 +41,9 @@ export function ShiftComposer({
   projects?: ProjectSummary[];
   pinsForOtherShift?: Set<string>;
 }) {
+  const [showMultiSelect, setShowMultiSelect] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+
   // Keep totalTarget bound to the pool when "Assign All" is on.
   useEffect(() => {
     if (draft.assignAll && draft.totalTarget !== pool) {
@@ -65,6 +69,26 @@ export function ShiftComposer({
       { reviewerId: "", count: 0, locked: false },
     ];
     commit({ slots: evenDistribute(nextSlots, draft.totalTarget) });
+  };
+
+  const addMultipleSlots = (reviewerIds: string[]) => {
+    const slotsToAdd = Math.min(
+      reviewerIds.length,
+      MAX_SLOTS_PER_SHIFT - draft.slots.length,
+    );
+    const newSlots: ReviewerSlot[] = reviewerIds.slice(0, slotsToAdd).map((id) => ({
+      reviewerId: id,
+      count: 0,
+      locked: false,
+    }));
+    const nextSlots = [...draft.slots, ...newSlots];
+    commit({ slots: evenDistribute(nextSlots, draft.totalTarget) });
+    setShowMultiSelect(false);
+  };
+
+  const clearAllSlots = () => {
+    commit({ slots: [], projectPins: {} });
+    setShowClearConfirm(false);
   };
 
   const removeSlot = (idx: number) => {
@@ -193,14 +217,25 @@ export function ShiftComposer({
             className="ml-2 h-8 w-20 rounded-md border border-storesight-border bg-white px-2 text-right text-sm outline-none transition focus:border-storesight-accent disabled:opacity-50 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark"
           />
         </label>
-        <button
-          type="button"
-          onClick={addSlot}
-          disabled={draft.slots.length >= MAX_SLOTS_PER_SHIFT}
-          className="ml-auto rounded-md border border-storesight-border bg-white px-2.5 py-1.5 text-xs font-medium text-storesight-ink-muted transition hover:border-storesight-accent hover:text-storesight-primary disabled:opacity-40 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
-        >
-          + Add reviewer ({draft.slots.length}/{MAX_SLOTS_PER_SHIFT})
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          {draft.slots.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowClearConfirm(true)}
+              className="rounded-md border border-storesight-border bg-white px-2.5 py-1.5 text-xs font-medium text-storesight-ink-muted transition hover:border-storesight-hot-pink hover:text-storesight-hot-pink disabled:opacity-40 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
+            >
+              Clear all
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setShowMultiSelect(true)}
+            disabled={draft.slots.length >= MAX_SLOTS_PER_SHIFT}
+            className="rounded-md border border-storesight-border bg-white px-2.5 py-1.5 text-xs font-medium text-storesight-ink-muted transition hover:border-storesight-accent hover:text-storesight-primary disabled:opacity-40 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
+          >
+            + Add reviewer ({draft.slots.length}/{MAX_SLOTS_PER_SHIFT})
+          </button>
+        </div>
       </div>
 
       {draft.slots.length === 0 ? (
@@ -319,6 +354,56 @@ export function ShiftComposer({
           pinsForOtherShift={pinsForOtherShift ?? new Set()}
           onChange={(nextPins) => commit({ projectPins: nextPins })}
         />
+      )}
+
+      {showMultiSelect && (
+        <ReviewerMultiSelectModal
+          reviewers={reviewers}
+          exclude={pickedIds}
+          maxSelectable={MAX_SLOTS_PER_SHIFT - draft.slots.length}
+          onConfirm={addMultipleSlots}
+          onCancel={() => setShowMultiSelect(false)}
+        />
+      )}
+
+      {showClearConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="mx-4 rounded-2xl border border-storesight-hot-pink/40 bg-white p-6 shadow-2xl dark:border-storesight-hot-pink/40 dark:bg-storesight-surface-dark max-w-md w-full animate-in fade-in zoom-in duration-300">
+            <div className="mb-6 flex h-12 w-12 items-center justify-center rounded-full bg-storesight-hot-pink/15">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" className="text-storesight-hot-pink">
+                <path
+                  d="M18 6L6 18M6 6l12 12"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </div>
+            <h2 className="text-lg font-semibold text-storesight-ink dark:text-storesight-ink-dark">
+              Clear all reviewers?
+            </h2>
+            <p className="mt-2 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+              This will remove all {draft.slots.length} reviewer{draft.slots.length === 1 ? "" : "s"} and clear all project pins. This action cannot be undone.
+            </p>
+            <div className="mt-6 flex gap-3">
+              <button
+                type="button"
+                onClick={() => setShowClearConfirm(false)}
+                className="flex-1 rounded-lg border border-storesight-border bg-white px-4 py-2 text-sm font-medium text-storesight-ink hover:border-storesight-accent hover:text-storesight-primary transition dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark"
+              >
+                Keep them
+              </button>
+              <button
+                type="button"
+                onClick={clearAllSlots}
+                className="flex-1 rounded-lg border border-storesight-hot-pink/60 bg-storesight-hot-pink/10 px-4 py-2 text-sm font-semibold text-storesight-hot-pink hover:bg-storesight-hot-pink/20 transition"
+              >
+                Clear all
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </section>
   );

@@ -62,7 +62,7 @@ export type ShiftDraft = {
   projectPins: Record<string, string[]>;
 };
 
-export const MAX_SLOTS_PER_SHIFT = 6;
+export const MAX_SLOTS_PER_SHIFT = 100;
 
 export const SHIFT_ACCENTS = [
   "#4e339c",

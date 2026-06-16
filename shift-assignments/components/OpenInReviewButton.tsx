@@ -21,9 +21,9 @@ function buildClipboardPayload(row: Row): string {
 
 function buildUrl(row: Row): string {
   const params = new URLSearchParams();
+  if (row.jobId) params.set("job", row.jobId);
   const pid = row.projectId || row.id;
   if (pid) params.set("project_id", pid);
-  if (row.jobId) params.set("job_id", row.jobId);
   if (row.groupIds && row.groupIds.length) {
     params.set("group_ids", row.groupIds.join(","));
   }
