@@ -288,7 +288,9 @@ function buildJobUrl(row: ShiftJob): string {
   const COLLECTION_REVIEW_URL =
     "https://prod.fieldagent.net/admin/fieldagent/collection-review/";
   if (!row.jobId) return COLLECTION_REVIEW_URL;
-  return `${COLLECTION_REVIEW_URL}?job=${encodeURIComponent(row.jobId)}#/`;
+  const params = new URLSearchParams({ job: row.jobId });
+  if (row.projectId) params.set("project", row.projectId);
+  return `${COLLECTION_REVIEW_URL}?${params.toString()}#/`;
 }
 
 function OverallBar({ completed, total }: { completed: number; total: number }) {
