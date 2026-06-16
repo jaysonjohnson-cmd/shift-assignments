@@ -181,17 +181,10 @@ def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True):
     jobs = _fetch_prioritized_jobs_raw()
     rows = [_row_from_api(job) for job in jobs]
 
-    # Optionally resolve project names if they're not already populated by the API.
-    # Most projects should come through with names now, but keeping this for robustness.
-    project_ids = {r["projectId"] for r in rows if r["projectId"]}
-    if project_ids:
-        try:
-            project_names = fetch_project_names(project_ids)
-            for r in rows:
-                if r["projectId"] and not r["projectName"]:
-                    r["projectName"] = project_names.get(r["projectId"], "")
-        except Exception:  # noqa: BLE001 — names are a nicety, never block the feed
-            pass
+    # Skip project name fetching on cache misses to reduce rate limit pressure.
+    # Project names are nice-to-have; the UI can fall back to "Project {id}" if needed.
+    # Only fetch if we have explicit cache miss AND project names are empty.
+    # This keeps us under the 60 req/min Internal API rate limit.
 
     _CACHE["fetched_at"] = now
     _CACHE["rows"] = rows
