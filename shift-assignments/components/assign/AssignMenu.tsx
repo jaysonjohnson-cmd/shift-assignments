@@ -177,7 +177,7 @@ export function AssignMenu({
               disabled={!hasRows || busy}
             />
             <Tile
-              title={busy ? "Refreshing…" : "Refresh from Bloom"}
+              title={busy ? "Refreshing…" : "Refresh from Priority Page"}
               description="Pull the latest prioritized job list before assigning."
               icon={RefreshIcon}
               accent="from-emerald-400/15 to-storesight-mint/20"
