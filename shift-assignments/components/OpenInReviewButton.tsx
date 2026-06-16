@@ -3,8 +3,8 @@
 import { useState } from "react";
 import type { Row } from "@/lib/types";
 
-const MEDIA_REVIEW_URL =
-  "https://my.fieldagent.net/admin/fieldagent/media-review/";
+const COLLECTION_REVIEW_URL =
+  "https://prod.fieldagent.net/admin/fieldagent/collection-review/";
 
 type Props = {
   row: Row;
@@ -20,15 +20,11 @@ function buildClipboardPayload(row: Row): string {
 }
 
 function buildUrl(row: Row): string {
-  const params = new URLSearchParams();
-  if (row.jobId) params.set("job", row.jobId);
+  if (!row.jobId) return COLLECTION_REVIEW_URL;
+  const params = new URLSearchParams({ job: row.jobId });
   const pid = row.projectId || row.id;
-  if (pid) params.set("project_id", pid);
-  if (row.groupIds && row.groupIds.length) {
-    params.set("group_ids", row.groupIds.join(","));
-  }
-  const qs = params.toString();
-  return qs ? `${MEDIA_REVIEW_URL}?${qs}` : MEDIA_REVIEW_URL;
+  if (pid) params.set("project", pid);
+  return `${COLLECTION_REVIEW_URL}?${params.toString()}#/`;
 }
 
 export function OpenInReviewButton({ row, size = "md", variant = "default" }: Props) {
@@ -60,7 +56,7 @@ export function OpenInReviewButton({ row, size = "md", variant = "default" }: Pr
     <button
       type="button"
       onClick={handleClick}
-      title={`Opens Media Review in a new tab and copies Project ${row.projectId || row.id} to clipboard`}
+      title={`Opens Collection Review in a new tab and copies Project ${row.projectId || row.id} to clipboard`}
       className={`inline-flex items-center gap-1.5 rounded-lg border font-medium transition ${variantClass} ${sizeClass}`}
     >
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
