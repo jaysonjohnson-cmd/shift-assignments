@@ -12,7 +12,7 @@ import { AssignmentsOverview } from "@/components/assign/AssignmentsOverview";
 import { useStore } from "@/lib/store";
 import { useUser } from "@/lib/useUser";
 import { useReviewerSync } from "@/lib/useReviewerSync";
-import { getBloomJobs, publishShift } from "@/lib/api";
+import { getBloomJobs, publishShift, clearShift } from "@/lib/api";
 import { assignShift, plannedTotal } from "@/lib/assign";
 import {
   emptyShiftDraft,
@@ -140,10 +140,18 @@ export default function AssignmentsPage() {
     }
   };
 
-  const handleCloseAssignment = () => {
+  const handleCloseAssignment = async () => {
     setShowCloseModal(false);
-    setMode({ kind: "menu" });
+    setBusy(true);
     setError(null);
+    try {
+      await clearShift("all");
+      setMode({ kind: "menu" });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to close assignment");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
