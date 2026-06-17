@@ -20,46 +20,42 @@ import roles  # noqa: E402
 from main import app  # noqa: E402
 
 
-# ---------- bloom.fetch_prioritized_jobs — responsegroups-driven feed ----------
+# ---------- bloom.fetch_prioritized_jobs — /api/prioritized-jobs feed ----------
 
 
-def _rg_pages(records):
-    """Turn a flat list of RG records into a page-1/page-2 fake_get response."""
+def _prioritized_jobs(records):
+    """Fake internal_api.get backing /api/prioritized-jobs with the given jobs."""
     def _get(path, params=None):
-        if path == "/api/responsegroups":
-            page = params.get("page", 1)
-            return {"data": records if page == 1 else []}
+        if path == "/api/prioritized-jobs":
+            return {"data": records}
         return {"data": []}
     return _get
 
 
-def test_fetch_prioritized_jobs_groups_by_job_id_and_counts(monkeypatch):
+def test_fetch_prioritized_jobs_maps_api_rows(monkeypatch):
     bloom.clear_cache()
-    rgs = [
-        {"id": 1, "job_id": 10, "project_id": 110, "status": "N", "submission_date": "2026-04-20T10:00:00Z"},
-        {"id": 2, "job_id": 10, "project_id": 110, "status": "N", "submission_date": "2026-04-19T09:00:00Z"},
-        {"id": 3, "job_id": 10, "project_id": 110, "status": "N", "submission_date": "2026-04-21T08:00:00Z"},
-        {"id": 4, "job_id": 20, "project_id": 120, "status": "N", "submission_date": "2026-04-22T08:00:00Z"},
+    jobs = [
+        {"id": 10, "project_id": 110, "priority": 1, "name": "Chair", "new": 3},
+        {"id": 20, "project_id": 120, "priority": 2, "name": "Desk", "new": 1},
     ]
-    monkeypatch.setattr(internal_api, "get", _rg_pages(rgs))
+    monkeypatch.setattr(internal_api, "get", _prioritized_jobs(jobs))
 
     rows = bloom.fetch_prioritized_jobs(use_cache=False)
-    # Biggest backlog first — job 10 (3 RGs) before job 20 (1 RG).
+    # Order is preserved from the already-prioritized API.
     assert [r["id"] for r in rows] == ["10", "20"]
     assert [r["priority"] for r in rows] == [1, 2]
     assert rows[0]["unreviewedCount"] == 3
-    assert rows[0]["oldestSubmission"] == "2026-04-19T09:00:00Z"
-    assert set(rows[0]["groupIds"]) == {"1", "2", "3"}
-    assert rows[0]["name"] == ""  # names are intentionally skipped for speed
+    assert rows[0]["name"] == "Chair"  # name comes straight from the API
     assert rows[0]["projectId"] == "110"
+    assert rows[0]["jobId"] == "10"
 
 
 def test_fetch_prioritized_jobs_uses_cache(monkeypatch):
     bloom.clear_cache()
     call_count = {"n": 0}
 
-    base = _rg_pages([
-        {"id": 1, "job_id": 10, "project_id": 110, "status": "N", "submission_date": "2026-04-20"},
+    base = _prioritized_jobs([
+        {"id": 10, "project_id": 110, "priority": 1, "name": "Chair", "new": 1},
     ])
 
     def counting_get(path, params=None):
@@ -103,10 +99,10 @@ def test_fetch_project_names_bulk_and_caches(monkeypatch):
 
 def test_project_summaries_one_entry_per_project(monkeypatch):
     bloom.clear_cache()
-    monkeypatch.setattr(internal_api, "get", _rg_pages([
-        {"id": 1, "job_id": 10, "project_id": 110, "status": "N", "submission_date": "2026-04-20"},
-        {"id": 2, "job_id": 11, "project_id": 110, "status": "N", "submission_date": "2026-04-18"},
-        {"id": 3, "job_id": 20, "project_id": 120, "status": "N", "submission_date": "2026-04-22"},
+    monkeypatch.setattr(internal_api, "get", _prioritized_jobs([
+        {"id": 10, "project_id": 110, "priority": 1, "name": "A", "new": 1},
+        {"id": 11, "project_id": 110, "priority": 2, "name": "B", "new": 1},
+        {"id": 20, "project_id": 120, "priority": 3, "name": "C", "new": 1},
     ]))
 
     rows = bloom.fetch_prioritized_jobs(use_cache=False)
@@ -114,7 +110,6 @@ def test_project_summaries_one_entry_per_project(monkeypatch):
     by_pid = {s["projectId"]: s for s in summaries}
     assert set(by_pid.keys()) == {"110", "120"}
     assert by_pid["110"]["jidCount"] == 2
-    assert by_pid["110"]["oldestSubmission"] == "2026-04-18"
     assert by_pid["120"]["jidCount"] == 1
 
 
@@ -151,13 +146,13 @@ def test_bloom_projects_requires_admin(client, monkeypatch):
     assert resp.status_code == 403
 
 
-def test_fetch_prioritized_jobs_skips_records_without_job_id(monkeypatch):
+def test_fetch_prioritized_jobs_skips_records_without_id(monkeypatch):
     bloom.clear_cache()
-    rgs = [
-        {"id": 1, "job_id": None, "status": "N"},
-        {"id": 2, "job_id": 10, "project_id": 110, "status": "N", "submission_date": "2026-04-20"},
+    jobs = [
+        {"id": None, "project_id": 110, "priority": 1, "name": "Bogus", "new": 1},
+        {"id": 10, "project_id": 110, "priority": 2, "name": "Chair", "new": 1},
     ]
-    monkeypatch.setattr(internal_api, "get", _rg_pages(rgs))
+    monkeypatch.setattr(internal_api, "get", _prioritized_jobs(jobs))
     rows = bloom.fetch_prioritized_jobs(use_cache=False)
     assert len(rows) == 1
     assert rows[0]["id"] == "10"
@@ -753,189 +748,6 @@ def test_list_completions_returns_all_for_current_snapshot(client, monkeypatch):
     body = resp.get_json()["data"]
     assert body["snapshot_id"] == "snap-1"
     assert [c["project_id"] for c in body["completions"]] == ["10"]
-
-
-def _enrich_scenario(monkeypatch, job_names=None, budget_kills_at=None):
-    """Snapshot with 2 reviewers, 4 unique jobs. Fake internal_api.get backs job lookups."""
-    snapshot = {
-        "id": "snap-1",
-        "data": {
-            "kind": "shift_snapshot",
-            "published_at": "2026-04-22T00:00:00+00:00",
-            "reviewer_emails": ["alex@storesight.com", "sam@storesight.com"],
-        },
-    }
-    reviewer_docs = [
-        {
-            "id": "rs-sam",
-            "data": {
-                "kind": "reviewer_shift",
-                "shift_snapshot_id": "snap-1",
-                "reviewer_email": "sam@storesight.com",
-                "rows": [
-                    {"id": "1", "projectId": "10", "jobId": "1", "name": ""},
-                    {"id": "2", "projectId": "20", "jobId": "2", "name": ""},
-                ],
-            },
-        },
-        {
-            "id": "rs-alex",
-            "data": {
-                "kind": "reviewer_shift",
-                "shift_snapshot_id": "snap-1",
-                "reviewer_email": "alex@storesight.com",
-                "rows": [
-                    {"id": "3", "projectId": "30", "jobId": "3", "name": ""},
-                    {"id": "4", "projectId": "40", "jobId": "4", "name": ""},
-                ],
-            },
-        },
-    ]
-    cache_docs = []  # starts empty; tests can pre-populate
-
-    def fake_list(kind):
-        if kind == "shift_snapshot":
-            return [snapshot]
-        if kind == "reviewer_shift":
-            return [dict(d, data=dict(d["data"], rows=list(d["data"]["rows"]))) for d in reviewer_docs]
-        if kind == "job_name_cache":
-            return list(cache_docs)
-        return []
-
-    get_calls = []
-
-    def fake_get(path, params=None):
-        get_calls.append(path)
-        if path.startswith("/api/jobs/"):
-            jid = path.rsplit("/", 1)[-1]
-            if budget_kills_at is not None and len(get_calls) > budget_kills_at:
-                # Simulate rate-limit slowdown → raise as a recoverable HTTPError
-                fake_resp = requests.Response()
-                fake_resp.status_code = 429
-                raise requests.exceptions.HTTPError(response=fake_resp)
-            return {"data": {"id": jid, "name": (job_names or {}).get(jid, f"Job {jid}")}}
-        return {"data": None}
-
-    puts = []
-    posts = []
-
-    def fake_put(path, json=None):
-        puts.append({"path": path, "data": json["data"]})
-        if path.endswith("/cache-1"):
-            cache_docs[0] = {"id": "cache-1", "data": json["data"]}
-        else:
-            # Apply the reviewer_shift edit so subsequent list_docs reads reflect it.
-            for i, d in enumerate(reviewer_docs):
-                if path.endswith(f"/{d['id']}"):
-                    reviewer_docs[i] = {"id": d["id"], "data": json["data"]}
-                    break
-        return {"data": {"id": path.rsplit("/", 1)[-1]}}
-
-    def fake_post(path, json=None):
-        posts.append({"path": path, "data": json["data"]})
-        if json["data"].get("kind") == "job_name_cache":
-            cache_docs.append({"id": "cache-1", "data": json["data"]})
-            return {"data": {"id": "cache-1"}}
-        return {"data": {"id": "unknown"}}
-
-    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
-    monkeypatch.setattr(internal_api, "get", fake_get)
-    monkeypatch.setattr(internal_api, "put", fake_put)
-    monkeypatch.setattr(internal_api, "post", fake_post)
-    return {
-        "snapshot": snapshot,
-        "reviewer_docs": reviewer_docs,
-        "cache_docs": cache_docs,
-        "get_calls": get_calls,
-        "puts": puts,
-        "posts": posts,
-    }
-
-
-def test_enrich_names_populates_cache_and_reviewer_docs(client, monkeypatch):
-    c, token_file = client
-    _as_admin(token_file)
-    monkeypatch.setattr(roles, "list_admins", lambda: [])
-    monkeypatch.setattr(roles, "list_reviewers", lambda: [])
-    env = _enrich_scenario(
-        monkeypatch,
-        job_names={"1": "Alpha", "2": "Bravo", "3": "Charlie", "4": "Delta"},
-    )
-
-    resp = c.post("/api/shifts/enrich-names", json={"budget_seconds": 55})
-    assert resp.status_code == 200, resp.get_json()
-    body = resp.get_json()["data"]
-    assert body == {
-        "done": 4,
-        "total": 4,
-        "newly_cached": 4,
-        "updated_reviewer_docs": 2,
-    }
-
-    # Cache was created (POST) and each reviewer_shift doc rewritten with names.
-    assert len(env["posts"]) == 1
-    assert env["posts"][0]["data"]["kind"] == "job_name_cache"
-    assert env["posts"][0]["data"]["names"] == {
-        "1": "Alpha", "2": "Bravo", "3": "Charlie", "4": "Delta",
-    }
-
-    reviewer_puts = [p for p in env["puts"] if "reviewer" not in p["path"] and "rs-" in p["path"]]
-    # Every reviewer's rows should now carry the fetched name.
-    sam_put = next(p for p in env["puts"] if p["path"].endswith("/rs-sam"))
-    assert [r["name"] for r in sam_put["data"]["rows"]] == ["Alpha", "Bravo"]
-    alex_put = next(p for p in env["puts"] if p["path"].endswith("/rs-alex"))
-    assert [r["name"] for r in alex_put["data"]["rows"]] == ["Charlie", "Delta"]
-
-
-def test_enrich_names_reuses_cache_on_second_call(client, monkeypatch):
-    c, token_file = client
-    _as_admin(token_file)
-    monkeypatch.setattr(roles, "list_admins", lambda: [])
-    monkeypatch.setattr(roles, "list_reviewers", lambda: [])
-    env = _enrich_scenario(
-        monkeypatch,
-        job_names={"1": "Alpha", "2": "Bravo", "3": "Charlie", "4": "Delta"},
-    )
-
-    # First call seeds the cache.
-    resp1 = c.post("/api/shifts/enrich-names", json={"budget_seconds": 55})
-    assert resp1.get_json()["data"]["newly_cached"] == 4
-    job_fetch_count_after_first = sum(
-        1 for p in env["get_calls"] if p.startswith("/api/jobs/")
-    )
-    assert job_fetch_count_after_first == 4
-
-    # Second call: cache already has everything; zero upstream fetches.
-    resp2 = c.post("/api/shifts/enrich-names", json={"budget_seconds": 55})
-    body2 = resp2.get_json()["data"]
-    assert body2["done"] == 4
-    assert body2["newly_cached"] == 0
-    job_fetch_count_after_second = sum(
-        1 for p in env["get_calls"] if p.startswith("/api/jobs/")
-    )
-    assert job_fetch_count_after_second == 4  # unchanged
-
-
-def test_enrich_names_returns_zero_when_no_snapshot(client, monkeypatch):
-    c, token_file = client
-    _as_admin(token_file)
-    monkeypatch.setattr(roles, "list_admins", lambda: [])
-    monkeypatch.setattr(roles, "list_reviewers", lambda: [])
-    monkeypatch.setattr(roles, "list_docs_by_kind", lambda kind: [])
-    resp = c.post("/api/shifts/enrich-names", json={"budget_seconds": 25})
-    assert resp.status_code == 200
-    assert resp.get_json()["data"] == {
-        "done": 0, "total": 0, "newly_cached": 0, "updated_reviewer_docs": 0,
-    }
-
-
-def test_enrich_names_requires_admin(client, monkeypatch):
-    c, token_file = client
-    _as_reviewer(token_file, "nobody@storesight.com")
-    monkeypatch.setattr(roles, "list_admins", lambda: [])
-    monkeypatch.setattr(roles, "list_reviewers", lambda: [])
-    resp = c.post("/api/shifts/enrich-names", json={"budget_seconds": 25})
-    assert resp.status_code == 403
 
 
 def test_overview_returns_per_reviewer_progress(client, monkeypatch):

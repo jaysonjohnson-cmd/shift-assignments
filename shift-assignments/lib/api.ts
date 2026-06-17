@@ -234,21 +234,6 @@ export async function getShiftJobs(): Promise<ShiftJobs> {
   return resp.data;
 }
 
-export type EnrichNamesProgress = {
-  done: number;
-  total: number;
-  newly_cached: number;
-  updated_reviewer_docs: number;
-};
-
-export async function enrichJobNames(budgetSeconds = 25): Promise<EnrichNamesProgress> {
-  const resp = await call<{ data: EnrichNamesProgress }>(
-    "POST",
-    "/api/shifts/enrich-names",
-    { budget_seconds: budgetSeconds },
-  );
-  return resp.data;
-}
 
 export type ClearMode = "active" | "completed" | "all";
 

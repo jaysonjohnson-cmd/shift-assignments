@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { getShiftJobs, type ShiftJobs, type ShiftJob } from "@/lib/api";
+import { getShiftJobs, type ShiftJobs, type ShiftJob, clearShift } from "@/lib/api";
 import { formatRelative } from "@/lib/relativeTime";
 import { ProgressTrackerTile } from "@/components/assign/ProgressTrackerTile";
+import { useUser } from "@/lib/useUser";
 
 const PRIORITY_META: Record<number, { label: string; tint: string; text: string }> = {
   1: { label: "P1", tint: "bg-[#FF4D4D]/15", text: "text-[#FF4D4D]" },
@@ -25,12 +26,12 @@ function truncate(s: string | undefined, n: number): string {
 }
 
 function buildJobUrl(row: ShiftJob): string {
-  const COLLECTION_REVIEW_URL =
-    "https://prod.fieldagent.net/admin/fieldagent/collection-review/";
-  if (!row.jobId) return COLLECTION_REVIEW_URL;
+  const MEDIA_REVIEW_URL =
+    "https://my.fieldagent.net/admin/fieldagent/media-review-v3/";
+  if (!row.jobId) return MEDIA_REVIEW_URL;
   const params = new URLSearchParams({ job: row.jobId });
   if (row.projectId) params.set("project", row.projectId);
-  return `${COLLECTION_REVIEW_URL}?${params.toString()}#/`;
+  return `${MEDIA_REVIEW_URL}?${params.toString()}#/`;
 }
 
 export default function TeamAssignmentsPage() {
@@ -40,7 +41,11 @@ export default function TeamAssignmentsPage() {
   const [sortBy, setSortBy] = useState<"reviewer" | "priority">("reviewer");
   const [filterCompleted, setFilterCompleted] = useState(true);
   const [expandedReviewers, setExpandedReviewers] = useState<Set<string>>(new Set());
+  const [showCloseModal, setShowCloseModal] = useState(false);
+  const [closing, setClosing] = useState(false);
   const progressRef = useRef<HTMLDivElement>(null);
+  const { role } = useUser();
+  const isAdmin = role === "admin";
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -54,6 +59,20 @@ export default function TeamAssignmentsPage() {
       setLoading(false);
     }
   }, []);
+
+  const handleCloseAssignment = async () => {
+    setShowCloseModal(false);
+    setClosing(true);
+    setError(null);
+    try {
+      await clearShift("all");
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to close assignment");
+    } finally {
+      setClosing(false);
+    }
+  };
 
   const toggleExpanded = (email: string) => {
     setExpandedReviewers((prev) => {
@@ -149,6 +168,17 @@ export default function TeamAssignmentsPage() {
           >
             {loading ? "Refreshing…" : "Refresh"}
           </button>
+          {isAdmin && data?.snapshot_id && (
+            <button
+              type="button"
+              onClick={() => setShowCloseModal(true)}
+              disabled={closing}
+              title="Close the shift and clear all assigned jobs"
+              className="rounded-lg border border-storesight-hot-pink/40 bg-storesight-hot-pink/10 px-3 py-2 text-sm font-medium text-storesight-hot-pink transition hover:border-storesight-hot-pink/60 hover:bg-storesight-hot-pink/20 disabled:opacity-50 dark:border-storesight-hot-pink/40 dark:bg-storesight-hot-pink/10 dark:text-storesight-hot-pink"
+            >
+              {closing ? "Closing…" : "Close my assignments"}
+            </button>
+          )}
         </div>
       </header>
 
@@ -335,7 +365,7 @@ export default function TeamAssignmentsPage() {
                                               rel="noopener noreferrer"
                                               onClick={(e) => e.stopPropagation()}
                                               className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-storesight-primary hover:bg-storesight-accent/10 dark:text-storesight-accent-light dark:hover:bg-storesight-accent/20"
-                                              title={`Open Job ${job.jobId} in Collection Review`}
+                                              title={`Open Job ${job.jobId} in Media Review`}
                                             >
                                               {truncate(job.jobId, 14)}
                                               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -441,7 +471,7 @@ export default function TeamAssignmentsPage() {
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-storesight-primary hover:bg-storesight-accent/10 dark:text-storesight-accent-light dark:hover:bg-storesight-accent/20"
-                                    title={`Open Job ${job.jobId} in Collection Review`}
+                                    title={`Open Job ${job.jobId} in Media Review`}
                                   >
                                     {truncate(job.jobId, 14)}
                                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -481,6 +511,46 @@ export default function TeamAssignmentsPage() {
             </div>
           )}
         </>
+      )}
+
+      {showCloseModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="mx-4 w-full max-w-md rounded-2xl border border-storesight-hot-pink/40 bg-storesight-surface-dark p-8 shadow-2xl animate-in fade-in zoom-in duration-300 dark:bg-storesight-surface-dark">
+            <div className="mb-6 flex h-12 w-12 items-center justify-center rounded-full bg-storesight-hot-pink/15">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" className="text-storesight-hot-pink">
+                <path
+                  d="M18 6L6 18M6 6l12 12"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </div>
+            <h2 className="text-lg font-semibold text-storesight-ink dark:text-storesight-ink-dark">
+              Close your assignments?
+            </h2>
+            <p className="mt-2 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+              {`This will clear all ${totalCount} jobs currently assigned in this shift. You'll need to publish a new shift to reassign them.`}
+            </p>
+            <div className="mt-6 flex gap-3">
+              <button
+                type="button"
+                onClick={() => setShowCloseModal(false)}
+                className="flex-1 rounded-lg border border-storesight-border bg-white px-4 py-2 text-sm font-medium text-storesight-ink transition hover:border-storesight-accent hover:text-storesight-primary dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark"
+              >
+                Keep working
+              </button>
+              <button
+                type="button"
+                onClick={handleCloseAssignment}
+                className="flex-1 rounded-lg border border-storesight-hot-pink/60 bg-storesight-hot-pink/10 px-4 py-2 text-sm font-semibold text-storesight-hot-pink transition hover:bg-storesight-hot-pink/20"
+              >
+                Close it
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
