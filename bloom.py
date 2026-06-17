@@ -179,7 +179,13 @@ def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True):
         return _CACHE["rows"]
 
     jobs = _fetch_prioritized_jobs_raw()
-    rows = [_row_from_api(job) for job in jobs]
+    # Defensive: skip malformed records with no job id — they can't be assigned
+    # or completed, and would render as blank rows in the UI.
+    rows = [
+        _row_from_api(job)
+        for job in jobs
+        if isinstance(job, dict) and job.get("id") not in (None, "")
+    ]
 
     # Skip project name fetching on cache misses to reduce rate limit pressure.
     # Project names are nice-to-have; the UI can fall back to "Project {id}" if needed.

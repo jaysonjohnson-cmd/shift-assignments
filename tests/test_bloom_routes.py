@@ -20,46 +20,42 @@ import roles  # noqa: E402
 from main import app  # noqa: E402
 
 
-# ---------- bloom.fetch_prioritized_jobs — responsegroups-driven feed ----------
+# ---------- bloom.fetch_prioritized_jobs — /api/prioritized-jobs feed ----------
 
 
-def _rg_pages(records):
-    """Turn a flat list of RG records into a page-1/page-2 fake_get response."""
+def _prioritized_jobs(records):
+    """Fake internal_api.get backing /api/prioritized-jobs with the given jobs."""
     def _get(path, params=None):
-        if path == "/api/responsegroups":
-            page = params.get("page", 1)
-            return {"data": records if page == 1 else []}
+        if path == "/api/prioritized-jobs":
+            return {"data": records}
         return {"data": []}
     return _get
 
 
-def test_fetch_prioritized_jobs_groups_by_job_id_and_counts(monkeypatch):
+def test_fetch_prioritized_jobs_maps_api_rows(monkeypatch):
     bloom.clear_cache()
-    rgs = [
-        {"id": 1, "job_id": 10, "project_id": 110, "status": "N", "submission_date": "2026-04-20T10:00:00Z"},
-        {"id": 2, "job_id": 10, "project_id": 110, "status": "N", "submission_date": "2026-04-19T09:00:00Z"},
-        {"id": 3, "job_id": 10, "project_id": 110, "status": "N", "submission_date": "2026-04-21T08:00:00Z"},
-        {"id": 4, "job_id": 20, "project_id": 120, "status": "N", "submission_date": "2026-04-22T08:00:00Z"},
+    jobs = [
+        {"id": 10, "project_id": 110, "priority": 1, "name": "Chair", "new": 3},
+        {"id": 20, "project_id": 120, "priority": 2, "name": "Desk", "new": 1},
     ]
-    monkeypatch.setattr(internal_api, "get", _rg_pages(rgs))
+    monkeypatch.setattr(internal_api, "get", _prioritized_jobs(jobs))
 
     rows = bloom.fetch_prioritized_jobs(use_cache=False)
-    # Biggest backlog first — job 10 (3 RGs) before job 20 (1 RG).
+    # Order is preserved from the already-prioritized API.
     assert [r["id"] for r in rows] == ["10", "20"]
     assert [r["priority"] for r in rows] == [1, 2]
     assert rows[0]["unreviewedCount"] == 3
-    assert rows[0]["oldestSubmission"] == "2026-04-19T09:00:00Z"
-    assert set(rows[0]["groupIds"]) == {"1", "2", "3"}
-    assert rows[0]["name"] == ""  # names are intentionally skipped for speed
+    assert rows[0]["name"] == "Chair"  # name comes straight from the API
     assert rows[0]["projectId"] == "110"
+    assert rows[0]["jobId"] == "10"
 
 
 def test_fetch_prioritized_jobs_uses_cache(monkeypatch):
     bloom.clear_cache()
     call_count = {"n": 0}
 
-    base = _rg_pages([
-        {"id": 1, "job_id": 10, "project_id": 110, "status": "N", "submission_date": "2026-04-20"},
+    base = _prioritized_jobs([
+        {"id": 10, "project_id": 110, "priority": 1, "name": "Chair", "new": 1},
     ])
 
     def counting_get(path, params=None):
@@ -103,10 +99,10 @@ def test_fetch_project_names_bulk_and_caches(monkeypatch):
 
 def test_project_summaries_one_entry_per_project(monkeypatch):
     bloom.clear_cache()
-    monkeypatch.setattr(internal_api, "get", _rg_pages([
-        {"id": 1, "job_id": 10, "project_id": 110, "status": "N", "submission_date": "2026-04-20"},
-        {"id": 2, "job_id": 11, "project_id": 110, "status": "N", "submission_date": "2026-04-18"},
-        {"id": 3, "job_id": 20, "project_id": 120, "status": "N", "submission_date": "2026-04-22"},
+    monkeypatch.setattr(internal_api, "get", _prioritized_jobs([
+        {"id": 10, "project_id": 110, "priority": 1, "name": "A", "new": 1},
+        {"id": 11, "project_id": 110, "priority": 2, "name": "B", "new": 1},
+        {"id": 20, "project_id": 120, "priority": 3, "name": "C", "new": 1},
     ]))
 
     rows = bloom.fetch_prioritized_jobs(use_cache=False)
@@ -114,7 +110,6 @@ def test_project_summaries_one_entry_per_project(monkeypatch):
     by_pid = {s["projectId"]: s for s in summaries}
     assert set(by_pid.keys()) == {"110", "120"}
     assert by_pid["110"]["jidCount"] == 2
-    assert by_pid["110"]["oldestSubmission"] == "2026-04-18"
     assert by_pid["120"]["jidCount"] == 1
 
 
@@ -151,13 +146,13 @@ def test_bloom_projects_requires_admin(client, monkeypatch):
     assert resp.status_code == 403
 
 
-def test_fetch_prioritized_jobs_skips_records_without_job_id(monkeypatch):
+def test_fetch_prioritized_jobs_skips_records_without_id(monkeypatch):
     bloom.clear_cache()
-    rgs = [
-        {"id": 1, "job_id": None, "status": "N"},
-        {"id": 2, "job_id": 10, "project_id": 110, "status": "N", "submission_date": "2026-04-20"},
+    jobs = [
+        {"id": None, "project_id": 110, "priority": 1, "name": "Bogus", "new": 1},
+        {"id": 10, "project_id": 110, "priority": 2, "name": "Chair", "new": 1},
     ]
-    monkeypatch.setattr(internal_api, "get", _rg_pages(rgs))
+    monkeypatch.setattr(internal_api, "get", _prioritized_jobs(jobs))
     rows = bloom.fetch_prioritized_jobs(use_cache=False)
     assert len(rows) == 1
     assert rows[0]["id"] == "10"
