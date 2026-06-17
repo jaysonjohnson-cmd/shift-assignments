@@ -531,7 +531,7 @@ export default function TeamAssignmentsPage() {
               Close your assignments?
             </h2>
             <p className="mt-2 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-              This will clear all {totalCount} jobs currently assigned in this shift. You&apos;ll need to publish a new shift to reassign them.
+              {`This will clear all ${totalCount} jobs currently assigned in this shift. You'll need to publish a new shift to reassign them.`}
             </p>
             <div className="mt-6 flex gap-3">
               <button
