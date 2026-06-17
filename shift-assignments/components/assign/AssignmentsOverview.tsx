@@ -179,7 +179,7 @@ export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
                                           rel="noopener noreferrer"
                                           onClick={(e) => e.stopPropagation()}
                                           className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-storesight-primary hover:bg-storesight-accent/10 dark:text-storesight-accent-light dark:hover:bg-storesight-accent/20"
-                                          title={`Open Job ${job.jobId} in Collection Review`}
+                                          title={`Open Job ${job.jobId} in Media Review`}
                                         >
                                           {truncate(job.jobId, 14)}
                                           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -285,12 +285,12 @@ function truncate(s: string | undefined, n: number): string {
 }
 
 function buildJobUrl(row: ShiftJob): string {
-  const COLLECTION_REVIEW_URL =
-    "https://prod.fieldagent.net/admin/fieldagent/collection-review/";
-  if (!row.jobId) return COLLECTION_REVIEW_URL;
+  const MEDIA_REVIEW_URL =
+    "https://my.fieldagent.net/admin/fieldagent/media-review-v3/";
+  if (!row.jobId) return MEDIA_REVIEW_URL;
   const params = new URLSearchParams({ job: row.jobId });
   if (row.projectId) params.set("project", row.projectId);
-  return `${COLLECTION_REVIEW_URL}?${params.toString()}#/`;
+  return `${MEDIA_REVIEW_URL}?${params.toString()}#/`;
 }
 
 function OverallBar({ completed, total }: { completed: number; total: number }) {
