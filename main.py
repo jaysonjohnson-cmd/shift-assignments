@@ -249,7 +249,7 @@ def api_reviewers_delete(doc_id):
 @app.route("/api/admins", methods=["GET"])
 def api_admins_list():
     root_email = roles.ROOT_ADMIN_EMAIL.lower()
-    root_entry = {"id": "__root__", "name": "Micah McCollum", "email": root_email}
+    root_entry = {"id": "__root__", "name": "Jayson Johnson", "email": root_email}
     try:
         stored = roles.list_admins()
     except requests.exceptions.HTTPError as e:

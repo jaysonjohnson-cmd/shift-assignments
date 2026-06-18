@@ -101,7 +101,7 @@ def client(tmp_path, monkeypatch):
 
 def test_me_returns_admin_for_root(client, monkeypatch):
     c, token_file = client
-    token_file.write_text(_make_dev_token(roles.ROOT_ADMIN_EMAIL, "Micah"))
+    token_file.write_text(_make_dev_token(roles.ROOT_ADMIN_EMAIL, "Jayson"))
     monkeypatch.setattr(roles, "list_admins", lambda: [])
     monkeypatch.setattr(roles, "list_reviewers", lambda: [])
     resp = c.get("/api/me")

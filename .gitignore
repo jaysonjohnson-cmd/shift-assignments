@@ -9,3 +9,6 @@ __pycache__/
 .DS_Store
 *.log
 venv/
+
+# Accidentally-committed nested git backup dir
+.git.backup-parent/

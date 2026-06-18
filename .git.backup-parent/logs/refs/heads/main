@@ -1,4 +1,0 @@
-0000000000000000000000000000000000000000 2c00a16f23b3be663664f659873b4fc1dea60a08 Micah McCollum <micah.mccollum@storesight.com> 1776283714 -0500	commit (initial): first commit
-2c00a16f23b3be663664f659873b4fc1dea60a08 2c00a16f23b3be663664f659873b4fc1dea60a08 Micah McCollum <micah.mccollum@storesight.com> 1776283714 -0500	Branch: renamed refs/heads/main to refs/heads/main
-2c00a16f23b3be663664f659873b4fc1dea60a08 86a47a8a0a9e328ead1bc2b671a7f9866feb08c6 Micah McCollum <micah.mccollum@storesight.com> 1776283875 -0500	commit: update shift assignment workflow with reviewer management and overflow routing
-86a47a8a0a9e328ead1bc2b671a7f9866feb08c6 6b52a84887a2df17eced0b65895b45dc0f2d9c24 Micah McCollum <micah.mccollum@storesight.com> 1776284055 -0500	revert: Revert "update shift assignment workflow with reviewer management and overflow routing"
