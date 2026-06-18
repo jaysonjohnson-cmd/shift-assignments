@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { useUser } from "@/lib/useUser";
 import type { Role } from "@/lib/api";
@@ -101,7 +101,7 @@ const tiles: Tile[] = [
 
 export default function HomePage() {
   const { user, role, loading } = useUser();
-  const progressRef = useRef<HTMLDivElement>(null);
+  const [trackerExpanded, setTrackerExpanded] = useState(false);
 
   const greeting = (() => {
     const firstName =
@@ -110,10 +110,6 @@ export default function HomePage() {
   })();
 
   const visibleTiles = tiles.filter((t) => t.enabledFor.includes(role));
-
-  const handleProgressClick = () => {
-    progressRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
 
   return (
     <div className="mx-auto w-full max-w-6xl flex-1 px-6 py-10">
@@ -165,8 +161,11 @@ export default function HomePage() {
           );
         })}
         {role === "admin" && !loading && (
-          <div ref={progressRef}>
-            <ProgressTrackerTile onClick={handleProgressClick} disabled={false} />
+          <div className={trackerExpanded ? "sm:col-span-2 lg:col-span-3" : ""}>
+            <ProgressTrackerTile
+              expanded={trackerExpanded}
+              onToggle={() => setTrackerExpanded((v) => !v)}
+            />
           </div>
         )}
       </div>
