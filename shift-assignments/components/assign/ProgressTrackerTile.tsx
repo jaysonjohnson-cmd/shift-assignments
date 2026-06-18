@@ -22,6 +22,9 @@ export function ProgressTrackerTile({ expanded = false, onToggle, onClick, disab
   const [jobsLoading, setJobsLoading] = useState(false);
   const [jobsError, setJobsError] = useState<string | null>(null);
 
+  // Filter for the expanded job list: show all jobs, only pending, or only done.
+  const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "done">("all");
+
   useEffect(() => {
     const load = async () => {
       try {
@@ -148,34 +151,57 @@ export function ProgressTrackerTile({ expanded = false, onToggle, onClick, disab
             </p>
           )}
           {!jobsLoading && !jobsError && reviewers && reviewers.length > 0 && (
-            <div className="space-y-4">
-              {reviewers.map((r) => {
-                const done = r.jobs.filter((j) => j.completed).length;
-                return (
-                  <div key={r.email}>
-                    <div className="mb-1.5 flex items-baseline justify-between gap-2">
-                      <span className="truncate text-sm font-semibold text-storesight-ink dark:text-storesight-ink-dark">
-                        {r.name || r.email}
-                      </span>
-                      <span className="shrink-0 text-xs text-storesight-ink-muted tabular-nums dark:text-storesight-ink-muted-dark">
-                        {done}/{r.jobs.length} done
-                      </span>
+            <>
+              {/* Status filter toggle */}
+              <div className="mb-4 inline-flex rounded-lg border border-storesight-border p-0.5 dark:border-storesight-border-dark">
+                {(["all", "pending", "done"] as const).map((opt) => (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => setStatusFilter(opt)}
+                    className={`rounded-md px-3 py-1 text-xs font-medium capitalize transition ${
+                      statusFilter === opt
+                        ? "bg-storesight-accent/20 text-storesight-primary dark:bg-storesight-accent/30 dark:text-storesight-accent-light"
+                        : "text-storesight-ink-muted hover:text-storesight-ink dark:text-storesight-ink-muted-dark dark:hover:text-storesight-ink-dark"
+                    }`}
+                  >
+                    {opt}
+                  </button>
+                ))}
+              </div>
+
+              <div className="space-y-4">
+                {reviewers.map((r) => {
+                  const done = r.jobs.filter((j) => j.completed).length;
+                  const shownJobs = r.jobs.filter((j) =>
+                    statusFilter === "all" ? true : statusFilter === "done" ? j.completed : !j.completed,
+                  );
+                  return (
+                    <div key={r.email}>
+                      <div className="mb-1.5 flex items-baseline justify-between gap-2">
+                        <span className="truncate text-sm font-semibold text-storesight-ink dark:text-storesight-ink-dark">
+                          {r.name || r.email}
+                        </span>
+                        <span className="shrink-0 text-xs text-storesight-ink-muted tabular-nums dark:text-storesight-ink-muted-dark">
+                          {done}/{r.jobs.length} done
+                        </span>
+                      </div>
+                      {shownJobs.length === 0 ? (
+                        <p className="text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                          {r.jobs.length === 0 ? "No jobs." : `No ${statusFilter} jobs.`}
+                        </p>
+                      ) : (
+                        <ul className="divide-y divide-storesight-border rounded-lg border border-storesight-border bg-storesight-surface/50 dark:divide-storesight-border-dark dark:border-storesight-border-dark dark:bg-storesight-surface-dark/50">
+                          {shownJobs.map((job) => (
+                            <JobRow key={`${r.email}-${job.id}`} job={job} />
+                          ))}
+                        </ul>
+                      )}
                     </div>
-                    {r.jobs.length === 0 ? (
-                      <p className="text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-                        No jobs.
-                      </p>
-                    ) : (
-                      <ul className="divide-y divide-storesight-border rounded-lg border border-storesight-border bg-storesight-surface/50 dark:divide-storesight-border-dark dark:border-storesight-border-dark dark:bg-storesight-surface-dark/50">
-                        {r.jobs.map((job) => (
-                          <JobRow key={`${r.email}-${job.id}`} job={job} />
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            </>
           )}
         </div>
       )}
