@@ -80,6 +80,23 @@ export function evenDistribute(
 export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = false, balanceByResponses = false): ShiftResult {
   const pins = draft.projectPins ?? {};
 
+  // Guarantee each job is handed to at most one reviewer. The upstream feed
+  // can return more than one record for the same job (e.g. one per group),
+  // which would otherwise let the same jobId land on multiple reviewers and
+  // overlap the team. Collapse duplicates by jobId here. The pool is assumed
+  // pre-sorted highest-priority first, so the first occurrence we keep is the
+  // most urgent one.
+  const seenJobKeys = new Set<string>();
+  const dedupedPool: Row[] = [];
+  for (const row of pool) {
+    const key = String(row.jobId || row.id || "");
+    if (key) {
+      if (seenJobKeys.has(key)) continue;
+      seenJobKeys.add(key);
+    }
+    dedupedPool.push(row);
+  }
+
   // reviewerId for each pinned projectId (first slot wins if somehow dup'd).
   const pinOwner = new Map<string, string>();
   for (const slot of draft.slots) {
@@ -91,7 +108,7 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
 
   const pinnedByReviewer: Record<string, Row[]> = {};
   const unpinned: Row[] = [];
-  for (const row of pool) {
+  for (const row of dedupedPool) {
     const owner = pinOwner.get(row.projectId);
     if (owner) {
       (pinnedByReviewer[owner] ??= []).push(row);
@@ -178,7 +195,11 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
 
         for (const row of jobsAtPriority) {
           let bestReviewer: string | null = null;
-          let bestMetric = Infinity;
+          // balanceByResponses picks the lowest metric (start high); the
+          // default path picks the highest remaining/capacity ratio (start
+          // low). A single Infinity init left the default path dead — no
+          // ratio is > Infinity — so it never assigned unpinned jobs.
+          let bestMetric = balanceByResponses ? Infinity : -Infinity;
 
           for (const slot of activeSlots) {
             const remaining = unpinnedNeeded[slot.reviewerId] ?? 0;
