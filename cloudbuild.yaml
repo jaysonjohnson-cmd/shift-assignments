@@ -3,7 +3,7 @@ substitutions:
     _REGION: us-central1
     # Slack channel ID that receives "reviewer finished all assignments" pings.
     # Set this to your channel id (e.g. C0XXXXXXX). Empty = pings disabled.
-    _SLACK_NOTIFY_CHANNEL: ""
+    _SLACK_NOTIFY_CHANNEL: "GKVDB7HNG"
 
 steps:
     - name: "gcr.io/cloud-builders/docker"
