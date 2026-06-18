@@ -1,8 +1,8 @@
-"""Tests for the 'reviewer finished all assignments' Slack ping.
+"""Tests for auto-refill + Slack ping when a reviewer finishes their queue.
 
-The completion endpoint should ping the admin only when a reviewer's LAST
-remaining assignment is marked done, and never when work still remains.
-Storage + Slack calls are mocked so nothing hits the live API.
+When a reviewer marks their LAST assignment done, the tool should auto-assign
+the same number of fresh jobs (skipping anything already assigned to anyone)
+and post a Slack ping. Storage, Bloom, and Slack calls are mocked.
 """
 
 import datetime
@@ -39,8 +39,8 @@ def client(tmp_path, monkeypatch):
         yield c, token_file
 
 
-def _setup_common(monkeypatch, posted, existing_completions):
-    """Wire up a reviewer with two assigned projects (A, B)."""
+def _setup_endpoint(monkeypatch, posted, existing_completions, refill_calls, refill_return):
+    """Reviewer with two assigned projects (A, B); refill is stubbed."""
     monkeypatch.setenv("SLACK_NOTIFY_CHANNEL", "C0TEST")
     monkeypatch.setattr(main, "_latest_snapshot", lambda: ("snap1", {}))
     monkeypatch.setattr(
@@ -53,62 +53,120 @@ def _setup_common(monkeypatch, posted, existing_completions):
         "_list_completions_for_snapshot",
         lambda snap, reviewer_email=None: existing_completions,
     )
+    monkeypatch.setattr(main.roles, "list_reviewers", lambda: [
+        {"id": "r1", "name": "Sam", "email": "sam@storesight.com"},
+    ])
+
+    def fake_refill(snap_id, email, count):
+        refill_calls.append((snap_id, email, count))
+        return refill_return
+
+    monkeypatch.setattr(main, "_auto_refill_reviewer", fake_refill)
 
     def fake_post(path, json=None):
         posted.append((path, json))
         if path.endswith("/api/slack/post"):
             return {"data": {"ok": True}}
-        return {"data": {"id": "completion-doc-1"}}  # storage create
+        return {"data": {"id": "completion-doc-1"}}
 
     monkeypatch.setattr(internal_api, "post", fake_post)
 
 
-def test_ping_fires_on_last_assignment(client, monkeypatch):
+def test_finish_triggers_refill_and_ping(client, monkeypatch):
     c, token_file = client
     token_file.write_text(_make_dev_token("sam@storesight.com", "Sam"))
-    monkeypatch.setattr(main.roles, "list_reviewers", lambda: [
-        {"id": "r1", "name": "Sam", "email": "sam@storesight.com"},
-    ])
-    posted = []
-    # Project A already done; completing B finishes the queue.
-    _setup_common(monkeypatch, posted, [{"project_id": "A"}])
+    posted, refill_calls = [], []
+    # A already done; completing B finishes the queue. Refill returns 2 jobs.
+    _setup_endpoint(monkeypatch, posted, [{"project_id": "A"}], refill_calls,
+                    refill_return=[{"jobId": "X"}, {"jobId": "Y"}])
 
     resp = c.post("/api/shifts/my/complete", json={"project_id": "B"})
     assert resp.status_code == 201, resp.get_json()
 
-    slack_calls = [p for p in posted if p[0].endswith("/api/slack/post")]
-    assert len(slack_calls) == 1
-    body = slack_calls[0][1]
-    assert body["channel"] == "C0TEST"
-    assert "Sam" in body["text"]
-    assert "2 assignments" in body["text"]
+    # Refill was asked for the same count they started with (2).
+    assert refill_calls == [("snap1", "sam@storesight.com", 2)]
+    slack = [p for p in posted if p[0].endswith("/api/slack/post")]
+    assert len(slack) == 1
+    text = slack[0][1]["text"]
+    assert "Sam" in text and "2 assignments" in text and "auto-assigned 2" in text
 
 
-def test_no_ping_when_work_remains(client, monkeypatch):
+def test_no_refill_or_ping_when_work_remains(client, monkeypatch):
     c, token_file = client
     token_file.write_text(_make_dev_token("sam@storesight.com", "Sam"))
-    monkeypatch.setattr(main.roles, "list_reviewers", lambda: [])
-    posted = []
-    # Nothing done yet; completing A still leaves B pending.
-    _setup_common(monkeypatch, posted, [])
+    posted, refill_calls = [], []
+    _setup_endpoint(monkeypatch, posted, [], refill_calls, refill_return=[])
 
     resp = c.post("/api/shifts/my/complete", json={"project_id": "A"})
     assert resp.status_code == 201, resp.get_json()
 
-    slack_calls = [p for p in posted if p[0].endswith("/api/slack/post")]
-    assert slack_calls == []
+    assert refill_calls == []  # B still pending → not finished → no refill
+    assert [p for p in posted if p[0].endswith("/api/slack/post")] == []
 
 
-def test_no_ping_when_channel_unset(client, monkeypatch):
+def test_refill_runs_but_no_ping_when_channel_unset(client, monkeypatch):
     c, token_file = client
     token_file.write_text(_make_dev_token("sam@storesight.com", "Sam"))
-    monkeypatch.setattr(main.roles, "list_reviewers", lambda: [])
-    posted = []
-    _setup_common(monkeypatch, posted, [{"project_id": "A"}])
-    monkeypatch.delenv("SLACK_NOTIFY_CHANNEL", raising=False)  # no channel configured
+    posted, refill_calls = [], []
+    _setup_endpoint(monkeypatch, posted, [{"project_id": "A"}], refill_calls,
+                    refill_return=[{"jobId": "X"}, {"jobId": "Y"}])
+    monkeypatch.delenv("SLACK_NOTIFY_CHANNEL", raising=False)
 
     resp = c.post("/api/shifts/my/complete", json={"project_id": "B"})
     assert resp.status_code == 201, resp.get_json()
 
-    slack_calls = [p for p in posted if p[0].endswith("/api/slack/post")]
-    assert slack_calls == []  # silently skipped, completion still succeeds
+    assert refill_calls == [("snap1", "sam@storesight.com", 2)]  # still auto-assigns
+    assert [p for p in posted if p[0].endswith("/api/slack/post")] == []  # just no ping
+
+
+# ---------- the refill logic itself ----------
+
+
+def test_auto_refill_excludes_already_assigned(monkeypatch):
+    """Refill skips jobs already on anyone's queue and stores the next N."""
+    shift_docs = [
+        {"id": "d1", "data": {"kind": "reviewer_shift", "shift_snapshot_id": "snap1",
+                               "reviewer_email": "sam@storesight.com",
+                               "rows": [{"jobId": "J1"}, {"jobId": "J2"}], "part": 0}},
+        {"id": "d2", "data": {"kind": "reviewer_shift", "shift_snapshot_id": "snap1",
+                               "reviewer_email": "kim@storesight.com",
+                               "rows": [{"jobId": "J3"}], "part": 0}},
+    ]
+    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind: shift_docs)
+    feed = [
+        {"id": j, "jobId": j, "projectId": f"p{j}", "priority": 1, "name": j,
+         "unreviewedCount": 3, "oldestSubmission": ""}
+        for j in ["J1", "J2", "J3", "J4", "J5", "J6"]
+    ]
+    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda: feed)
+
+    stored = []
+    monkeypatch.setattr(internal_api, "post", lambda path, json=None: stored.append(json) or {"data": {"id": "new"}})
+
+    added = main._auto_refill_reviewer("snap1", "sam@storesight.com", 2)
+
+    # J1-J3 are taken; the next two unassigned are J4, J5.
+    assert [r["jobId"] for r in added] == ["J4", "J5"]
+    # Stored as a new chunk appended after sam's existing part 0.
+    assert len(stored) == 1
+    doc = stored[0]["data"]
+    assert doc["reviewer_email"] == "sam@storesight.com"
+    assert doc["part"] == 1
+    assert [r["jobId"] for r in doc["rows"]] == ["J4", "J5"]
+
+
+def test_auto_refill_returns_empty_when_feed_exhausted(monkeypatch):
+    shift_docs = [
+        {"id": "d1", "data": {"kind": "reviewer_shift", "shift_snapshot_id": "snap1",
+                              "reviewer_email": "sam@storesight.com",
+                              "rows": [{"jobId": "J1"}], "part": 0}},
+    ]
+    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind: shift_docs)
+    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs",
+                        lambda: [{"id": "J1", "jobId": "J1"}])  # only the taken job
+    posted = []
+    monkeypatch.setattr(internal_api, "post", lambda path, json=None: posted.append(json) or {"data": {}})
+
+    added = main._auto_refill_reviewer("snap1", "sam@storesight.com", 5)
+    assert added == []
+    assert posted == []  # nothing stored

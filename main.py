@@ -633,7 +633,79 @@ def api_shifts_my():
     })
 
 
-def _notify_reviewer_finished(email, total_jobs):
+def _job_key(row):
+    """Stable per-job identity used to keep a job from being assigned twice."""
+    return str((row or {}).get("jobId") or (row or {}).get("id") or "")
+
+
+def _auto_refill_reviewer(snap_id, email, count):
+    """Top up a finished reviewer's queue with up to `count` fresh jobs.
+
+    Pulls from the live prioritized feed, skipping any job already assigned to
+    anyone in the current shift (preserving the no-overlap guarantee), and
+    appends the new rows as an additional reviewer_shift chunk. Returns the
+    rows added (compacted). Best-effort: returns [] on any failure or when the
+    feed has nothing new left.
+    """
+    norm = (email or "").strip().lower()
+    assigned_keys = set()
+    max_part = -1
+    try:
+        docs = roles.list_docs_by_kind("reviewer_shift")
+    except Exception as exc:  # noqa: BLE001 — refill is best-effort
+        logging.warning("auto-refill: failed to list shifts for %s: %s", email, exc)
+        return []
+    for doc in docs:
+        data = doc.get("data") or {}
+        if data.get("shift_snapshot_id") != snap_id:
+            continue
+        for r in data.get("rows") or []:
+            k = _job_key(r)
+            if k:
+                assigned_keys.add(k)
+        if (data.get("reviewer_email") or "").strip().lower() == norm:
+            max_part = max(max_part, int(data.get("part") or 0))
+
+    try:
+        pool = bloom.fetch_prioritized_jobs()
+    except Exception as exc:  # noqa: BLE001 — refill is best-effort
+        logging.warning("auto-refill: failed to fetch jobs for %s: %s", email, exc)
+        return []
+
+    fresh = []
+    for r in pool:
+        k = _job_key(r)
+        if not k or k in assigned_keys:
+            continue
+        fresh.append(_compact_row(r))
+        assigned_keys.add(k)  # guard against dupes within the same feed
+        if len(fresh) >= count:
+            break
+    if not fresh:
+        logging.info("auto-refill: no new jobs left for %s", email)
+        return []
+
+    next_part = max_part + 1
+    chunks = _chunk_rows_for_storage(fresh)
+    for idx, chunk in enumerate(chunks):
+        doc = {
+            "kind": "reviewer_shift",
+            "shift_snapshot_id": snap_id,
+            "reviewer_email": norm,
+            "rows": chunk,
+            "part": next_part + idx,
+            "part_count": next_part + len(chunks),
+        }
+        try:
+            internal_api.post(_STORAGE_PATH, json={"data": doc})
+        except Exception as exc:  # noqa: BLE001 — refill is best-effort
+            logging.warning("auto-refill: failed to store chunk for %s: %s", email, exc)
+            break
+    logging.info("auto-refilled %d jobs for %s", len(fresh), email)
+    return fresh
+
+
+def _notify_reviewer_finished(email, total_jobs, added_jobs):
     """Best-effort Slack ping when a reviewer finishes their whole queue.
 
     Posts to the channel in the SLACK_NOTIFY_CHANNEL env var. No-ops (with a
@@ -655,9 +727,14 @@ def _notify_reviewer_finished(email, total_jobs):
     except Exception as exc:  # noqa: BLE001 — name lookup is best-effort
         logging.warning("finish-ping name lookup failed for %s: %s", email, exc)
     plural = "s" if total_jobs != 1 else ""
+    if added_jobs > 0:
+        added_plural = "s" if added_jobs != 1 else ""
+        tail = f"auto-assigned {added_jobs} more job{added_plural}."
+    else:
+        tail = "no more jobs left in the queue to assign."
     text = (
         f":white_check_mark: *{name}* just finished all {total_jobs} "
-        f"assignment{plural} — ready for more work."
+        f"assignment{plural} — {tail}"
     )
     try:
         internal_api.post("/api/slack/post", json={"channel": channel, "text": text})
@@ -714,8 +791,10 @@ def api_shifts_my_complete():
         done_keys = {str(c.get("project_id")) for c in existing}
         done_keys.add(project_id)
         if assigned_keys and assigned_keys <= done_keys:
-            _notify_reviewer_finished(email, len(assigned))
-    except Exception as exc:  # noqa: BLE001 — the ping must not break completion
+            # Auto-assign the same number of fresh jobs, then ping the admin.
+            added = _auto_refill_reviewer(snap_id, email, len(assigned))
+            _notify_reviewer_finished(email, len(assigned), len(added))
+    except Exception as exc:  # noqa: BLE001 — refill/ping must not break completion
         logging.warning("finish-check failed for %s: %s", email, exc)
     return jsonify({"data": {"id": doc_id, **doc}}), 201
 
