@@ -633,6 +633,39 @@ def api_shifts_my():
     })
 
 
+def _notify_reviewer_finished(email, total_jobs):
+    """Best-effort Slack ping when a reviewer finishes their whole queue.
+
+    Posts to the channel in the SLACK_NOTIFY_CHANNEL env var. No-ops (with a
+    log line) when no channel is configured, and never raises — a failed ping
+    must never break the reviewer's completion.
+    """
+    channel = (os.environ.get("SLACK_NOTIFY_CHANNEL") or "").strip()
+    if not channel:
+        logging.info(
+            "reviewer %s finished all jobs; SLACK_NOTIFY_CHANNEL unset, no ping", email
+        )
+        return
+    name = email
+    try:
+        for r in roles.list_reviewers():
+            if r.get("email") == email:
+                name = r.get("name") or email
+                break
+    except Exception as exc:  # noqa: BLE001 — name lookup is best-effort
+        logging.warning("finish-ping name lookup failed for %s: %s", email, exc)
+    plural = "s" if total_jobs != 1 else ""
+    text = (
+        f":white_check_mark: *{name}* just finished all {total_jobs} "
+        f"assignment{plural} — ready for more work."
+    )
+    try:
+        internal_api.post("/api/slack/post", json={"channel": channel, "text": text})
+        logging.info("sent finish ping for %s to channel %s", email, channel)
+    except Exception as exc:  # noqa: BLE001 — ping is best-effort
+        logging.warning("failed to send finish ping for %s: %s", email, exc)
+
+
 @app.route("/api/shifts/my/complete", methods=["POST"])
 def api_shifts_my_complete():
     """Mark a row done for the signed-in reviewer. Idempotent."""
@@ -673,6 +706,17 @@ def api_shifts_my_complete():
         "POST /api/shifts/my/complete by=%s project_id=%s snapshot_id=%s",
         email, project_id, snap_id,
     )
+    # If this completion cleared the reviewer's whole queue, ping the admin so
+    # they can hand out more work. Best-effort — never block the response.
+    try:
+        assigned = _rows_for_reviewer(snap_id, email) or []
+        assigned_keys = {_row_project_key(r) for r in assigned}
+        done_keys = {str(c.get("project_id")) for c in existing}
+        done_keys.add(project_id)
+        if assigned_keys and assigned_keys <= done_keys:
+            _notify_reviewer_finished(email, len(assigned))
+    except Exception as exc:  # noqa: BLE001 — the ping must not break completion
+        logging.warning("finish-check failed for %s: %s", email, exc)
     return jsonify({"data": {"id": doc_id, **doc}}), 201
 
 
