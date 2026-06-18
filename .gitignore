@@ -2,6 +2,11 @@ node_modules/
 .next/
 dist/
 build/
+
+# Generated Next.js static export — rebuilt from shift-assignments/ source
+# by the Dockerfile at deploy time. Not needed in git.
+/frontend/
+/shift-assignments/out/
 __pycache__/
 *.pyc
 .env
