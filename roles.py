@@ -16,7 +16,13 @@ import internal_api
 ROOT_ADMIN_EMAIL = "jayson.johnson@storesight.com"
 
 _STORAGE_PATH = "/api/storage/qc-shift-assignments"
-_PAGE_SIZE = 200
+# Use the page size Bloom's API reliably honors (see bloom.py). Termination is
+# driven by an empty page, not by a short page, so this value only affects how
+# many requests a full scan takes — never correctness.
+_PAGE_SIZE = 100
+# Safety cap so a misbehaving API (e.g. one that ignores `page`) can't spin
+# forever. 500 pages * 100 = 50k docs, well past the 10k namespace limit.
+_MAX_PAGES = 500
 
 
 def _normalize_email(email):
@@ -44,10 +50,18 @@ def _list_by_kind(kind):
 
 
 def list_docs_by_kind(kind):
-    """Return raw storage docs whose `data.kind == kind`, newest first."""
+    """Return raw storage docs whose `data.kind == kind`, newest first.
+
+    Reviewers/admins share this namespace with every published shift and
+    completion doc, so the records we want can sit many pages deep once the
+    tool has been used for a while. We keep paging until the API returns an
+    EMPTY page — never stopping early on a short page, which would silently
+    drop the oldest records (e.g. the reviewer/admin roster) if the API caps
+    a page below the requested size.
+    """
     out = []
     page = 1
-    while True:
+    while page <= _MAX_PAGES:
         resp = internal_api.get(
             _STORAGE_PATH, params={"page": page, "per_page": _PAGE_SIZE}
         )
@@ -58,8 +72,6 @@ def list_docs_by_kind(kind):
             data = doc.get("data") or {}
             if data.get("kind") == kind:
                 out.append(doc)
-        if len(docs) < _PAGE_SIZE:
-            break
         page += 1
     return out
 

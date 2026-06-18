@@ -74,6 +74,47 @@ def test_storage_api_failure_falls_back_to_viewer(monkeypatch):
     assert roles.get_role("anyone@storesight.com") == "viewer"
 
 
+# ---------- pagination (regression: added names disappearing) ----------
+
+
+def test_list_docs_by_kind_finds_records_on_later_pages(monkeypatch):
+    """A reviewer doc many pages deep must still be returned.
+
+    Reviewers/admins share the namespace with shift + completion docs and are
+    returned newest-first, so the roster ends up on later pages once the tool
+    has been used. Regression for the old `len(docs) < PAGE_SIZE` early-break,
+    which dropped the roster as soon as a page came back short.
+    """
+    # Page 1: a SHORT page (fewer than the requested per_page) of other kinds —
+    # the old code would have stopped right here and missed the reviewer.
+    # Page 2: the reviewer we care about. Page 3: empty (true end).
+    pages = {
+        1: [{"id": f"snap{i}", "data": {"kind": "shift_snapshot"}} for i in range(10)],
+        2: [{"id": "rev1", "data": {"kind": "reviewer", "name": "Deep", "email": "deep@storesight.com"}}],
+        3: [],
+    }
+
+    def fake_get(path, params=None):
+        return {"data": pages.get((params or {}).get("page"), [])}
+
+    monkeypatch.setattr(roles.internal_api, "get", fake_get)
+    found = roles.list_reviewers()
+    assert [r["email"] for r in found] == ["deep@storesight.com"]
+
+
+def test_list_docs_by_kind_stops_on_empty_page(monkeypatch):
+    """Termination is driven by an empty page, and the max-page cap holds."""
+    calls = {"n": 0}
+
+    def fake_get(path, params=None):
+        calls["n"] += 1
+        return {"data": []}  # empty immediately
+
+    monkeypatch.setattr(roles.internal_api, "get", fake_get)
+    assert roles.list_admins() == []
+    assert calls["n"] == 1  # stopped after the first empty page
+
+
 # ---------- API endpoints ----------
 
 
