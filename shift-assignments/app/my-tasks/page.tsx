@@ -139,6 +139,14 @@ function buildJobUrl(row: Row): string {
   return `${COLLECTION_REVIEW_URL}?${params.toString()}#/`;
 }
 
+function buildResponseSearchUrl(row: Row): string {
+  const RESPONSE_SEARCH_URL =
+    "https://prod.fieldagent.net/admin/fieldagent/responseSearch/";
+  if (!row.jobId) return RESPONSE_SEARCH_URL;
+  const params = new URLSearchParams({ job_id: row.jobId, resp_status: "N" });
+  return `${RESPONSE_SEARCH_URL}?${params.toString()}`;
+}
+
 function primaryHeading(row: Row, grouped: boolean): string {
   // Prefer the enriched job name when we have one; fall back to IDs otherwise.
   // IDs remain visible in the secondary "Project X · Job Y" line, and the
@@ -567,18 +575,32 @@ function TaskCard({
             {grouped && jobCount > 1 ? ` · ${jobCount}j` : ""}
           </span>
           {row.jobId && (
-            <a
-              href={buildJobUrl(row)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="ml-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-storesight-primary hover:bg-storesight-accent/10 dark:text-storesight-accent-light dark:hover:bg-storesight-accent/20"
-              title={`Open Job ${row.jobId} in Collection Review`}
-            >
-              {truncate(row.jobId, 10)}
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>
-                <path d="M14 3h7v7M10 14 21 3M19 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </a>
+            <>
+              <a
+                href={buildJobUrl(row)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="ml-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-storesight-primary hover:bg-storesight-accent/10 dark:text-storesight-accent-light dark:hover:bg-storesight-accent/20"
+                title={`Open Job ${row.jobId} in Collection Review`}
+              >
+                {truncate(row.jobId, 10)}
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <path d="M14 3h7v7M10 14 21 3M19 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </a>
+              <a
+                href={buildResponseSearchUrl(row)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-storesight-primary hover:bg-storesight-accent/10 dark:text-storesight-accent-light dark:hover:bg-storesight-accent/20"
+                title={`Open unreviewed responses for Job ${row.jobId}`}
+              >
+                Responses
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <path d="M14 3h7v7M10 14 21 3M19 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </a>
+            </>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -625,6 +647,19 @@ function TaskCard({
                 title={`Open Job ${row.jobId} in Collection Review`}
               >
                 Job {truncate(row.jobId, 14)}
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <path d="M14 3h7v7M10 14 21 3M19 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </a>
+              <span>·</span>
+              <a
+                href={buildResponseSearchUrl(row)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-storesight-primary hover:bg-storesight-accent/10 dark:text-storesight-accent-light dark:hover:bg-storesight-accent/20"
+                title={`Open unreviewed responses for Job ${row.jobId}`}
+              >
+                Responses
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>
                   <path d="M14 3h7v7M10 14 21 3M19 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>

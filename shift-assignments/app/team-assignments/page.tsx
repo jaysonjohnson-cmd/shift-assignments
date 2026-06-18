@@ -34,6 +34,14 @@ function buildJobUrl(row: ShiftJob): string {
   return `${COLLECTION_REVIEW_URL}?${params.toString()}#/`;
 }
 
+function buildResponseSearchUrl(row: ShiftJob): string {
+  const RESPONSE_SEARCH_URL =
+    "https://prod.fieldagent.net/admin/fieldagent/responseSearch/";
+  if (!row.jobId) return RESPONSE_SEARCH_URL;
+  const params = new URLSearchParams({ job_id: row.jobId, resp_status: "N" });
+  return `${RESPONSE_SEARCH_URL}?${params.toString()}`;
+}
+
 export default function TeamAssignmentsPage() {
   const [data, setData] = useState<ShiftJobs | null>(null);
   const [loading, setLoading] = useState(true);
@@ -378,6 +386,26 @@ export default function TeamAssignmentsPage() {
                                                 />
                                               </svg>
                                             </a>
+                                            <span>·</span>
+                                            <a
+                                              href={buildResponseSearchUrl(job)}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              onClick={(e) => e.stopPropagation()}
+                                              className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-storesight-primary hover:bg-storesight-accent/10 dark:text-storesight-accent-light dark:hover:bg-storesight-accent/20"
+                                              title={`Open unreviewed responses for Job ${job.jobId}`}
+                                            >
+                                              Responses
+                                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>
+                                                <path
+                                                  d="M14 3h7v7M10 14 21 3M19 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6"
+                                                  stroke="currentColor"
+                                                  strokeWidth="1.6"
+                                                  strokeLinecap="round"
+                                                  strokeLinejoin="round"
+                                                />
+                                              </svg>
+                                            </a>
                                           </>
                                         )}
                                       </div>
@@ -474,6 +502,25 @@ export default function TeamAssignmentsPage() {
                                     title={`Open Job ${job.jobId} in Collection Review`}
                                   >
                                     {truncate(job.jobId, 14)}
+                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>
+                                      <path
+                                        d="M14 3h7v7M10 14 21 3M19 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6"
+                                        stroke="currentColor"
+                                        strokeWidth="1.6"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                      />
+                                    </svg>
+                                  </a>
+                                  <span>·</span>
+                                  <a
+                                    href={buildResponseSearchUrl(job)}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-storesight-primary hover:bg-storesight-accent/10 dark:text-storesight-accent-light dark:hover:bg-storesight-accent/20"
+                                    title={`Open unreviewed responses for Job ${job.jobId}`}
+                                  >
+                                    Responses
                                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>
                                       <path
                                         d="M14 3h7v7M10 14 21 3M19 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6"
