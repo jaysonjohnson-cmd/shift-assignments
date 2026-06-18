@@ -165,7 +165,7 @@ export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
                                   {meta.label}
                                 </span>
                                 <div className="min-w-0 flex-1">
-                                  <div className="truncate text-storesight-ink-dark dark:text-storesight-ink">
+                                  <div className="truncate text-storesight-ink dark:text-storesight-ink-dark">
                                     {job.name || (job.projectId ? `Project ${job.projectId}` : job.id)}
                                   </div>
                                   <div className="mt-0.5 flex items-center gap-2 text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
