@@ -30,20 +30,30 @@ def _normalize_email(email):
 
 
 def _list_by_kind(kind):
-    """Return all storage docs whose `data.kind == kind` as {id,name,email} tuples.
+    """Return docs whose `data.kind == kind` as {id,name,email}, one per email.
 
-    Used for the reviewer/admin directory. For richer kinds (shift_snapshot,
-    completion), use `list_docs_by_kind` which returns the full {id, data, ...}
-    document so callers can see every field.
+    Collapses duplicate records that share an email so each person appears
+    once — older data accumulated duplicates before the create-time dedup
+    could see past the first page. Keeps the first (newest) doc per email, so
+    the id returned is a real, deletable document.
+
+    For richer kinds (shift_snapshot, completion), use `list_docs_by_kind`
+    which returns the full {id, data, ...} document so callers see every field.
     """
     out = []
+    seen = set()
     for doc in list_docs_by_kind(kind):
         data = doc.get("data") or {}
+        email = _normalize_email(data.get("email"))
+        if email and email in seen:
+            continue
+        if email:
+            seen.add(email)
         out.append(
             {
                 "id": doc.get("id"),
                 "name": data.get("name", ""),
-                "email": _normalize_email(data.get("email")),
+                "email": email,
             }
         )
     return out

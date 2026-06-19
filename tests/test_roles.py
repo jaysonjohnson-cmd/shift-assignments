@@ -102,6 +102,20 @@ def test_list_docs_by_kind_finds_records_on_later_pages(monkeypatch):
     assert [r["email"] for r in found] == ["deep@storesight.com"]
 
 
+def test_list_by_kind_dedupes_by_email(monkeypatch):
+    """Duplicate reviewer records (same email) collapse to one entry."""
+    docs = [
+        {"id": "new", "data": {"kind": "reviewer", "name": "Blake Ward", "email": "blake@storesight.com"}},
+        {"id": "old", "data": {"kind": "reviewer", "name": "Blake Ward", "email": "BLAKE@storesight.com"}},
+        {"id": "x", "data": {"kind": "reviewer", "name": "Aubrey Ward", "email": "aubrey@storesight.com"}},
+    ]
+    monkeypatch.setattr(roles, "list_docs_by_kind", lambda kind: docs)
+    out = roles.list_reviewers()
+    emails = [r["email"] for r in out]
+    assert emails == ["blake@storesight.com", "aubrey@storesight.com"]  # one Blake, case-insensitive
+    assert out[0]["id"] == "new"  # keeps the first (newest) doc, which is deletable
+
+
 def test_list_docs_by_kind_stops_on_empty_page(monkeypatch):
     """Termination is driven by an empty page, and the max-page cap holds."""
     calls = {"n": 0}
