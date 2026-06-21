@@ -541,6 +541,7 @@ def api_shifts_publish():
                 return _http_error_response(e)
             written.append((r.get("data") or {}).get("id"))
 
+    roles.invalidate_doc_cache("shift_snapshot", "reviewer_shift")
     logging.info(
         "POST /api/shifts/publish by=%s snapshot_id=%s reviewers=%d",
         published_by, snapshot_id, len(reviewer_emails),
@@ -808,6 +809,7 @@ def api_shifts_my_complete():
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e)
     doc_id = (resp.get("data") or {}).get("id")
+    roles.invalidate_doc_cache("completion")
     logging.info(
         "POST /api/shifts/my/complete by=%s project_id=%s snapshot_id=%s",
         email, project_id, snap_id,
@@ -1163,6 +1165,7 @@ def api_shifts_clear():
                 except requests.exceptions.HTTPError:
                     pass
 
+    roles.invalidate_doc_cache("shift_snapshot", "reviewer_shift", "completion")
     logging.info(
         "POST /api/shifts/clear by=%s mode=%s snapshot_id=%s rows=%d completions=%d",
         g.user.get("email"), mode, snap_id, cleared_rows, cleared_completions,

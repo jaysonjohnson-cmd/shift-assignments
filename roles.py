@@ -7,6 +7,19 @@ same namespace. Each record is `{kind: "reviewer"|"admin", name, email}`.
 `ROOT_ADMIN_EMAIL` is always treated as an admin, even when the stored
 admin list is empty — this guarantees the system is never admin-less and
 gives the initial owner a way to bootstrap the tool.
+
+## Rate-limit strategy
+
+Every `list_docs_by_kind` call scans the entire namespace in pages of 100.
+With 700+ docs that is 7 HTTP requests per call, and the overview endpoint
+alone needs 4 different kinds — 28 requests per page load. The Storage API
+allows 60 req/min, so without caching the app hits the limit on the 3rd
+page load.
+
+`list_docs_by_kind` caches each kind independently for `_DOC_CACHE_TTL`
+seconds (30s). Writes (create/update/delete) call `invalidate_doc_cache()`
+to drop the affected kinds immediately. On failure the stale value is kept
+and the TTL is reset to prevent retry storms.
 """
 
 import logging
@@ -16,35 +29,70 @@ import internal_api
 
 ROOT_ADMIN_EMAIL = "jayson.johnson@storesight.com"
 
-# Short-lived in-memory cache for reviewer/admin lists (rarely change).
-_ROSTER_CACHE: dict = {"fetched_at": 0.0, "reviewers": None, "admins": None}
-_ROSTER_TTL = 60  # seconds
-
 _STORAGE_PATH = "/api/storage/qc-shift-assignments"
-# Use the page size Bloom's API reliably honors (see bloom.py). Termination is
-# driven by an empty page, not by a short page, so this value only affects how
-# many requests a full scan takes — never correctness.
 _PAGE_SIZE = 100
-# Safety cap so a misbehaving API (e.g. one that ignores `page`) can't spin
-# forever. 500 pages * 100 = 50k docs, well past the 10k namespace limit.
 _MAX_PAGES = 500
+
+# Per-kind document cache. Each entry: {"data": [...], "fetched_at": float}
+_DOC_CACHE: dict = {}
+_DOC_CACHE_TTL = 30  # seconds — balance freshness vs. API budget
 
 
 def _normalize_email(email):
     return (email or "").strip().lower()
 
 
-def _list_by_kind(kind):
-    """Return docs whose `data.kind == kind` as {id,name,email}, one per email.
+def invalidate_doc_cache(*kinds):
+    """Drop cached results for the given kinds (or all kinds if none specified)."""
+    if kinds:
+        for k in kinds:
+            _DOC_CACHE.pop(k, None)
+    else:
+        _DOC_CACHE.clear()
 
-    Collapses duplicate records that share an email so each person appears
-    once — older data accumulated duplicates before the create-time dedup
-    could see past the first page. Keeps the first (newest) doc per email, so
-    the id returned is a real, deletable document.
 
-    For richer kinds (shift_snapshot, completion), use `list_docs_by_kind`
-    which returns the full {id, data, ...} document so callers see every field.
+def list_docs_by_kind(kind):
+    """Return raw storage docs whose `data.kind == kind`, newest first.
+
+    Results are cached per-kind for 30 seconds. On a cache miss the full
+    namespace is scanned (paged at 100/page). On API failure the stale
+    cached value is returned (if any) so callers degrade gracefully.
     """
+    now = time.time()
+    entry = _DOC_CACHE.get(kind)
+    if entry and (now - entry["fetched_at"]) < _DOC_CACHE_TTL:
+        return entry["data"]
+
+    out = []
+    try:
+        page = 1
+        while page <= _MAX_PAGES:
+            resp = internal_api.get(
+                _STORAGE_PATH, params={"page": page, "per_page": _PAGE_SIZE}
+            )
+            docs = resp.get("data", []) if isinstance(resp, dict) else []
+            if not docs:
+                break
+            for doc in docs:
+                if (doc.get("data") or {}).get("kind") == kind:
+                    out.append(doc)
+            page += 1
+        _DOC_CACHE[kind] = {"data": out, "fetched_at": now}
+    except Exception as exc:
+        logging.warning("list_docs_by_kind(%s) failed: %s", kind, exc)
+        # Keep the stale value if we have one; reset the TTL so we don't
+        # hammer the API on every subsequent request while it recovers.
+        if entry:
+            _DOC_CACHE[kind] = {"data": entry["data"], "fetched_at": now}
+            return entry["data"]
+        # No prior data — cache empty list so callers don't crash.
+        _DOC_CACHE[kind] = {"data": [], "fetched_at": now}
+
+    return out
+
+
+def _list_by_kind(kind):
+    """Return docs as {id, name, email}, deduped by email."""
     out = []
     seen = set()
     for doc in list_docs_by_kind(kind):
@@ -64,71 +112,12 @@ def _list_by_kind(kind):
     return out
 
 
-def list_docs_by_kind(kind):
-    """Return raw storage docs whose `data.kind == kind`, newest first.
-
-    Reviewers/admins share this namespace with every published shift and
-    completion doc, so the records we want can sit many pages deep once the
-    tool has been used for a while. We keep paging until the API returns an
-    EMPTY page — never stopping early on a short page, which would silently
-    drop the oldest records (e.g. the reviewer/admin roster) if the API caps
-    a page below the requested size.
-    """
-    out = []
-    page = 1
-    while page <= _MAX_PAGES:
-        resp = internal_api.get(
-            _STORAGE_PATH, params={"page": page, "per_page": _PAGE_SIZE}
-        )
-        docs = resp.get("data", []) if isinstance(resp, dict) else []
-        if not docs:
-            break
-        for doc in docs:
-            data = doc.get("data") or {}
-            if data.get("kind") == kind:
-                out.append(doc)
-        page += 1
-    return out
+def list_reviewers():
+    return _list_by_kind("reviewer")
 
 
-def list_reviewers(use_cache=True):
-    now = time.time()
-    if use_cache and _ROSTER_CACHE["reviewers"] is not None and (now - _ROSTER_CACHE["fetched_at"]) < _ROSTER_TTL:
-        return _ROSTER_CACHE["reviewers"]
-    try:
-        result = _list_by_kind("reviewer")
-    except Exception:
-        # On failure (e.g. 429), cache the last known value or empty list for a
-        # short TTL so we stop hammering the API on every request.
-        if _ROSTER_CACHE["reviewers"] is None:
-            _ROSTER_CACHE["reviewers"] = []
-        _ROSTER_CACHE["fetched_at"] = now
-        raise
-    _ROSTER_CACHE["reviewers"] = result
-    _ROSTER_CACHE["fetched_at"] = now
-    return result
-
-
-def invalidate_roster_cache():
-    _ROSTER_CACHE["fetched_at"] = 0.0
-    _ROSTER_CACHE["reviewers"] = None
-    _ROSTER_CACHE["admins"] = None
-
-
-def list_admins(use_cache=True):
-    now = time.time()
-    if use_cache and _ROSTER_CACHE["admins"] is not None and (now - _ROSTER_CACHE["fetched_at"]) < _ROSTER_TTL:
-        return _ROSTER_CACHE["admins"]
-    try:
-        result = _list_by_kind("admin")
-    except Exception:
-        if _ROSTER_CACHE["admins"] is None:
-            _ROSTER_CACHE["admins"] = []
-        _ROSTER_CACHE["fetched_at"] = now
-        raise
-    _ROSTER_CACHE["admins"] = result
-    _ROSTER_CACHE["fetched_at"] = now
-    return result
+def list_admins():
+    return _list_by_kind("admin")
 
 
 def get_role(email):
@@ -138,18 +127,10 @@ def get_role(email):
         return "viewer"
     if normalized == _normalize_email(ROOT_ADMIN_EMAIL):
         return "admin"
-    try:
-        admins = list_admins()
-    except Exception as exc:  # noqa: BLE001 — Storage API is not load-bearing for read-only pages
-        logging.warning("Failed to load admins, treating as empty: %s", exc)
-        admins = []
+    admins = list_admins()
     if any(a["email"] == normalized for a in admins):
         return "admin"
-    try:
-        reviewers = list_reviewers()
-    except Exception as exc:  # noqa: BLE001
-        logging.warning("Failed to load reviewers, treating as empty: %s", exc)
-        reviewers = []
+    reviewers = list_reviewers()
     if any(r["email"] == normalized for r in reviewers):
         return "reviewer"
     return "viewer"
@@ -169,7 +150,7 @@ def create_record(kind, name, email):
         }
     }
     resp = internal_api.post(_STORAGE_PATH, json=payload)
-    invalidate_roster_cache()
+    invalidate_doc_cache(kind)
     return resp["data"]["id"]
 
 
@@ -182,9 +163,9 @@ def update_record(doc_id, kind, name, email):
         }
     }
     internal_api.put(f"{_STORAGE_PATH}/{doc_id}", json=payload)
-    invalidate_roster_cache()
+    invalidate_doc_cache(kind)
 
 
 def delete_record(doc_id):
     internal_api.delete(f"{_STORAGE_PATH}/{doc_id}")
-    invalidate_roster_cache()
+    invalidate_doc_cache()
