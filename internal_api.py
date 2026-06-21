@@ -62,8 +62,8 @@ def _ensure_trailing_slash(path):
     return path
 
 
-_MAX_RETRIES = 3
-_RETRY_BACKOFF = [1, 2, 4]  # seconds to wait between retries on 429
+_MAX_RETRIES = 6
+_RETRY_BACKOFF = [2, 5, 10, 20, 30, 60]  # seconds to wait between retries on 429
 
 
 def _request(method, path, **kwargs):
@@ -71,10 +71,10 @@ def _request(method, path, **kwargs):
 
     The API enforces per-tool rate limits (60 requests/minute by default,
     keyed on the X-Tool-Slug header). If you hit the limit, this helper
-    waits and retries up to 3 times with exponential backoff.
+    waits and retries up to 6 times with exponential backoff (max 60s wait).
 
-    Default timeout is 60s because some list endpoints (notably /api/jobs)
-    routinely take 30+ seconds per page.
+    Default timeout is 120s because some list endpoints routinely take 30+
+    seconds per page.
     """
     url = f"{INTERNAL_API_BASE}{_ensure_trailing_slash(path)}"
     kwargs.setdefault("headers", _get_headers())

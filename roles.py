@@ -99,6 +99,8 @@ def _full_namespace_scan():
                     if kind:
                         by_kind.setdefault(kind, []).append(doc)
                 page += 1
+                if docs:
+                    time.sleep(0.5)  # space out pages to stay under 60 req/min
         except Exception as exc:
             logging.warning("Storage namespace scan failed (page %d): %s", page, exc)
             # Back off 10 s before next attempt — don't freeze for the full TTL.
