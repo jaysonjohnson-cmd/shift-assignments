@@ -68,7 +68,7 @@ export function TeamProgressDashboard() {
       return;
     }
     void load();
-    const interval = setInterval(() => load(), 30000); // Refresh every 30 seconds
+    const interval = setInterval(() => load(), 120000); // Refresh every 2 minutes
     return () => clearInterval(interval);
   }, [role]);
 

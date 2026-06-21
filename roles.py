@@ -35,7 +35,9 @@ _MAX_PAGES = 500
 
 # Per-kind document cache. Each entry: {"data": [...], "fetched_at": float}
 _DOC_CACHE: dict = {}
-_DOC_CACHE_TTL = 30  # seconds — balance freshness vs. API budget
+_DOC_CACHE_TTL = 300  # 5 minutes — writes invalidate immediately so this is safe
+# Tracks the last time we did a full namespace scan (all pages, all kinds).
+_FULL_SCAN_AT = 0.0
 
 
 def _normalize_email(email):
@@ -44,26 +46,25 @@ def _normalize_email(email):
 
 def invalidate_doc_cache(*kinds):
     """Drop cached results for the given kinds (or all kinds if none specified)."""
+    global _FULL_SCAN_AT
     if kinds:
         for k in kinds:
             _DOC_CACHE.pop(k, None)
     else:
         _DOC_CACHE.clear()
+    _FULL_SCAN_AT = 0.0
 
 
-def list_docs_by_kind(kind):
-    """Return raw storage docs whose `data.kind == kind`, newest first.
+def _full_namespace_scan():
+    """Fetch every page of the namespace once and populate ALL kind caches.
 
-    Results are cached per-kind for 30 seconds. On a cache miss the full
-    namespace is scanned (paged at 100/page). On API failure the stale
-    cached value is returned (if any) so callers degrade gracefully.
+    This is the key rate-limit fix: instead of 4 separate kind-scans that each
+    read all 7 pages (28 API calls), we do a single 7-page scan and sort the
+    results into per-kind buckets in one pass.
     """
+    global _FULL_SCAN_AT
     now = time.time()
-    entry = _DOC_CACHE.get(kind)
-    if entry and (now - entry["fetched_at"]) < _DOC_CACHE_TTL:
-        return entry["data"]
-
-    out = []
+    by_kind: dict = {}
     try:
         page = 1
         while page <= _MAX_PAGES:
@@ -74,21 +75,52 @@ def list_docs_by_kind(kind):
             if not docs:
                 break
             for doc in docs:
-                if (doc.get("data") or {}).get("kind") == kind:
-                    out.append(doc)
+                kind = (doc.get("data") or {}).get("kind")
+                if kind:
+                    by_kind.setdefault(kind, []).append(doc)
             page += 1
-        _DOC_CACHE[kind] = {"data": out, "fetched_at": now}
+        # Populate cache for every kind we found.
+        for k, docs in by_kind.items():
+            _DOC_CACHE[k] = {"data": docs, "fetched_at": now}
+        _FULL_SCAN_AT = now
+        logging.info("Storage full scan: %d docs across %d kinds", sum(len(v) for v in by_kind.values()), len(by_kind))
     except Exception as exc:
-        logging.warning("list_docs_by_kind(%s) failed: %s", kind, exc)
-        # Keep the stale value if we have one; reset the TTL so we don't
-        # hammer the API on every subsequent request while it recovers.
-        if entry:
-            _DOC_CACHE[kind] = {"data": entry["data"], "fetched_at": now}
-            return entry["data"]
-        # No prior data — cache empty list so callers don't crash.
-        _DOC_CACHE[kind] = {"data": [], "fetched_at": now}
+        logging.warning("_full_namespace_scan failed: %s", exc)
+        # Stamp all existing cache entries so they won't retry immediately.
+        for entry in _DOC_CACHE.values():
+            entry["fetched_at"] = now
+        _FULL_SCAN_AT = now
+        raise
 
-    return out
+
+def list_docs_by_kind(kind):
+    """Return raw storage docs whose `data.kind == kind`, newest first.
+
+    On a cache hit: 0 API calls. On a miss: triggers a single full namespace
+    scan that populates ALL kind caches at once (7 API calls for ~700 docs).
+    On failure the stale cached value is returned so callers degrade gracefully.
+    """
+    now = time.time()
+    entry = _DOC_CACHE.get(kind)
+    if entry and (now - entry["fetched_at"]) < _DOC_CACHE_TTL:
+        return entry["data"]
+
+    # Cache miss — do one full scan to fill all kind caches simultaneously.
+    # If the full scan already ran recently (another kind triggered it), skip.
+    if (now - _FULL_SCAN_AT) >= _DOC_CACHE_TTL:
+        try:
+            _full_namespace_scan()
+        except Exception:
+            # Fall through: return stale data if available, else empty list.
+            pass
+
+    entry = _DOC_CACHE.get(kind)
+    if entry:
+        return entry["data"]
+
+    # Kind not found in the namespace at all — cache empty list.
+    _DOC_CACHE[kind] = {"data": [], "fetched_at": now}
+    return []
 
 
 def _list_by_kind(kind):
