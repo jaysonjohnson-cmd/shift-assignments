@@ -13,16 +13,16 @@ gives the initial owner a way to bootstrap the tool.
 Every `list_docs_by_kind` call scans the entire namespace in pages of 100.
 With 700+ docs that is 7 HTTP requests per call, and the overview endpoint
 alone needs 4 different kinds — 28 requests per page load. The Storage API
-allows 60 req/min, so without caching the app hits the limit on the 3rd
-page load.
+allows 60 req/min, so without caching the app hits the limit after 2 loads.
 
-`list_docs_by_kind` caches each kind independently for `_DOC_CACHE_TTL`
-seconds (30s). Writes (create/update/delete) call `invalidate_doc_cache()`
-to drop the affected kinds immediately. On failure the stale value is kept
-and the TTL is reset to prevent retry storms.
+A background thread runs a full namespace scan every 4 minutes and keeps
+ALL kind caches warm. Request handlers read from the cache and never touch
+the Storage API directly — so 429s can only happen during the very first
+scan after startup, not on any subsequent request.
 """
 
 import logging
+import threading
 import time
 
 import internal_api
@@ -33,40 +33,49 @@ _STORAGE_PATH = "/api/storage/qc-shift-assignments"
 _PAGE_SIZE = 100
 _MAX_PAGES = 500
 
-# Per-kind document cache. Each entry: {"data": [...], "fetched_at": float}
+# Per-kind document cache. {kind: {"data": [...], "fetched_at": float}}
 _DOC_CACHE: dict = {}
-_DOC_CACHE_TTL = 300  # 5 minutes — writes invalidate immediately so this is safe
-# Tracks the last time we did a full namespace scan (all pages, all kinds).
+_CACHE_LOCK = threading.Lock()
+_DOC_CACHE_TTL = 240       # 4 minutes — background thread refreshes before expiry
+_REFRESH_INTERVAL = 210    # background refresh every 3.5 minutes (before TTL expires)
 _FULL_SCAN_AT = 0.0
+_BG_STARTED = False
 
 
-def _normalize_email(email):
-    return (email or "").strip().lower()
+# ---------------------------------------------------------------------------
+# Background cache warmer
+# ---------------------------------------------------------------------------
+
+def _bg_refresh_loop():
+    """Daemon thread: keep the namespace cache warm so requests never scan."""
+    while True:
+        try:
+            _full_namespace_scan()
+        except Exception:
+            pass  # logged inside _full_namespace_scan; retry next interval
+        time.sleep(_REFRESH_INTERVAL)
 
 
-def invalidate_doc_cache(*kinds):
-    """Drop cached results for the given kinds (or all kinds if none specified)."""
-    global _FULL_SCAN_AT
-    if kinds:
-        for k in kinds:
-            _DOC_CACHE.pop(k, None)
-    else:
-        _DOC_CACHE.clear()
-    _FULL_SCAN_AT = 0.0
+def _ensure_bg_started():
+    global _BG_STARTED
+    if _BG_STARTED:
+        return
+    t = threading.Thread(target=_bg_refresh_loop, daemon=True, name="roles-cache-warmer")
+    t.start()
+    _BG_STARTED = True
 
+
+# ---------------------------------------------------------------------------
+# Core scan + cache
+# ---------------------------------------------------------------------------
 
 def _full_namespace_scan():
-    """Fetch every page of the namespace once and populate ALL kind caches.
-
-    This is the key rate-limit fix: instead of 4 separate kind-scans that each
-    read all 7 pages (28 API calls), we do a single 7-page scan and sort the
-    results into per-kind buckets in one pass.
-    """
+    """Scan all namespace pages once and populate every kind cache atomically."""
     global _FULL_SCAN_AT
     now = time.time()
     by_kind: dict = {}
+    page = 1
     try:
-        page = 1
         while page <= _MAX_PAGES:
             resp = internal_api.get(
                 _STORAGE_PATH, params={"page": page, "per_page": _PAGE_SIZE}
@@ -79,51 +88,79 @@ def _full_namespace_scan():
                 if kind:
                     by_kind.setdefault(kind, []).append(doc)
             page += 1
-        # Populate cache for every kind we found.
-        for k, docs in by_kind.items():
-            _DOC_CACHE[k] = {"data": docs, "fetched_at": now}
-        _FULL_SCAN_AT = now
-        logging.info("Storage full scan: %d docs across %d kinds", sum(len(v) for v in by_kind.values()), len(by_kind))
     except Exception as exc:
-        logging.warning("_full_namespace_scan failed: %s", exc)
-        # Back off for 10 seconds before retrying — long enough to avoid a
-        # retry storm but short enough to recover quickly once the rate limit clears.
+        logging.warning("Storage namespace scan failed (page %d): %s", page, exc)
+        # Back off 10 s before next attempt — don't freeze for the full TTL.
         _FULL_SCAN_AT = now - _DOC_CACHE_TTL + 10
         raise
 
+    with _CACHE_LOCK:
+        for k, docs in by_kind.items():
+            _DOC_CACHE[k] = {"data": docs, "fetched_at": now}
+        _FULL_SCAN_AT = now
+    logging.info(
+        "Storage scan complete: %d docs across %d kinds",
+        sum(len(v) for v in by_kind.values()),
+        len(by_kind),
+    )
+
 
 def list_docs_by_kind(kind):
-    """Return raw storage docs whose `data.kind == kind`, newest first.
+    """Return raw storage docs for `kind`, served from cache.
 
-    On a cache hit: 0 API calls. On a miss: triggers a single full namespace
-    scan that populates ALL kind caches at once (7 API calls for ~700 docs).
-    On failure the stale cached value is returned so callers degrade gracefully.
+    On a warm cache: 0 API calls. On a cold cache: triggers _full_namespace_scan
+    (7 API calls) which populates all kinds simultaneously. The background thread
+    keeps the cache warm so cold misses only happen once after deployment.
     """
+    _ensure_bg_started()
     now = time.time()
-    entry = _DOC_CACHE.get(kind)
+
+    with _CACHE_LOCK:
+        entry = _DOC_CACHE.get(kind)
+
     if entry and (now - entry["fetched_at"]) < _DOC_CACHE_TTL:
         return entry["data"]
 
-    # Cache miss — do one full scan to fill all kind caches simultaneously.
-    # If the full scan already ran recently (another kind triggered it), skip.
+    # Cache miss or expired — run a fresh scan if not already recent.
     if (now - _FULL_SCAN_AT) >= _DOC_CACHE_TTL:
         try:
             _full_namespace_scan()
         except Exception:
-            # Fall through: return stale data if available, else empty list.
-            pass
+            pass  # stale data or empty list returned below
 
-    entry = _DOC_CACHE.get(kind)
+    with _CACHE_LOCK:
+        entry = _DOC_CACHE.get(kind)
     if entry:
         return entry["data"]
 
-    # Kind not found in the namespace at all — cache empty list.
-    _DOC_CACHE[kind] = {"data": [], "fetched_at": now}
+    # Kind genuinely absent from the namespace.
+    with _CACHE_LOCK:
+        _DOC_CACHE[kind] = {"data": [], "fetched_at": now}
     return []
 
 
+def invalidate_doc_cache(*kinds):
+    """Drop cached results for the given kinds (or all kinds if none specified)."""
+    global _FULL_SCAN_AT
+    with _CACHE_LOCK:
+        if kinds:
+            for k in kinds:
+                _DOC_CACHE.pop(k, None)
+        else:
+            _DOC_CACHE.clear()
+    _FULL_SCAN_AT = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Reviewer / admin helpers
+# ---------------------------------------------------------------------------
+
+def _normalize_email(email):
+    return (email or "").strip().lower()
+
+
 def _list_by_kind(kind):
-    """Return docs as {id, name, email}, deduped by email."""
+    """Return docs as {id, name, email}, deduped by email (newest wins)."""
     out = []
     seen = set()
     for doc in list_docs_by_kind(kind):
@@ -133,13 +170,7 @@ def _list_by_kind(kind):
             continue
         if email:
             seen.add(email)
-        out.append(
-            {
-                "id": doc.get("id"),
-                "name": data.get("name", ""),
-                "email": email,
-            }
-        )
+        out.append({"id": doc.get("id"), "name": data.get("name", ""), "email": email})
     return out
 
 
@@ -158,11 +189,9 @@ def get_role(email):
         return "viewer"
     if normalized == _normalize_email(ROOT_ADMIN_EMAIL):
         return "admin"
-    admins = list_admins()
-    if any(a["email"] == normalized for a in admins):
+    if any(a["email"] == normalized for a in list_admins()):
         return "admin"
-    reviewers = list_reviewers()
-    if any(r["email"] == normalized for r in reviewers):
+    if any(r["email"] == normalized for r in list_reviewers()):
         return "reviewer"
     return "viewer"
 
@@ -173,27 +202,21 @@ def is_admin(email):
 
 def create_record(kind, name, email):
     """Create a reviewer or admin record. Returns the Storage API doc id."""
-    payload = {
-        "data": {
-            "kind": kind,
-            "name": (name or "").strip(),
-            "email": _normalize_email(email),
-        }
-    }
-    resp = internal_api.post(_STORAGE_PATH, json=payload)
+    resp = internal_api.post(_STORAGE_PATH, json={"data": {
+        "kind": kind,
+        "name": (name or "").strip(),
+        "email": _normalize_email(email),
+    }})
     invalidate_doc_cache(kind)
     return resp["data"]["id"]
 
 
 def update_record(doc_id, kind, name, email):
-    payload = {
-        "data": {
-            "kind": kind,
-            "name": (name or "").strip(),
-            "email": _normalize_email(email),
-        }
-    }
-    internal_api.put(f"{_STORAGE_PATH}/{doc_id}", json=payload)
+    internal_api.put(f"{_STORAGE_PATH}/{doc_id}", json={"data": {
+        "kind": kind,
+        "name": (name or "").strip(),
+        "email": _normalize_email(email),
+    }})
     invalidate_doc_cache(kind)
 
 
