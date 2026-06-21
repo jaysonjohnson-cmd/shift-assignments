@@ -86,10 +86,9 @@ def _full_namespace_scan():
         logging.info("Storage full scan: %d docs across %d kinds", sum(len(v) for v in by_kind.values()), len(by_kind))
     except Exception as exc:
         logging.warning("_full_namespace_scan failed: %s", exc)
-        # Stamp all existing cache entries so they won't retry immediately.
-        for entry in _DOC_CACHE.values():
-            entry["fetched_at"] = now
-        _FULL_SCAN_AT = now
+        # Back off for 10 seconds before retrying — long enough to avoid a
+        # retry storm but short enough to recover quickly once the rate limit clears.
+        _FULL_SCAN_AT = now - _DOC_CACHE_TTL + 10
         raise
 
 
