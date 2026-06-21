@@ -150,7 +150,9 @@ export default function SettingsPage() {
       </div>
 
       {/* ---------------- Reviewers ---------------- */}
-      <section className="mb-8 rounded-2xl border border-storesight-border bg-storesight-surface p-5 shadow-sm dark:border-storesight-border-dark dark:bg-storesight-surface-dark">
+      <section className="mb-8 overflow-hidden rounded-2xl border border-storesight-border bg-storesight-surface shadow-sm dark:border-storesight-border-dark dark:bg-storesight-surface-dark">
+        <div className="h-1 w-full bg-storesight-accent/70 dark:bg-storesight-accent" />
+        <div className="p-5">
         <h2 className="mb-1 text-base font-semibold text-storesight-ink dark:text-storesight-ink-dark">
           Reviewers
         </h2>
@@ -204,10 +206,13 @@ export default function SettingsPage() {
             ))
           )}
         </div>
+        </div>
       </section>
 
       {/* ---------------- Admins ---------------- */}
-      <section className="rounded-2xl border border-storesight-border bg-storesight-surface p-5 shadow-sm dark:border-storesight-border-dark dark:bg-storesight-surface-dark">
+      <section className="overflow-hidden rounded-2xl border border-storesight-border bg-storesight-surface shadow-sm dark:border-storesight-border-dark dark:bg-storesight-surface-dark">
+        <div className="h-1 w-full bg-storesight-primary/70 dark:bg-storesight-primary" />
+        <div className="p-5">
         <h2 className="mb-1 text-base font-semibold text-storesight-ink dark:text-storesight-ink-dark">
           Admins
         </h2>
@@ -267,6 +272,7 @@ export default function SettingsPage() {
               );
             })
           )}
+        </div>
         </div>
       </section>
     </div>

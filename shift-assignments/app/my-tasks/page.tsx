@@ -268,22 +268,25 @@ export default function MyTasksPage() {
             )}
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           {total > 0 && (
-            <div className="flex items-center gap-2">
-              <div className="h-1.5 w-40 overflow-hidden rounded-full bg-storesight-border dark:bg-storesight-border-dark">
+            <div className="flex items-center gap-2 rounded-lg border border-storesight-border bg-white px-3 py-1.5 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark">
+              <div className="h-1.5 w-24 overflow-hidden rounded-full bg-storesight-border dark:bg-storesight-border-dark">
                 <div
                   className="h-full rounded-full bg-storesight-accent transition-[width] duration-500 dark:bg-storesight-accent-light"
                   style={{ width: `${pct}%` }}
                 />
               </div>
-              <span className="text-[11px] font-medium tabular-nums text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+              <span className="text-[11px] font-semibold tabular-nums text-storesight-ink dark:text-storesight-ink-dark">
                 {done.length}/{total}
               </span>
             </div>
           )}
-          <ViewByPidToggle value={viewByPid} onChange={changeViewByPid} />
-          <DensityToggle density={density} onChange={changeDensity} />
+          <div className="flex items-center overflow-hidden rounded-lg border border-storesight-border dark:border-storesight-border-dark">
+            <ViewByPidToggle value={viewByPid} onChange={changeViewByPid} />
+            <div className="w-px self-stretch bg-storesight-border dark:bg-storesight-border-dark" />
+            <DensityToggle density={density} onChange={changeDensity} />
+          </div>
           <button
             type="button"
             onClick={load}
@@ -428,10 +431,10 @@ function ViewByPidToggle({
           ? "Showing one card per Project ID. Click to view each Job."
           : "Showing one card per Job. Click to group by Project ID."
       }
-      className={`inline-flex items-center gap-2 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition ${
+      className={`inline-flex items-center gap-2 px-2.5 py-1.5 text-[11px] font-medium transition ${
         value
-          ? "border-storesight-accent bg-storesight-accent/15 text-storesight-primary dark:border-storesight-accent-light dark:text-storesight-accent-light"
-          : "border-storesight-border text-storesight-ink-muted hover:border-storesight-accent hover:text-storesight-primary dark:border-storesight-border-dark dark:text-storesight-ink-muted-dark dark:hover:border-storesight-accent-light dark:hover:text-storesight-accent-light"
+          ? "bg-storesight-accent/15 text-storesight-primary dark:text-storesight-accent-light"
+          : "bg-white text-storesight-ink-muted hover:text-storesight-primary dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
       }`}
     >
       <span
@@ -448,7 +451,7 @@ function ViewByPidToggle({
           }`}
         />
       </span>
-      View by PID
+      By PID
     </button>
   );
 }
@@ -461,41 +464,37 @@ function DensityToggle({
   onChange: (next: Density) => void;
 }) {
   return (
-    <div
-      role="group"
-      aria-label="Layout density"
-      className="inline-flex overflow-hidden rounded-lg border border-storesight-border dark:border-storesight-border-dark"
-    >
+    <div role="group" aria-label="Layout density" className="inline-flex">
       <button
         type="button"
         onClick={() => onChange("comfortable")}
         aria-pressed={density === "comfortable"}
-        title="Comfortable"
-        className={`flex h-7 w-7 items-center justify-center transition ${
+        className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium transition ${
           density === "comfortable"
-            ? "bg-storesight-accent/20 text-storesight-primary dark:text-storesight-accent-light"
-            : "text-storesight-ink-muted hover:text-storesight-primary dark:text-storesight-ink-muted-dark"
+            ? "bg-storesight-accent/15 text-storesight-primary dark:text-storesight-accent-light"
+            : "bg-white text-storesight-ink-muted hover:text-storesight-primary dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
         }`}
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
           <rect x="4" y="4" width="16" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.6" />
           <rect x="4" y="14" width="16" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.6" />
         </svg>
+        Cozy
       </button>
       <button
         type="button"
         onClick={() => onChange("compact")}
         aria-pressed={density === "compact"}
-        title="Compact"
-        className={`flex h-7 w-7 items-center justify-center transition ${
+        className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium transition ${
           density === "compact"
-            ? "bg-storesight-accent/20 text-storesight-primary dark:text-storesight-accent-light"
-            : "text-storesight-ink-muted hover:text-storesight-primary dark:text-storesight-ink-muted-dark"
+            ? "bg-storesight-accent/15 text-storesight-primary dark:text-storesight-accent-light"
+            : "bg-white text-storesight-ink-muted hover:text-storesight-primary dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
         }`}
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
           <path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
         </svg>
+        Compact
       </button>
     </div>
   );

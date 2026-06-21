@@ -42,6 +42,7 @@ export default function AssignmentsPage() {
   const [mode, setMode] = useState<Mode>({ kind: "menu" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showOptions, setShowOptions] = useState(false);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [prioritizeFilter, setPrioritizeFilter] = useState(false);
@@ -171,45 +172,68 @@ export default function AssignmentsPage() {
           <p className="mt-0.5 text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
             {priorityPool.length} task{priorityPool.length === 1 ? "" : "s"} pulled from Bloom
           </p>
-          <div className="mt-3 space-y-3">
-            <div className="flex items-center gap-2">
-              <label className="text-xs font-medium text-storesight-ink dark:text-storesight-ink-dark">
-                Filter by status:
-              </label>
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
-                className="rounded border border-storesight-border bg-white px-2 py-1 text-xs text-storesight-ink dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark"
-              >
-                <option value="">All (Default)</option>
-                <option value="N">Unreviewed (N)</option>
-                <option value="P">In Progress (P)</option>
-              </select>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setPrioritizeFilter(!prioritizeFilter)}
-                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                  prioritizeFilter
-                    ? "border border-storesight-primary bg-storesight-primary/10 text-storesight-primary dark:border-storesight-accent-light dark:bg-storesight-accent/20 dark:text-storesight-accent-light"
-                    : "border border-storesight-border bg-white text-storesight-ink-muted hover:border-storesight-primary/40 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
-                }`}
-              >
-                {prioritizeFilter ? "✓ " : ""}Fill with higher priority
-              </button>
-              <button
-                type="button"
-                onClick={() => setBalanceByResponses(!balanceByResponses)}
-                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                  balanceByResponses
-                    ? "border border-storesight-primary bg-storesight-primary/10 text-storesight-primary dark:border-storesight-accent-light dark:bg-storesight-accent/20 dark:text-storesight-accent-light"
-                    : "border border-storesight-border bg-white text-storesight-ink-muted hover:border-storesight-primary/40 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
-                }`}
-              >
-                {balanceByResponses ? "✓ " : ""}Balance by responses
-              </button>
-            </div>
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={() => setShowOptions(!showOptions)}
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-storesight-ink-muted hover:text-storesight-primary dark:text-storesight-ink-muted-dark dark:hover:text-storesight-accent-light transition"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.6" />
+                <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3h.2a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8v.2a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+              </svg>
+              Options
+              {(prioritizeFilter || balanceByResponses || statusFilter) && (
+                <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-storesight-primary text-[9px] font-bold text-white dark:bg-storesight-accent-light dark:text-storesight-surface-dark">
+                  {[prioritizeFilter, balanceByResponses, !!statusFilter].filter(Boolean).length}
+                </span>
+              )}
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden className={`transition-transform ${showOptions ? "rotate-180" : ""}`}>
+                <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            {showOptions && (
+              <div className="mt-2 rounded-xl border border-storesight-border bg-white p-3 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark space-y-3">
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-medium text-storesight-ink dark:text-storesight-ink-dark">
+                    Filter by status:
+                  </label>
+                  <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                    className="rounded border border-storesight-border bg-white px-2 py-1 text-xs text-storesight-ink dark:border-storesight-border-dark dark:bg-storesight-surface-dark dark:text-storesight-ink-dark"
+                  >
+                    <option value="">All (Default)</option>
+                    <option value="N">Unreviewed (N)</option>
+                    <option value="P">In Progress (P)</option>
+                  </select>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPrioritizeFilter(!prioritizeFilter)}
+                    className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                      prioritizeFilter
+                        ? "border border-storesight-primary bg-storesight-primary/10 text-storesight-primary dark:border-storesight-accent-light dark:bg-storesight-accent/20 dark:text-storesight-accent-light"
+                        : "border border-storesight-border bg-white text-storesight-ink-muted hover:border-storesight-primary/40 dark:border-storesight-border-dark dark:bg-storesight-surface-dark dark:text-storesight-ink-muted-dark"
+                    }`}
+                  >
+                    {prioritizeFilter ? "✓ " : ""}Fill with higher priority
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBalanceByResponses(!balanceByResponses)}
+                    className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                      balanceByResponses
+                        ? "border border-storesight-primary bg-storesight-primary/10 text-storesight-primary dark:border-storesight-accent-light dark:bg-storesight-accent/20 dark:text-storesight-accent-light"
+                        : "border border-storesight-border bg-white text-storesight-ink-muted hover:border-storesight-primary/40 dark:border-storesight-border-dark dark:bg-storesight-surface-dark dark:text-storesight-ink-muted-dark"
+                    }`}
+                  >
+                    {balanceByResponses ? "✓ " : ""}Balance by responses
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2">

@@ -143,12 +143,6 @@ export default function TeamAssignmentsPage() {
 
   return (
     <div className="mx-auto w-full max-w-7xl flex-1 px-6 py-8">
-      <div className="mb-6 flex flex-col gap-6">
-        <div ref={progressRef}>
-          <ProgressTrackerTile onClick={handleProgressClick} disabled={false} />
-        </div>
-      </div>
-
       <header className="mb-6 flex flex-wrap items-start justify-between gap-3">
         <div>
           <Link
@@ -189,6 +183,10 @@ export default function TeamAssignmentsPage() {
           )}
         </div>
       </header>
+
+      <div className="mb-6" ref={progressRef}>
+        <ProgressTrackerTile onClick={handleProgressClick} disabled={false} />
+      </div>
 
       {error && (
         <div className="mb-4 rounded-lg border border-storesight-hot-pink/40 bg-storesight-hot-pink/10 px-4 py-2 text-sm text-storesight-hot-pink">

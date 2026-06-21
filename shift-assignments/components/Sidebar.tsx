@@ -72,7 +72,7 @@ const items: Item[] = [
 export function Sidebar() {
   const pathname = usePathname() || "/";
   return (
-    <aside className="no-print sticky top-0 flex h-screen w-16 flex-col items-center gap-2 border-r border-storesight-border bg-storesight-surface py-5 dark:border-storesight-border-dark dark:bg-storesight-surface-dark">
+    <aside className="no-print sticky top-0 flex h-screen w-[72px] flex-col items-center gap-1 border-r border-storesight-border bg-storesight-surface py-5 dark:border-storesight-border-dark dark:bg-storesight-surface-dark">
       {items.map((item) => {
         const active =
           item.href === "/"
@@ -83,18 +83,15 @@ export function Sidebar() {
             key={item.href}
             href={item.href}
             aria-label={item.label}
-            title={item.label}
             className={[
-              "group relative flex h-10 w-10 items-center justify-center rounded-xl transition",
+              "flex w-14 flex-col items-center gap-1 rounded-xl px-1 py-2 transition",
               active
                 ? "bg-storesight-accent/15 text-storesight-primary dark:bg-storesight-accent/25 dark:text-storesight-accent-light"
                 : "text-storesight-ink-muted hover:bg-storesight-bg-tint hover:text-storesight-primary dark:hover:bg-storesight-surface-raised-dark dark:hover:text-storesight-accent-light",
             ].join(" ")}
           >
             {item.icon}
-            <span className="pointer-events-none absolute left-full ml-2 whitespace-nowrap rounded-md bg-storesight-ink px-2 py-1 text-xs text-white opacity-0 shadow-lg transition group-hover:opacity-100 dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark">
-              {item.label}
-            </span>
+            <span className="text-[10px] font-medium leading-none">{item.label}</span>
           </Link>
         );
       })}
