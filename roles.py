@@ -95,7 +95,15 @@ def list_reviewers(use_cache=True):
     now = time.time()
     if use_cache and _ROSTER_CACHE["reviewers"] is not None and (now - _ROSTER_CACHE["fetched_at"]) < _ROSTER_TTL:
         return _ROSTER_CACHE["reviewers"]
-    result = _list_by_kind("reviewer")
+    try:
+        result = _list_by_kind("reviewer")
+    except Exception:
+        # On failure (e.g. 429), cache the last known value or empty list for a
+        # short TTL so we stop hammering the API on every request.
+        if _ROSTER_CACHE["reviewers"] is None:
+            _ROSTER_CACHE["reviewers"] = []
+        _ROSTER_CACHE["fetched_at"] = now
+        raise
     _ROSTER_CACHE["reviewers"] = result
     _ROSTER_CACHE["fetched_at"] = now
     return result
@@ -111,7 +119,13 @@ def list_admins(use_cache=True):
     now = time.time()
     if use_cache and _ROSTER_CACHE["admins"] is not None and (now - _ROSTER_CACHE["fetched_at"]) < _ROSTER_TTL:
         return _ROSTER_CACHE["admins"]
-    result = _list_by_kind("admin")
+    try:
+        result = _list_by_kind("admin")
+    except Exception:
+        if _ROSTER_CACHE["admins"] is None:
+            _ROSTER_CACHE["admins"] = []
+        _ROSTER_CACHE["fetched_at"] = now
+        raise
     _ROSTER_CACHE["admins"] = result
     _ROSTER_CACHE["fetched_at"] = now
     return result
