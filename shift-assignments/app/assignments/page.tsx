@@ -74,14 +74,8 @@ export default function AssignmentsPage() {
   const isAdmin = role === "admin";
 
   const priorityPool = useMemo<Row[]>(() => {
-    const sorted = [...rows].sort((a, b) => b.priority - a.priority);
-    if (!prioritizeAged) return sorted;
-    return sorted.sort((a, b) => {
-      const aMs = a.oldestSubmission ? new Date(a.oldestSubmission).getTime() : Infinity;
-      const bMs = b.oldestSubmission ? new Date(b.oldestSubmission).getTime() : Infinity;
-      return aMs - bMs;
-    });
-  }, [rows, prioritizeAged]);
+    return [...rows].sort((a, b) => b.priority - a.priority);
+  }, [rows]);
 
   const cancel = () => {
     setMode({ kind: "menu" });
@@ -130,7 +124,7 @@ export default function AssignmentsPage() {
     setBusy(true);
     setError(null);
     try {
-      const result = assignShift(priorityPool, draft, prioritizeFilter, balanceByResponses);
+      const result = assignShift(priorityPool, draft, prioritizeFilter, balanceByResponses, prioritizeAged);
       const byEmail = toEmailMap(result.assignments, reviewers);
       const resp = await publishShift(byEmail);
       setLastPublishedAt(resp.published_at);

@@ -77,7 +77,7 @@ export function evenDistribute(
  * frontloading early reviewers. Slots with empty reviewerId are dropped
  * (their would-be rows fall into leftover).
  */
-export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = false, balanceByResponses = false): ShiftResult {
+export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = false, balanceByResponses = false, prioritizeAged = false): ShiftResult {
   const pins = draft.projectPins ?? {};
 
   // Guarantee each job is handed to at most one reviewer. The upstream feed
@@ -155,6 +155,22 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
           (row.oldestSubmission && row.oldestSubmission > oneHourAgo)
       );
       regularJobs = unpinned.filter((row) => !newResponses.includes(row));
+    }
+
+    // Separate aged submissions (oldest > 7 days) from fresh jobs
+    let agedJobs: Row[] = [];
+    if (prioritizeAged) {
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      agedJobs = regularJobs.filter(
+        (row) => row.oldestSubmission && row.oldestSubmission < sevenDaysAgo
+      );
+      regularJobs = regularJobs.filter((row) => !agedJobs.includes(row));
+      // Sort aged jobs oldest-first so the stalest work is assigned first
+      agedJobs.sort((a, b) => {
+        const aMs = a.oldestSubmission ? new Date(a.oldestSubmission).getTime() : Infinity;
+        const bMs = b.oldestSubmission ? new Date(b.oldestSubmission).getTime() : Infinity;
+        return aMs - bMs;
+      });
     }
 
     // Helper function to distribute jobs using weighted round-robin
@@ -242,9 +258,12 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
       }
     };
 
-    // Distribute new responses first (Tier 1), then regular jobs (Tier 2)
+    // Distribute new responses first (Tier 1), then aged (Tier 2), then regular (Tier 3)
     if (prioritizeNew) {
       distributeJobs(newResponses, "new");
+    }
+    if (prioritizeAged) {
+      distributeJobs(agedJobs, "new");
     }
     distributeJobs(regularJobs, "priority");
   }
