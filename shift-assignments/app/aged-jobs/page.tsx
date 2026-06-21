@@ -66,11 +66,11 @@ export default function AgedJobsPage() {
   const [minDays, setMinDays] = useState(0);
   const [sortDir, setSortDir] = useState<"desc" | "asc">("desc");
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (force = false) => {
     setLoading(true);
     setError(null);
     try {
-      const jobs = await getBloomJobs(true);
+      const jobs = await getBloomJobs(force);
       const aged: AgedRow[] = jobs
         .filter((r) => Number(r.extras?.old_sub ?? 0) > 0)
         .map((r) => ({
@@ -114,7 +114,7 @@ export default function AgedJobsPage() {
         </div>
         <button
           type="button"
-          onClick={load}
+          onClick={() => load(true)}
           disabled={loading}
           className="rounded-lg border border-storesight-border bg-white px-3 py-2 text-sm font-medium text-storesight-ink-muted transition hover:border-storesight-accent hover:text-storesight-primary disabled:opacity-50 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
         >
@@ -180,7 +180,7 @@ export default function AgedJobsPage() {
                 const startDate = String(r.extras?.startDate ?? "");
                 return (
                   <tr
-                    key={r.id}
+                    key={`${r.id}-${r.projectId}`}
                     className="bg-white transition hover:bg-storesight-bg-tint dark:bg-storesight-surface-dark dark:hover:bg-storesight-surface-raised-dark"
                   >
                     <td className="px-4 py-3">
