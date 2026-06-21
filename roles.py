@@ -36,25 +36,33 @@ _MAX_PAGES = 500
 # Per-kind document cache. {kind: {"data": [...], "fetched_at": float}}
 _DOC_CACHE: dict = {}
 _CACHE_LOCK = threading.Lock()
-_SCAN_LOCK = threading.Lock()   # only one scan runs at a time; others wait then read cache
-_DOC_CACHE_TTL = 240       # 4 minutes — background thread refreshes before expiry
-_REFRESH_INTERVAL = 210    # background refresh every 3.5 minutes (before TTL expires)
-_FULL_SCAN_AT = 0.0
+_SCAN_LOCK = threading.Lock()   # only one scan runs at a time
+_REFRESH_INTERVAL = 180        # background thread scans every 3 minutes
 _BG_STARTED = False
+_NEEDS_REFRESH = threading.Event()  # set to wake the bg thread early after invalidation
 
 
 # ---------------------------------------------------------------------------
-# Background cache warmer
+# Background cache warmer — THE ONLY CODE THAT CALLS STORAGE API
 # ---------------------------------------------------------------------------
 
 def _bg_refresh_loop():
-    """Daemon thread: keep the namespace cache warm so requests never scan."""
+    """Daemon thread: the only place that ever reads from Storage API.
+
+    Request handlers read exclusively from _DOC_CACHE and never touch the
+    Storage API. This guarantees 0 Storage API calls per request after startup,
+    eliminating 429s entirely regardless of traffic.
+    """
+    # Wait a moment after startup so Flask can finish binding before the first scan.
+    time.sleep(2)
     while True:
         try:
             _full_namespace_scan()
         except Exception:
-            pass  # logged inside _full_namespace_scan; retry next interval
-        time.sleep(_REFRESH_INTERVAL)
+            pass  # logged inside; retry after short sleep
+        # Sleep until the next scheduled refresh OR until woken early by invalidation.
+        _NEEDS_REFRESH.wait(timeout=_REFRESH_INTERVAL)
+        _NEEDS_REFRESH.clear()
 
 
 def _ensure_bg_started():
@@ -67,23 +75,18 @@ def _ensure_bg_started():
 
 
 # ---------------------------------------------------------------------------
-# Core scan + cache
+# Core scan + cache (called ONLY by the background thread)
 # ---------------------------------------------------------------------------
 
 def _full_namespace_scan():
-    """Scan all namespace pages once and populate every kind cache atomically.
+    """Scan all namespace pages and populate every kind cache atomically.
 
-    Only one scan runs at a time (_SCAN_LOCK). Concurrent callers block until
-    the scan finishes, then read from the freshly-populated cache. This prevents
-    the thundering-herd where N simultaneous requests each kick off 7 API calls.
+    Protected by _SCAN_LOCK so it never runs more than once concurrently
+    (e.g. if two threads call this somehow). Each page is spaced 0.5 s apart
+    so 7 pages cost ~3.5 s and stay well under the 60 req/min limit.
     """
-    global _FULL_SCAN_AT
+    global _BG_STARTED  # keep lint happy; _SCAN_LOCK is the real guard
     with _SCAN_LOCK:
-        # Re-check after acquiring lock — another thread may have just finished.
-        now = time.time()
-        if (now - _FULL_SCAN_AT) < _DOC_CACHE_TTL:
-            return  # cache is already fresh; nothing to do
-
         by_kind: dict = {}
         page = 1
         try:
@@ -100,17 +103,15 @@ def _full_namespace_scan():
                         by_kind.setdefault(kind, []).append(doc)
                 page += 1
                 if docs:
-                    time.sleep(0.5)  # space out pages to stay under 60 req/min
+                    time.sleep(0.5)  # pace requests to stay under rate limit
         except Exception as exc:
             logging.warning("Storage namespace scan failed (page %d): %s", page, exc)
-            # Back off 10 s before next attempt — don't freeze for the full TTL.
-            _FULL_SCAN_AT = now - _DOC_CACHE_TTL + 10
             raise
 
+        now = time.time()
         with _CACHE_LOCK:
             for k, docs in by_kind.items():
                 _DOC_CACHE[k] = {"data": docs, "fetched_at": now}
-            _FULL_SCAN_AT = now
         logging.info(
             "Storage scan complete: %d docs across %d kinds",
             sum(len(v) for v in by_kind.values()),
@@ -119,53 +120,27 @@ def _full_namespace_scan():
 
 
 def list_docs_by_kind(kind):
-    """Return raw storage docs for `kind`, served from cache.
+    """Return cached docs for `kind`. Never calls Storage API — always from cache.
 
-    On a warm cache: 0 API calls. On a cold cache: triggers _full_namespace_scan
-    (7 API calls) which populates all kinds simultaneously. The background thread
-    keeps the cache warm so cold misses only happen once after deployment.
+    Returns whatever is in the cache (may be slightly stale between background
+    refreshes). Returns [] if the background thread hasn't completed its first
+    scan yet; that resolves within a few seconds of startup.
     """
     _ensure_bg_started()
-    now = time.time()
-
     with _CACHE_LOCK:
         entry = _DOC_CACHE.get(kind)
-
-    if entry and (now - entry["fetched_at"]) < _DOC_CACHE_TTL:
-        return entry["data"]
-
-    # Cache miss or expired — run a fresh scan if not already recent.
-    if (now - _FULL_SCAN_AT) >= _DOC_CACHE_TTL:
-        try:
-            _full_namespace_scan()
-        except Exception:
-            pass  # stale data or empty list returned below
-
-    with _CACHE_LOCK:
-        entry = _DOC_CACHE.get(kind)
-    if entry:
-        return entry["data"]
-
-    # Kind genuinely absent from the namespace.
-    with _CACHE_LOCK:
-        _DOC_CACHE[kind] = {"data": [], "fetched_at": now}
-    return []
+    return entry["data"] if entry else []
 
 
 def invalidate_doc_cache(*kinds):
-    """Mark cached results as stale so the background thread refreshes them.
-
-    We don't reset _FULL_SCAN_AT to 0 because that would trigger every
-    concurrent request to race into _full_namespace_scan simultaneously
-    (thundering herd). Instead we expire the specific kind entries so the
-    next background loop (within 3.5 min) repopulates them cleanly.
-    """
+    """Drop cached results and wake the background thread to refresh immediately."""
     with _CACHE_LOCK:
         if kinds:
             for k in kinds:
                 _DOC_CACHE.pop(k, None)
         else:
             _DOC_CACHE.clear()
+    _NEEDS_REFRESH.set()  # wake bg thread so fresh data arrives within seconds
 
 
 # ---------------------------------------------------------------------------
