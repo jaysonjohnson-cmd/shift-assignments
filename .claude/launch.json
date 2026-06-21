@@ -5,6 +5,7 @@
       "name": "shift-assignments",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "shift-assignments", "run", "dev"],
+      "env": {"NEXT_PUBLIC_API_ORIGIN": "http://localhost:8080"},
       "port": 3000,
       "autoPort": true
     }
