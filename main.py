@@ -548,32 +548,33 @@ def api_shifts_publish():
     return jsonify({"data": {"id": snapshot_id, "published_at": published_at}}), 201
 
 
-def _latest_snapshot():
-    """Helper — return the latest snapshot's {id, data} or (None, None).
+def _latest_snapshot(reviewer_shift_docs=None):
+    """Helper — return (snapshot_id, snapshot_data) or (None, None).
 
-    Skips empty snapshots — those where all reviewer_shift docs have zero rows
-    (e.g. published with prioritizeAged on before the fix, or a mid-publish
-    failure). Uses the most recent snapshot that actually has assigned jobs.
+    Skips snapshots where all reviewer_shift docs have zero rows (empty publish).
+    Pass pre-fetched reviewer_shift_docs to avoid a duplicate storage scan when
+    the caller already has them.
     """
     snaps = roles.list_docs_by_kind("shift_snapshot")
     if not snaps:
         return None, None
 
-    # Count total rows per snapshot across all reviewer_shift docs.
-    snap_row_counts: dict[str, int] = {}
-    for d in roles.list_docs_by_kind("reviewer_shift"):
+    if reviewer_shift_docs is None:
+        reviewer_shift_docs = roles.list_docs_by_kind("reviewer_shift")
+
+    snap_row_counts: dict = {}
+    for d in reviewer_shift_docs:
         data = d.get("data") or {}
         sid = data.get("shift_snapshot_id")
         if sid:
             snap_row_counts[sid] = snap_row_counts.get(sid, 0) + len(data.get("rows") or [])
 
-    # Return the most recent snapshot that has reviewer_emails AND rows assigned.
     for snap in snaps:
         data = snap.get("data") or {}
         if data.get("reviewer_emails") and snap_row_counts.get(snap.get("id"), 0) > 0:
             return snap.get("id"), data
 
-    # Fallback: first snapshot with reviewer_emails (edge case: first-ever publish)
+    # Fallback: first snapshot with reviewer_emails (first-ever publish edge case)
     for snap in snaps:
         data = snap.get("data") or {}
         if data.get("reviewer_emails"):
@@ -921,20 +922,20 @@ def api_shifts_overview():
     denied = _require_admin()
     if denied is not None:
         return denied
+    # Fetch reviewer_shift docs once and reuse for both snapshot selection and
+    # overview rendering — avoids a duplicate full storage scan.
     try:
-        snap_id, snap_data = _latest_snapshot()
+        all_reviewer_shift_docs = roles.list_docs_by_kind("reviewer_shift")
+        snap_id, snap_data = _latest_snapshot(reviewer_shift_docs=all_reviewer_shift_docs)
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e)
     if not snap_id:
         return jsonify({"data": {"snapshot_id": None, "reviewers": []}})
 
-    try:
-        reviewer_docs = [
-            d for d in roles.list_docs_by_kind("reviewer_shift")
-            if (d.get("data") or {}).get("shift_snapshot_id") == snap_id
-        ]
-    except requests.exceptions.HTTPError as e:
-        return _http_error_response(e)
+    reviewer_docs = [
+        d for d in all_reviewer_shift_docs
+        if (d.get("data") or {}).get("shift_snapshot_id") == snap_id
+    ]
     try:
         completions = _list_completions_for_snapshot(snap_id)
     except requests.exceptions.HTTPError as e:

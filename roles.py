@@ -10,10 +10,15 @@ gives the initial owner a way to bootstrap the tool.
 """
 
 import logging
+import time
 
 import internal_api
 
 ROOT_ADMIN_EMAIL = "jayson.johnson@storesight.com"
+
+# Short-lived in-memory cache for reviewer/admin lists (rarely change).
+_ROSTER_CACHE: dict = {"fetched_at": 0.0, "reviewers": None, "admins": None}
+_ROSTER_TTL = 60  # seconds
 
 _STORAGE_PATH = "/api/storage/qc-shift-assignments"
 # Use the page size Bloom's API reliably honors (see bloom.py). Termination is
@@ -86,12 +91,30 @@ def list_docs_by_kind(kind):
     return out
 
 
-def list_reviewers():
-    return _list_by_kind("reviewer")
+def list_reviewers(use_cache=True):
+    now = time.time()
+    if use_cache and _ROSTER_CACHE["reviewers"] is not None and (now - _ROSTER_CACHE["fetched_at"]) < _ROSTER_TTL:
+        return _ROSTER_CACHE["reviewers"]
+    result = _list_by_kind("reviewer")
+    _ROSTER_CACHE["reviewers"] = result
+    _ROSTER_CACHE["fetched_at"] = now
+    return result
 
 
-def list_admins():
-    return _list_by_kind("admin")
+def invalidate_roster_cache():
+    _ROSTER_CACHE["fetched_at"] = 0.0
+    _ROSTER_CACHE["reviewers"] = None
+    _ROSTER_CACHE["admins"] = None
+
+
+def list_admins(use_cache=True):
+    now = time.time()
+    if use_cache and _ROSTER_CACHE["admins"] is not None and (now - _ROSTER_CACHE["fetched_at"]) < _ROSTER_TTL:
+        return _ROSTER_CACHE["admins"]
+    result = _list_by_kind("admin")
+    _ROSTER_CACHE["admins"] = result
+    _ROSTER_CACHE["fetched_at"] = now
+    return result
 
 
 def get_role(email):
@@ -132,6 +155,7 @@ def create_record(kind, name, email):
         }
     }
     resp = internal_api.post(_STORAGE_PATH, json=payload)
+    invalidate_roster_cache()
     return resp["data"]["id"]
 
 
@@ -144,7 +168,9 @@ def update_record(doc_id, kind, name, email):
         }
     }
     internal_api.put(f"{_STORAGE_PATH}/{doc_id}", json=payload)
+    invalidate_roster_cache()
 
 
 def delete_record(doc_id):
     internal_api.delete(f"{_STORAGE_PATH}/{doc_id}")
+    invalidate_roster_cache()
