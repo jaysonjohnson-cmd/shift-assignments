@@ -74,8 +74,12 @@ export default function AssignmentsPage() {
   const isAdmin = role === "admin";
 
   const priorityPool = useMemo<Row[]>(() => {
-    return [...rows].sort((a, b) => b.priority - a.priority);
-  }, [rows]);
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const filtered = prioritizeAged
+      ? rows.filter((r) => r.oldestSubmission && r.oldestSubmission < sevenDaysAgo)
+      : rows;
+    return [...filtered].sort((a, b) => b.priority - a.priority);
+  }, [rows, prioritizeAged]);
 
   const cancel = () => {
     setMode({ kind: "menu" });
