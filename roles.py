@@ -36,6 +36,7 @@ _MAX_PAGES = 500
 # Per-kind document cache. {kind: {"data": [...], "fetched_at": float}}
 _DOC_CACHE: dict = {}
 _CACHE_LOCK = threading.Lock()
+_SCAN_LOCK = threading.Lock()   # only one scan runs at a time; others wait then read cache
 _DOC_CACHE_TTL = 240       # 4 minutes — background thread refreshes before expiry
 _REFRESH_INTERVAL = 210    # background refresh every 3.5 minutes (before TTL expires)
 _FULL_SCAN_AT = 0.0
@@ -70,39 +71,49 @@ def _ensure_bg_started():
 # ---------------------------------------------------------------------------
 
 def _full_namespace_scan():
-    """Scan all namespace pages once and populate every kind cache atomically."""
-    global _FULL_SCAN_AT
-    now = time.time()
-    by_kind: dict = {}
-    page = 1
-    try:
-        while page <= _MAX_PAGES:
-            resp = internal_api.get(
-                _STORAGE_PATH, params={"page": page, "per_page": _PAGE_SIZE}
-            )
-            docs = resp.get("data", []) if isinstance(resp, dict) else []
-            if not docs:
-                break
-            for doc in docs:
-                kind = (doc.get("data") or {}).get("kind")
-                if kind:
-                    by_kind.setdefault(kind, []).append(doc)
-            page += 1
-    except Exception as exc:
-        logging.warning("Storage namespace scan failed (page %d): %s", page, exc)
-        # Back off 10 s before next attempt — don't freeze for the full TTL.
-        _FULL_SCAN_AT = now - _DOC_CACHE_TTL + 10
-        raise
+    """Scan all namespace pages once and populate every kind cache atomically.
 
-    with _CACHE_LOCK:
-        for k, docs in by_kind.items():
-            _DOC_CACHE[k] = {"data": docs, "fetched_at": now}
-        _FULL_SCAN_AT = now
-    logging.info(
-        "Storage scan complete: %d docs across %d kinds",
-        sum(len(v) for v in by_kind.values()),
-        len(by_kind),
-    )
+    Only one scan runs at a time (_SCAN_LOCK). Concurrent callers block until
+    the scan finishes, then read from the freshly-populated cache. This prevents
+    the thundering-herd where N simultaneous requests each kick off 7 API calls.
+    """
+    global _FULL_SCAN_AT
+    with _SCAN_LOCK:
+        # Re-check after acquiring lock — another thread may have just finished.
+        now = time.time()
+        if (now - _FULL_SCAN_AT) < _DOC_CACHE_TTL:
+            return  # cache is already fresh; nothing to do
+
+        by_kind: dict = {}
+        page = 1
+        try:
+            while page <= _MAX_PAGES:
+                resp = internal_api.get(
+                    _STORAGE_PATH, params={"page": page, "per_page": _PAGE_SIZE}
+                )
+                docs = resp.get("data", []) if isinstance(resp, dict) else []
+                if not docs:
+                    break
+                for doc in docs:
+                    kind = (doc.get("data") or {}).get("kind")
+                    if kind:
+                        by_kind.setdefault(kind, []).append(doc)
+                page += 1
+        except Exception as exc:
+            logging.warning("Storage namespace scan failed (page %d): %s", page, exc)
+            # Back off 10 s before next attempt — don't freeze for the full TTL.
+            _FULL_SCAN_AT = now - _DOC_CACHE_TTL + 10
+            raise
+
+        with _CACHE_LOCK:
+            for k, docs in by_kind.items():
+                _DOC_CACHE[k] = {"data": docs, "fetched_at": now}
+            _FULL_SCAN_AT = now
+        logging.info(
+            "Storage scan complete: %d docs across %d kinds",
+            sum(len(v) for v in by_kind.values()),
+            len(by_kind),
+        )
 
 
 def list_docs_by_kind(kind):
@@ -140,15 +151,19 @@ def list_docs_by_kind(kind):
 
 
 def invalidate_doc_cache(*kinds):
-    """Drop cached results for the given kinds (or all kinds if none specified)."""
-    global _FULL_SCAN_AT
+    """Mark cached results as stale so the background thread refreshes them.
+
+    We don't reset _FULL_SCAN_AT to 0 because that would trigger every
+    concurrent request to race into _full_namespace_scan simultaneously
+    (thundering herd). Instead we expire the specific kind entries so the
+    next background loop (within 3.5 min) repopulates them cleanly.
+    """
     with _CACHE_LOCK:
         if kinds:
             for k in kinds:
                 _DOC_CACHE.pop(k, None)
         else:
             _DOC_CACHE.clear()
-    _FULL_SCAN_AT = 0.0
 
 
 # ---------------------------------------------------------------------------
