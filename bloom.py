@@ -70,8 +70,11 @@ def _row_from_api(job):
         "priority": int(job.get("priority") or 0),
         "name": str(job.get("name") or ""),
         "unreviewedCount": int(job.get("new") or 0),
-        "oldestSubmission": "",  # Not provided by this API
-        "extras": {},
+        "oldestSubmission": "",
+        "extras": {
+            "old_sub": int((job.get("priority_details") or {}).get("old_sub") or 0),
+            "startDate": str(job.get("startDate") or ""),
+        },
     }
 
 

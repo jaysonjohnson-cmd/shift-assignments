@@ -157,20 +157,11 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
       regularJobs = unpinned.filter((row) => !newResponses.includes(row));
     }
 
-    // Separate aged submissions (oldest > 7 days) from fresh jobs
+    // Separate aged submissions (old_sub flag from Bloom) from fresh jobs
     let agedJobs: Row[] = [];
     if (prioritizeAged) {
-      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-      agedJobs = regularJobs.filter(
-        (row) => row.oldestSubmission && row.oldestSubmission < sevenDaysAgo
-      );
-      regularJobs = regularJobs.filter((row) => !agedJobs.includes(row));
-      // Sort aged jobs oldest-first so the stalest work is assigned first
-      agedJobs.sort((a, b) => {
-        const aMs = a.oldestSubmission ? new Date(a.oldestSubmission).getTime() : Infinity;
-        const bMs = b.oldestSubmission ? new Date(b.oldestSubmission).getTime() : Infinity;
-        return aMs - bMs;
-      });
+      agedJobs = regularJobs.filter((row) => Number(row.extras?.old_sub ?? 0) > 0);
+      regularJobs = regularJobs.filter((row) => Number(row.extras?.old_sub ?? 0) === 0);
     }
 
     // Helper function to distribute jobs using weighted round-robin
