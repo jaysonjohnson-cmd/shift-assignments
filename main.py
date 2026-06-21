@@ -501,6 +501,9 @@ def api_shifts_publish():
             continue
         normalized[key] = [_compact_row(r) for r in rows]
 
+    if not normalized:
+        return jsonify({"error": "assignments cannot be empty — assign at least one reviewer before publishing"}), 400
+
     published_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     published_by = g.user.get("email", "")
     reviewer_emails = sorted(normalized.keys())
@@ -546,12 +549,37 @@ def api_shifts_publish():
 
 
 def _latest_snapshot():
-    """Helper — return the latest snapshot's {id, data} or (None, None)."""
+    """Helper — return the latest snapshot's {id, data} or (None, None).
+
+    Skips empty snapshots — those where all reviewer_shift docs have zero rows
+    (e.g. published with prioritizeAged on before the fix, or a mid-publish
+    failure). Uses the most recent snapshot that actually has assigned jobs.
+    """
     snaps = roles.list_docs_by_kind("shift_snapshot")
     if not snaps:
         return None, None
-    snap = snaps[0]
-    return snap.get("id"), (snap.get("data") or {})
+
+    # Count total rows per snapshot across all reviewer_shift docs.
+    snap_row_counts: dict[str, int] = {}
+    for d in roles.list_docs_by_kind("reviewer_shift"):
+        data = d.get("data") or {}
+        sid = data.get("shift_snapshot_id")
+        if sid:
+            snap_row_counts[sid] = snap_row_counts.get(sid, 0) + len(data.get("rows") or [])
+
+    # Return the most recent snapshot that has reviewer_emails AND rows assigned.
+    for snap in snaps:
+        data = snap.get("data") or {}
+        if data.get("reviewer_emails") and snap_row_counts.get(snap.get("id"), 0) > 0:
+            return snap.get("id"), data
+
+    # Fallback: first snapshot with reviewer_emails (edge case: first-ever publish)
+    for snap in snaps:
+        data = snap.get("data") or {}
+        if data.get("reviewer_emails"):
+            return snap.get("id"), data
+
+    return None, None
 
 
 def _rows_for_reviewer(snapshot_id, email):
