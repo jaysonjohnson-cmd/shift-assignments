@@ -53,16 +53,22 @@ def _bg_refresh_loop():
     Storage API. This guarantees 0 Storage API calls per request after startup,
     eliminating 429s entirely regardless of traffic.
     """
-    # Wait a moment after startup so Flask can finish binding before the first scan.
+    # Wait a moment after startup so Flask finishes binding before the first scan.
     time.sleep(2)
+    retry_delay = 10  # seconds to wait after a failed scan before retrying
     while True:
         try:
             _full_namespace_scan()
+            # Success — wait the full refresh interval (or wake early on invalidation).
+            _NEEDS_REFRESH.wait(timeout=_REFRESH_INTERVAL)
+            _NEEDS_REFRESH.clear()
+            retry_delay = 10  # reset backoff after a successful scan
         except Exception:
-            pass  # logged inside; retry after short sleep
-        # Sleep until the next scheduled refresh OR until woken early by invalidation.
-        _NEEDS_REFRESH.wait(timeout=_REFRESH_INTERVAL)
-        _NEEDS_REFRESH.clear()
+            # Scan failed (e.g. 429 on startup). Retry quickly with backoff,
+            # not after the full 3-minute interval — cache is empty until we succeed.
+            logging.info("Cache scan failed; retrying in %ds", retry_delay)
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 60)  # cap at 60s
 
 
 def _ensure_bg_started():
