@@ -9,9 +9,9 @@ type AgedRow = Row & { daysOld: number | null; oldestSubDate: string | null };
 
 const PRESETS = [
   { label: "All aged", min: 0 },
+  { label: "3+ days", min: 3 },
   { label: "7+ days", min: 7 },
   { label: "14+ days", min: 14 },
-  { label: "30+ days", min: 30 },
 ];
 
 function isoToDaysAgo(iso: string): number {

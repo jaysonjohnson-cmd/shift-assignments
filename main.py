@@ -448,19 +448,18 @@ def api_bloom_projects():
     return jsonify({"data": summaries})
 
 
-# Server-side cache for submission ages.
-# /api/responses is too slow (3+ min per page, 1M+ records).
-# /api/responsegroups is fast per-job (0.15s) but we're rate-limited to 60 req/min.
-# Strategy: background thread fetches top-N aged jobs at 1/sec, caches for 10 min.
-# Requests are always served from cache — instant after the first warm-up.
 _SUB_AGES_CACHE: dict = {"data": {}, "fetched_at": 0.0, "loading": False}
 _SUB_AGES_LOCK = threading.Lock()
 _SUB_AGES_TTL = 600  # 10 minutes
-_SUB_AGES_TOP_N = 200  # fetch dates for top N aged jobs by priority
 
 
 def _refresh_sub_ages_bg():
-    """Background: fetch oldest unreviewed submission for top aged jobs, 1 call/sec."""
+    """Background: fetch oldest unreviewed submission for all aged jobs via responsegroups.
+
+    Submissions are never older than 20 days, so per-job responsegroups calls are fast
+    (0.15s each). Paced at 1 call/sec to stay under the 60 req/min rate limit.
+    All aged jobs processed; results cached for 10 minutes.
+    """
     with _SUB_AGES_LOCK:
         if _SUB_AGES_CACHE["loading"]:
             return
@@ -472,10 +471,9 @@ def _refresh_sub_ages_bg():
             [r for r in rows if (r.get("extras") or {}).get("old_sub", 0) > 0],
             key=lambda r: int(r.get("priority") or 9999),
         )
-        top = aged[:_SUB_AGES_TOP_N]
 
         ages: dict = {}
-        for row in top:
+        for row in aged:
             job_id = row.get("jobId") or row.get("id") or ""
             if not job_id:
                 continue
@@ -492,7 +490,7 @@ def _refresh_sub_ages_bg():
                         ages[str(job_id)] = parsed.strftime("%Y-%m-%d")
             except Exception as exc:
                 logging.debug("submission-ages: job %s failed: %s", job_id, exc)
-            time.sleep(1.1)  # ~54 calls/min — safely under the 60 req/min limit
+            time.sleep(1.1)  # ~54 calls/min — safely under 60 req/min limit
 
         with _SUB_AGES_LOCK:
             _SUB_AGES_CACHE["data"] = ages
@@ -508,10 +506,6 @@ def _refresh_sub_ages_bg():
 @app.route("/api/bloom/submission-ages", methods=["GET"])
 def api_bloom_submission_ages():
     """Return oldest unreviewed submission date per job_id, served from cache.
-
-    A background thread fetches dates for the top 200 aged jobs at 1 call/sec
-    (~3.5 minutes to fully warm). Subsequent requests are instant. Cache TTL is
-    10 minutes.
 
     Returns: {data: {"<job_id>": "YYYY-MM-DD", ...}, loading: bool}
     """
