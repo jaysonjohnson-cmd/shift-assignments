@@ -81,28 +81,50 @@ export default function AgedJobsPage() {
         .filter((r) => Number(r.extras?.old_sub ?? 0) > 0)
         .map((r) => ({ ...r, daysOld: null, oldestSubDate: null }));
       setRows(aged);
-
-      // Fetch real submission ages in the background — don't block the table render
-      setAgesLoading(true);
-      getSubmissionAges(20).then((ages) => {
-        setRows((prev) =>
-          prev.map((r) => {
-            const iso = (r.jobId ? ages[r.jobId] : undefined) ?? (r.id ? ages[r.id] : undefined) ?? null;
-            return iso
-              ? { ...r, oldestSubDate: iso, daysOld: isoToDaysAgo(iso) }
-              : r;
-          })
-        );
-      }).catch(() => {
-        // Ages failed — rows stay with null, table still works
-      }).finally(() => {
-        setAgesLoading(false);
-      });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load jobs");
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  // Poll submission ages separately — server builds cache at 1 job/sec in background
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const applyAges = (ages: Record<string, string>) => {
+      setRows((prev) =>
+        prev.map((r) => {
+          const iso = (r.jobId ? ages[r.jobId] : undefined) ?? (r.id ? ages[r.id] : undefined) ?? null;
+          return iso ? { ...r, oldestSubDate: iso, daysOld: isoToDaysAgo(iso) } : r;
+        })
+      );
+    };
+
+    const poll = async () => {
+      try {
+        const result = await getSubmissionAges();
+        if (!cancelled) {
+          applyAges(result.data);
+          if (result.loading) {
+            setAgesLoading(true);
+            timer = setTimeout(poll, 5000);
+          } else {
+            setAgesLoading(false);
+          }
+        }
+      } catch {
+        if (!cancelled) setAgesLoading(false);
+      }
+    };
+
+    setAgesLoading(true);
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   useEffect(() => { void load(); }, [load]);

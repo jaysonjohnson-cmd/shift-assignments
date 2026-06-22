@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import pathlib
+import threading
 import time
 from typing import Optional
 
@@ -447,59 +448,89 @@ def api_bloom_projects():
     return jsonify({"data": summaries})
 
 
+# Server-side cache for submission ages.
+# /api/responses is too slow (3+ min per page, 1M+ records).
+# /api/responsegroups is fast per-job (0.15s) but we're rate-limited to 60 req/min.
+# Strategy: background thread fetches top-N aged jobs at 1/sec, caches for 10 min.
+# Requests are always served from cache — instant after the first warm-up.
+_SUB_AGES_CACHE: dict = {"data": {}, "fetched_at": 0.0, "loading": False}
+_SUB_AGES_LOCK = threading.Lock()
+_SUB_AGES_TTL = 600  # 10 minutes
+_SUB_AGES_TOP_N = 200  # fetch dates for top N aged jobs by priority
+
+
+def _refresh_sub_ages_bg():
+    """Background: fetch oldest unreviewed submission for top aged jobs, 1 call/sec."""
+    with _SUB_AGES_LOCK:
+        if _SUB_AGES_CACHE["loading"]:
+            return
+        _SUB_AGES_CACHE["loading"] = True
+
+    try:
+        rows = bloom.fetch_prioritized_jobs()
+        aged = sorted(
+            [r for r in rows if (r.get("extras") or {}).get("old_sub", 0) > 0],
+            key=lambda r: int(r.get("priority") or 9999),
+        )
+        top = aged[:_SUB_AGES_TOP_N]
+
+        ages: dict = {}
+        for row in top:
+            job_id = row.get("jobId") or row.get("id") or ""
+            if not job_id:
+                continue
+            try:
+                resp = internal_api.get(
+                    "/api/responsegroups",
+                    params={"job_id": job_id, "status": "N", "sort": "submission_date", "per_page": 1},
+                )
+                rg_rows = resp.get("data", []) if isinstance(resp, dict) else []
+                if rg_rows:
+                    sub_date = rg_rows[0].get("submission_date", "")
+                    if sub_date:
+                        parsed = datetime.datetime.strptime(sub_date, "%a, %d %b %Y %H:%M:%S %Z")
+                        ages[str(job_id)] = parsed.strftime("%Y-%m-%d")
+            except Exception as exc:
+                logging.debug("submission-ages: job %s failed: %s", job_id, exc)
+            time.sleep(1.1)  # ~54 calls/min — safely under the 60 req/min limit
+
+        with _SUB_AGES_LOCK:
+            _SUB_AGES_CACHE["data"] = ages
+            _SUB_AGES_CACHE["fetched_at"] = time.time()
+        logging.info("submission-ages: cached %d aged jobs", len(ages))
+    except Exception as exc:
+        logging.warning("submission-ages background refresh failed: %s", exc)
+    finally:
+        with _SUB_AGES_LOCK:
+            _SUB_AGES_CACHE["loading"] = False
+
+
 @app.route("/api/bloom/submission-ages", methods=["GET"])
 def api_bloom_submission_ages():
-    """Return oldest unreviewed submission date per job_id.
+    """Return oldest unreviewed submission date per job_id, served from cache.
 
-    Paginates /api/responses?status=N&sort=submission_date (oldest first) and
-    builds a {job_id: oldest_submission_date} map. Stops after max_pages pages
-    (default 20, max 50) — each page is 100 responses, so 20 pages = 2000
-    oldest submissions which covers all seriously aged jobs.
+    A background thread fetches dates for the top 200 aged jobs at 1 call/sec
+    (~3.5 minutes to fully warm). Subsequent requests are instant. Cache TTL is
+    10 minutes.
 
-    Returns: {data: {"<job_id>": "YYYY-MM-DD", ...}}
+    Returns: {data: {"<job_id>": "YYYY-MM-DD", ...}, loading: bool}
     """
     denied = _require_admin()
     if denied is not None:
         return denied
 
-    try:
-        max_pages = min(int(request.args.get("max_pages", 20)), 50)
-    except (TypeError, ValueError):
-        max_pages = 20
+    now = time.time()
+    with _SUB_AGES_LOCK:
+        fetched_at = _SUB_AGES_CACHE["fetched_at"]
+        data = dict(_SUB_AGES_CACHE["data"])
+        loading = _SUB_AGES_CACHE["loading"]
 
-    ages: dict = {}  # job_id (str) -> ISO date string
-    try:
-        for page in range(1, max_pages + 1):
-            resp = internal_api.get(
-                "/api/responses",
-                params={"status": "N", "sort": "submission_date", "per_page": 100, "page": page},
-            )
-            batch = resp.get("data", []) if isinstance(resp, dict) else []
-            if not batch:
-                break
-            for r in batch:
-                jid = str(r.get("job_id") or "")
-                sub_date = str(r.get("submission_date") or "")
-                if jid and sub_date and jid not in ages:
-                    # Responses sorted oldest-first, so first seen = oldest for this job
-                    try:
-                        parsed = datetime.datetime.strptime(sub_date, "%a, %d %b %Y %H:%M:%S %Z")
-                        ages[jid] = parsed.strftime("%Y-%m-%d")
-                    except ValueError:
-                        ages[jid] = sub_date
-            pagination = resp.get("pagination", {}) if isinstance(resp, dict) else {}
-            total = pagination.get("total", 0)
-            if len(batch) < 100 or page * 100 >= total:
-                break
-            time.sleep(0.5)  # pace requests
-    except requests.exceptions.HTTPError as e:
-        return _http_error_response(e, source="responses api")
+    if (now - fetched_at) > _SUB_AGES_TTL and not loading:
+        t = threading.Thread(target=_refresh_sub_ages_bg, daemon=True, name="sub-ages-refresh")
+        t.start()
+        loading = True
 
-    logging.info(
-        "GET /api/bloom/submission-ages by=%s pages=%d jobs_found=%d",
-        g.user.get("email"), page, len(ages),
-    )
-    return jsonify({"data": ages})
+    return jsonify({"data": data, "loading": loading})
 
 
 @app.route("/api/shifts/latest", methods=["GET"])

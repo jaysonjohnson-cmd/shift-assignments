@@ -101,12 +101,11 @@ export async function deleteAdmin(id: string): Promise<void> {
 
 // ---------- Bloom feed + shift snapshots + My Tasks ----------
 
-export async function getSubmissionAges(maxPages = 20): Promise<Record<string, string>> {
-  const resp = await call<{ data: Record<string, string> }>(
+export async function getSubmissionAges(): Promise<{ data: Record<string, string>; loading: boolean }> {
+  return call<{ data: Record<string, string>; loading: boolean }>(
     "GET",
-    `/api/bloom/submission-ages?max_pages=${maxPages}`,
+    "/api/bloom/submission-ages",
   );
-  return resp.data;
 }
 
 export async function getBloomJobs(force = false, status?: string): Promise<Row[]> {
