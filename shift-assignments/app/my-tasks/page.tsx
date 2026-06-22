@@ -347,22 +347,6 @@ export default function MyTasksPage() {
           </Section>
         )}
 
-        {done.length > 0 && (
-          <Section title="Done today" count={done.length} muted>
-            {done.map((row) => (
-              <TaskCard
-                key={row.projectId || row.id}
-                row={row}
-                density={density}
-                grouped={viewByPid}
-                onChange={(iso) =>
-                  handleRowChange(row.projectId || row.id, iso)
-                }
-                completed
-              />
-            ))}
-          </Section>
-        )}
       </div>
     </div>
   );
