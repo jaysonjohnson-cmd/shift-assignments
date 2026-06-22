@@ -472,7 +472,6 @@ def _refresh_sub_ages_bg():
             key=lambda r: int(r.get("priority") or 9999),
         )
 
-        ages: dict = {}
         for row in aged:
             job_id = row.get("jobId") or row.get("id") or ""
             if not job_id:
@@ -487,15 +486,15 @@ def _refresh_sub_ages_bg():
                     sub_date = rg_rows[0].get("submission_date", "")
                     if sub_date:
                         parsed = datetime.datetime.strptime(sub_date, "%a, %d %b %Y %H:%M:%S %Z")
-                        ages[str(job_id)] = parsed.strftime("%Y-%m-%d")
+                        with _SUB_AGES_LOCK:
+                            _SUB_AGES_CACHE["data"][str(job_id)] = parsed.strftime("%Y-%m-%d")
             except Exception as exc:
                 logging.debug("submission-ages: job %s failed: %s", job_id, exc)
             time.sleep(1.1)  # ~54 calls/min — safely under 60 req/min limit
 
         with _SUB_AGES_LOCK:
-            _SUB_AGES_CACHE["data"] = ages
             _SUB_AGES_CACHE["fetched_at"] = time.time()
-        logging.info("submission-ages: cached %d aged jobs", len(ages))
+        logging.info("submission-ages: cached %d aged jobs", len(_SUB_AGES_CACHE["data"]))
     except Exception as exc:
         logging.warning("submission-ages background refresh failed: %s", exc)
     finally:
