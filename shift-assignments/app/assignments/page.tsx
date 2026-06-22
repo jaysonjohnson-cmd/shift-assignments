@@ -255,7 +255,7 @@ export default function AssignmentsPage() {
                         : "border border-storesight-border bg-white text-storesight-ink-muted hover:border-storesight-primary/40 dark:border-storesight-border-dark dark:bg-storesight-surface-dark dark:text-storesight-ink-muted-dark"
                     }`}
                   >
-                    {prioritizeAged ? "✓ " : ""}Prioritize aged submissions
+                    {prioritizeAged ? "✓ " : ""}Prioritize old submissions
                   </button>
                 </div>
               </div>

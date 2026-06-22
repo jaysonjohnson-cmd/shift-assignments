@@ -80,7 +80,7 @@ const tiles: Tile[] = [
   },
   {
     href: "/aged-jobs",
-    title: "Aged Submissions",
+    title: "Old Submissions",
     description:
       "Browse all projects sorted by how long their oldest unreviewed submission has been waiting.",
     accent: "from-orange-400/10 to-[#FF4D4D]/10",

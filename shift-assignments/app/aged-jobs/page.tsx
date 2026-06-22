@@ -9,7 +9,7 @@ import type { Row } from "@/lib/types";
 type AgedRow = Row & { daysOld: number | null; oldestSubDate: string | null };
 
 const PRESETS = [
-  { label: "All aged", min: 0 },
+  { label: "All old", min: 0 },
   { label: "3+ days", min: 3 },
   { label: "7+ days", min: 7 },
   { label: "14+ days", min: 14 },
@@ -153,14 +153,14 @@ export default function AgedJobsPage() {
             ← Back to home
           </Link>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight text-storesight-ink dark:text-storesight-ink-dark">
-            Aged Submissions
+            Old Submissions
           </h1>
           <p className="mt-0.5 text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
             {loading
               ? "Loading…"
               : agesLoading
               ? `${filtered.length} job${filtered.length !== 1 ? "s" : ""} · loading submission ages…`
-              : `${filtered.length} job${filtered.length !== 1 ? "s" : ""} with aged submissions${oldest > 0 ? ` · oldest waiting ${oldest} days` : ""}`}
+              : `${filtered.length} job${filtered.length !== 1 ? "s" : ""} with old submissions${oldest > 0 ? ` · oldest waiting ${oldest} days` : ""}`}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -178,7 +178,7 @@ export default function AgedJobsPage() {
             disabled={loading || rows.length === 0}
             className="rounded-lg border border-storesight-accent bg-storesight-accent/10 px-3 py-2 text-sm font-semibold text-storesight-primary transition hover:bg-storesight-accent/20 disabled:opacity-50 dark:border-storesight-accent-light dark:bg-storesight-accent/20 dark:text-storesight-accent-light"
           >
-            Assign aged jobs →
+            Assign old jobs →
           </button>
         </div>
       </header>
