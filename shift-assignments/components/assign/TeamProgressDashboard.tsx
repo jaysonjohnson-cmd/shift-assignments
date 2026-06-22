@@ -21,7 +21,7 @@ type ProgressData = {
   overallPct: number;
 };
 
-export function TeamProgressDashboard() {
+export function TeamProgressDashboard({ refreshKey = 0 }: { refreshKey?: number }) {
   const { role } = useUser();
   const [data, setData] = useState<ProgressData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -70,7 +70,7 @@ export function TeamProgressDashboard() {
     void load();
     const interval = setInterval(() => load(), 120000); // Refresh every 2 minutes
     return () => clearInterval(interval);
-  }, [role]);
+  }, [role, refreshKey]);
 
   if (role !== "admin") {
     return null;

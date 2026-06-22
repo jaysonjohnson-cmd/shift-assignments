@@ -74,6 +74,7 @@ export function AssignMenu({
   const [error, setError] = useState<string | null>(null);
   const [pickingClear, setPickingClear] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [clearCount, setClearCount] = useState(0);
   const dashboardRef = useRef<HTMLDivElement>(null);
 
   const handleRefresh = async () => {
@@ -116,6 +117,7 @@ export function AssignMenu({
       // Force-refresh Bloom so the job pool reflects the cleared state
       const fetched = await getBloomJobs(true, "N");
       setRows(fetched, `Bloom · ${fetched.length} jobs (unreviewed)`);
+      setClearCount((n) => n + 1);
       setToast(parts.length ? `Cleared ${parts.join(" + ")} · reloaded ${fetched.length} jobs` : `Reloaded ${fetched.length} jobs`);
       setTimeout(() => setToast(null), 4000);
     } catch (e) {
@@ -165,7 +167,7 @@ export function AssignMenu({
 
       {/* Team Progress Dashboard */}
       <div className="mb-8" ref={dashboardRef}>
-        <TeamProgressDashboard />
+        <TeamProgressDashboard refreshKey={clearCount} />
       </div>
 
       {isAdmin ? (
