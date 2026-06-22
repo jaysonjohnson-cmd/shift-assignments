@@ -71,6 +71,7 @@ export default function AgedJobsPage() {
   const [error, setError] = useState<string | null>(null);
   const [minDays, setMinDays] = useState(0);
   const [sortDir, setSortDir] = useState<"desc" | "asc">("desc");
+  const [copied, setCopied] = useState(false);
 
   const load = useCallback(async (force = false) => {
     setLoading(true);
@@ -199,6 +200,20 @@ export default function AgedJobsPage() {
           className="inline-flex items-center gap-1.5 rounded-lg border border-storesight-border bg-white px-3 py-1.5 text-xs font-medium text-storesight-ink-muted transition hover:border-storesight-accent hover:text-storesight-primary dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
         >
           {sortDir === "desc" ? "Oldest first" : "Newest first"}
+        </button>
+        <button
+          type="button"
+          disabled={filtered.length === 0}
+          onClick={() => {
+            const ids = filtered.map((r) => r.jobId ?? r.id ?? "").filter(Boolean).join("\n");
+            navigator.clipboard.writeText(ids).then(() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 2000);
+            });
+          }}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-storesight-border bg-white px-3 py-1.5 text-xs font-medium text-storesight-ink-muted transition hover:border-storesight-accent hover:text-storesight-primary disabled:opacity-40 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
+        >
+          {copied ? "Copied!" : `Copy ${filtered.length} job ID${filtered.length !== 1 ? "s" : ""}`}
         </button>
         {agesLoading && (
           <span className="text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark animate-pulse">
