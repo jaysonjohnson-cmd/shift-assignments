@@ -58,6 +58,7 @@ export default function AssignmentsPage() {
   useEffect(() => {
     if (searchParams.get("aged") === "1") {
       setPrioritizeAged(true);
+      setShowOptions(true);
       setMode({ kind: "shift", draft: emptyShiftDraft() });
     }
   }, [searchParams]);
