@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
 import { AssignMenu } from "@/components/assign/AssignMenu";
 import { ShiftComposer } from "@/components/assign/ShiftComposer";
 import {
@@ -39,7 +38,6 @@ export default function AssignmentsPage() {
   const reviewers = useStore((s) => s.reviewers);
   const setLastPublishedAt = useStore((s) => s.setLastPublishedAt);
   const { role, loading: userLoading } = useUser();
-  const searchParams = useSearchParams();
   const [hydrated, setHydrated] = useState(false);
   const [mode, setMode] = useState<Mode>({ kind: "menu" });
   const [busy, setBusy] = useState(false);
@@ -54,14 +52,14 @@ export default function AssignmentsPage() {
 
   useReviewerSync();
 
-  // Auto-open composer with aged filter when coming from the Aged Submissions page
+  // Auto-open composer with aged filter when coming from the Old Submissions page
   useEffect(() => {
-    if (searchParams.get("aged") === "1") {
+    if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("aged") === "1") {
       setPrioritizeAged(true);
       setShowOptions(true);
       setMode({ kind: "shift", draft: emptyShiftDraft() });
     }
-  }, [searchParams]);
+  }, []);
 
   useEffect(() => {
     setHydrated(true);
