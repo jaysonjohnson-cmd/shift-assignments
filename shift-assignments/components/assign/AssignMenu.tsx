@@ -75,6 +75,7 @@ export function AssignMenu({
   const [pickingClear, setPickingClear] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [clearCount, setClearCount] = useState(0);
+  const [breakdownDismissed, setBreakdownDismissed] = useState(false);
   const dashboardRef = useRef<HTMLDivElement>(null);
 
   const handleRefresh = async () => {
@@ -118,6 +119,7 @@ export function AssignMenu({
       const fetched = await getBloomJobs(true, "N");
       setRows(fetched, `Bloom · ${fetched.length} jobs (unreviewed)`);
       setClearCount((n) => n + 1);
+      setBreakdownDismissed(false);
       setToast(parts.length ? `Cleared ${parts.join(" + ")} · reloaded ${fetched.length} jobs` : `Reloaded ${fetched.length} jobs`);
       setTimeout(() => setToast(null), 4000);
     } catch (e) {
@@ -167,7 +169,12 @@ export function AssignMenu({
 
       {/* Team Progress Dashboard */}
       <div className="mb-8" ref={dashboardRef}>
-        <TeamProgressDashboard refreshKey={clearCount} />
+        {!breakdownDismissed && (
+          <TeamProgressDashboard
+            refreshKey={clearCount}
+            onDismiss={() => setBreakdownDismissed(true)}
+          />
+        )}
       </div>
 
       {isAdmin ? (

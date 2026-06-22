@@ -21,7 +21,7 @@ type ProgressData = {
   overallPct: number;
 };
 
-export function TeamProgressDashboard({ refreshKey = 0 }: { refreshKey?: number }) {
+export function TeamProgressDashboard({ refreshKey = 0, onDismiss }: { refreshKey?: number; onDismiss?: () => void }) {
   const { role } = useUser();
   const [data, setData] = useState<ProgressData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -140,9 +140,23 @@ export function TeamProgressDashboard({ refreshKey = 0 }: { refreshKey?: number 
 
       {/* Team Breakdown */}
       <div className="rounded-2xl border border-storesight-border bg-white p-6 dark:border-storesight-border-dark dark:bg-storesight-surface-dark">
-        <h3 className="mb-4 text-base font-semibold text-storesight-ink dark:text-storesight-ink-dark">
-          Team Breakdown
-        </h3>
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="text-base font-semibold text-storesight-ink dark:text-storesight-ink-dark">
+            Team Breakdown
+          </h3>
+          {onDismiss && (
+            <button
+              type="button"
+              onClick={onDismiss}
+              className="rounded p-1 text-storesight-ink-muted transition hover:bg-storesight-bg-tint hover:text-storesight-ink dark:text-storesight-ink-muted-dark dark:hover:bg-storesight-surface-raised-dark dark:hover:text-storesight-ink-dark"
+              aria-label="Dismiss"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              </svg>
+            </button>
+          )}
+        </div>
         <div className="space-y-4">
           {data.reviewers.map((reviewer) => (
             <div key={reviewer.email}>
