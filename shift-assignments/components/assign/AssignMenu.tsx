@@ -113,8 +113,11 @@ export function AssignMenu({
         parts.push(
           `${result.cleared_completions} completion${result.cleared_completions === 1 ? "" : "s"}`,
         );
-      setToast(parts.length ? `Cleared ${parts.join(" + ")}` : "Nothing to clear");
-      setTimeout(() => setToast(null), 3500);
+      // Force-refresh Bloom so the job pool reflects the cleared state
+      const fetched = await getBloomJobs(true, "N");
+      setRows(fetched, `Bloom · ${fetched.length} jobs (unreviewed)`);
+      setToast(parts.length ? `Cleared ${parts.join(" + ")} · reloaded ${fetched.length} jobs` : `Reloaded ${fetched.length} jobs`);
+      setTimeout(() => setToast(null), 4000);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to clear");
     } finally {

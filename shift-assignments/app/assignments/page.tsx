@@ -35,6 +35,7 @@ type Mode =
 
 export default function AssignmentsPage() {
   const rows = useStore((s) => s.rows);
+  const setRows = useStore((s) => s.setRows);
   const reviewers = useStore((s) => s.reviewers);
   const setLastPublishedAt = useStore((s) => s.setLastPublishedAt);
   const { role, loading: userLoading } = useUser();
@@ -160,6 +161,8 @@ export default function AssignmentsPage() {
     setError(null);
     try {
       await clearShift("all");
+      const fetched = await getBloomJobs(true, "N");
+      setRows(fetched, `Bloom · ${fetched.length} jobs (unreviewed)`);
       setMode({ kind: "menu" });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to close assignment");

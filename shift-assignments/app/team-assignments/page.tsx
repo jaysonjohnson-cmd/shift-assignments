@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { getShiftJobs, type ShiftJobs, type ShiftJob, clearShift } from "@/lib/api";
+import { getShiftJobs, type ShiftJobs, type ShiftJob, clearShift, getBloomJobs } from "@/lib/api";
+import { useStore } from "@/lib/store";
 import { formatRelative } from "@/lib/relativeTime";
 import { ProgressTrackerTile } from "@/components/assign/ProgressTrackerTile";
 import { useUser } from "@/lib/useUser";
@@ -43,6 +44,7 @@ function buildResponseSearchUrl(row: ShiftJob): string {
 }
 
 export default function TeamAssignmentsPage() {
+  const setRows = useStore((s) => s.setRows);
   const [data, setData] = useState<ShiftJobs | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -74,7 +76,9 @@ export default function TeamAssignmentsPage() {
     setError(null);
     try {
       await clearShift("all");
-      await load();
+      // Re-fetch shift view and force-refresh Bloom so the job pool is fresh
+      const [, fetched] = await Promise.all([load(), getBloomJobs(true, "N")]);
+      setRows(fetched, `Bloom · ${fetched.length} jobs (unreviewed)`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to close assignment");
     } finally {
