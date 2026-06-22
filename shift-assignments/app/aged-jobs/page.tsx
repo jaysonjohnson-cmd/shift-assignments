@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { getBloomJobs } from "@/lib/api";
+import { getBloomJobs, getSubmissionAges } from "@/lib/api";
 import type { Row } from "@/lib/types";
 
-type AgedRow = Row & { daysOld: number };
+type AgedRow = Row & { daysOld: number | null; oldestSubDate: string | null };
 
 const PRESETS = [
   { label: "All aged", min: 0 },
@@ -14,21 +14,26 @@ const PRESETS = [
   { label: "30+ days", min: 30 },
 ];
 
-function parseMDY(s: string): Date | null {
-  // "MM/DD/YYYY" → Date
-  if (!s) return null;
-  const [m, d, y] = s.split("/").map(Number);
-  if (!m || !d || !y) return null;
-  return new Date(y, m - 1, d);
-}
-
-function daysAgo(s: string): number {
-  const d = parseMDY(s);
-  if (!d) return 0;
+function isoToDaysAgo(iso: string): number {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return 0;
   return Math.floor((Date.now() - d.getTime()) / 86_400_000);
 }
 
-function AgeBadge({ days }: { days: number }) {
+function formatDate(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+function AgeBadge({ days }: { days: number | null }) {
+  if (days === null) {
+    return (
+      <span className="inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium bg-storesight-bg-tint text-storesight-ink-muted dark:bg-storesight-accent/20 dark:text-storesight-accent-light">
+        —
+      </span>
+    );
+  }
   let cls = "bg-storesight-bg-tint text-storesight-ink-muted dark:bg-storesight-accent/20 dark:text-storesight-accent-light";
   if (days >= 30) cls = "bg-[#FF4D4D]/15 text-[#FF4D4D]";
   else if (days >= 14) cls = "bg-[#FFA500]/15 text-[#FFA500]";
@@ -62,6 +67,7 @@ function priorityMeta(p: number) {
 export default function AgedJobsPage() {
   const [rows, setRows] = useState<AgedRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [agesLoading, setAgesLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [minDays, setMinDays] = useState(0);
   const [sortDir, setSortDir] = useState<"desc" | "asc">("desc");
@@ -73,11 +79,25 @@ export default function AgedJobsPage() {
       const jobs = await getBloomJobs(force);
       const aged: AgedRow[] = jobs
         .filter((r) => Number(r.extras?.old_sub ?? 0) > 0)
-        .map((r) => ({
-          ...r,
-          daysOld: daysAgo(String(r.extras?.startDate ?? "")),
-        }));
+        .map((r) => ({ ...r, daysOld: null, oldestSubDate: null }));
       setRows(aged);
+
+      // Fetch real submission ages in the background — don't block the table render
+      setAgesLoading(true);
+      getSubmissionAges(20).then((ages) => {
+        setRows((prev) =>
+          prev.map((r) => {
+            const iso = (r.jobId ? ages[r.jobId] : undefined) ?? (r.id ? ages[r.id] : undefined) ?? null;
+            return iso
+              ? { ...r, oldestSubDate: iso, daysOld: isoToDaysAgo(iso) }
+              : r;
+          })
+        );
+      }).catch(() => {
+        // Ages failed — rows stay with null, table still works
+      }).finally(() => {
+        setAgesLoading(false);
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load jobs");
     } finally {
@@ -87,11 +107,15 @@ export default function AgedJobsPage() {
 
   useEffect(() => { void load(); }, [load]);
 
-  const filtered = rows
-    .filter((r) => r.daysOld >= minDays)
-    .sort((a, b) => sortDir === "desc" ? b.daysOld - a.daysOld : a.daysOld - b.daysOld);
+  const filtered = [...rows]
+    .filter((r) => minDays === 0 || (r.daysOld !== null && r.daysOld >= minDays))
+    .sort((a, b) => {
+      const ad = a.daysOld ?? -1;
+      const bd = b.daysOld ?? -1;
+      return sortDir === "desc" ? bd - ad : ad - bd;
+    });
 
-  const oldest = rows.length > 0 ? Math.max(...rows.map((r) => r.daysOld)) : 0;
+  const oldest = rows.reduce((max, r) => r.daysOld !== null && r.daysOld > max ? r.daysOld : max, 0);
 
   return (
     <div className="mx-auto w-full max-w-5xl flex-1 px-6 py-8">
@@ -109,16 +133,18 @@ export default function AgedJobsPage() {
           <p className="mt-0.5 text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
             {loading
               ? "Loading…"
-              : `${filtered.length} job${filtered.length !== 1 ? "s" : ""} with aged submissions${oldest > 0 ? ` · oldest started ${oldest} days ago` : ""}`}
+              : agesLoading
+              ? `${filtered.length} job${filtered.length !== 1 ? "s" : ""} · loading submission ages…`
+              : `${filtered.length} job${filtered.length !== 1 ? "s" : ""} with aged submissions${oldest > 0 ? ` · oldest waiting ${oldest} days` : ""}`}
           </p>
         </div>
         <button
           type="button"
           onClick={() => load(true)}
-          disabled={loading}
+          disabled={loading || agesLoading}
           className="rounded-lg border border-storesight-border bg-white px-3 py-2 text-sm font-medium text-storesight-ink-muted transition hover:border-storesight-accent hover:text-storesight-primary disabled:opacity-50 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
         >
-          {loading ? "Refreshing…" : "Refresh"}
+          {loading || agesLoading ? "Loading…" : "Refresh"}
         </button>
       </header>
 
@@ -152,6 +178,11 @@ export default function AgedJobsPage() {
         >
           {sortDir === "desc" ? "Oldest first" : "Newest first"}
         </button>
+        {agesLoading && (
+          <span className="text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark animate-pulse">
+            Fetching submission dates…
+          </span>
+        )}
       </div>
 
       {loading ? (
@@ -169,7 +200,7 @@ export default function AgedJobsPage() {
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Job</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Priority</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Age</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Waiting</th>
                 <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Unreviewed</th>
                 <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Links</th>
               </tr>
@@ -177,7 +208,6 @@ export default function AgedJobsPage() {
             <tbody className="divide-y divide-storesight-border dark:divide-storesight-border-dark">
               {filtered.map((r) => {
                 const meta = priorityMeta(r.priority);
-                const startDate = String(r.extras?.startDate ?? "");
                 return (
                   <tr
                     key={`${r.id}-${r.projectId}`}
@@ -200,10 +230,13 @@ export default function AgedJobsPage() {
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <AgeBadge days={r.daysOld} />
-                        {startDate && (
+                        {r.oldestSubDate && (
                           <span className="text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-                            started {startDate}
+                            since {formatDate(r.oldestSubDate)}
                           </span>
+                        )}
+                        {!r.oldestSubDate && agesLoading && (
+                          <span className="h-3 w-12 animate-pulse rounded bg-storesight-bg-tint dark:bg-storesight-surface-raised-dark" />
                         )}
                       </div>
                     </td>

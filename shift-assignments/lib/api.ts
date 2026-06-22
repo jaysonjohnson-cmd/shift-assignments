@@ -101,6 +101,14 @@ export async function deleteAdmin(id: string): Promise<void> {
 
 // ---------- Bloom feed + shift snapshots + My Tasks ----------
 
+export async function getSubmissionAges(maxPages = 20): Promise<Record<string, string>> {
+  const resp = await call<{ data: Record<string, string> }>(
+    "GET",
+    `/api/bloom/submission-ages?max_pages=${maxPages}`,
+  );
+  return resp.data;
+}
+
 export async function getBloomJobs(force = false, status?: string): Promise<Row[]> {
   const params = new URLSearchParams();
   if (force) params.set("force", "1");

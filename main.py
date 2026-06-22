@@ -447,6 +447,61 @@ def api_bloom_projects():
     return jsonify({"data": summaries})
 
 
+@app.route("/api/bloom/submission-ages", methods=["GET"])
+def api_bloom_submission_ages():
+    """Return oldest unreviewed submission date per job_id.
+
+    Paginates /api/responses?status=N&sort=submission_date (oldest first) and
+    builds a {job_id: oldest_submission_date} map. Stops after max_pages pages
+    (default 20, max 50) — each page is 100 responses, so 20 pages = 2000
+    oldest submissions which covers all seriously aged jobs.
+
+    Returns: {data: {"<job_id>": "YYYY-MM-DD", ...}}
+    """
+    denied = _require_admin()
+    if denied is not None:
+        return denied
+
+    try:
+        max_pages = min(int(request.args.get("max_pages", 20)), 50)
+    except (TypeError, ValueError):
+        max_pages = 20
+
+    ages: dict = {}  # job_id (str) -> ISO date string
+    try:
+        for page in range(1, max_pages + 1):
+            resp = internal_api.get(
+                "/api/responses",
+                params={"status": "N", "sort": "submission_date", "per_page": 100, "page": page},
+            )
+            batch = resp.get("data", []) if isinstance(resp, dict) else []
+            if not batch:
+                break
+            for r in batch:
+                jid = str(r.get("job_id") or "")
+                sub_date = str(r.get("submission_date") or "")
+                if jid and sub_date and jid not in ages:
+                    # Responses sorted oldest-first, so first seen = oldest for this job
+                    try:
+                        parsed = datetime.datetime.strptime(sub_date, "%a, %d %b %Y %H:%M:%S %Z")
+                        ages[jid] = parsed.strftime("%Y-%m-%d")
+                    except ValueError:
+                        ages[jid] = sub_date
+            pagination = resp.get("pagination", {}) if isinstance(resp, dict) else {}
+            total = pagination.get("total", 0)
+            if len(batch) < 100 or page * 100 >= total:
+                break
+            time.sleep(0.5)  # pace requests
+    except requests.exceptions.HTTPError as e:
+        return _http_error_response(e, source="responses api")
+
+    logging.info(
+        "GET /api/bloom/submission-ages by=%s pages=%d jobs_found=%d",
+        g.user.get("email"), page, len(ages),
+    )
+    return jsonify({"data": ages})
+
+
 @app.route("/api/shifts/latest", methods=["GET"])
 def api_shifts_latest():
     """Return the most recent shift_snapshot doc, or {data: null}."""
