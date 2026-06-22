@@ -263,12 +263,32 @@ export default function AgedJobsPage() {
                     className="bg-white transition hover:bg-storesight-bg-tint dark:bg-storesight-surface-dark dark:hover:bg-storesight-surface-raised-dark"
                   >
                     <td className="px-4 py-3">
-                      <div className="font-medium text-storesight-ink dark:text-storesight-ink-dark">
-                        {r.name || `Job ${r.jobId}`}
-                      </div>
+                      {r.jobId && r.projectId ? (
+                        <a
+                          href={buildCollectionReviewUrl(r.jobId, r.projectId)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-medium text-storesight-ink hover:text-storesight-primary dark:text-storesight-ink-dark dark:hover:text-storesight-accent-light"
+                        >
+                          {r.name || `Job ${r.jobId}`}
+                        </a>
+                      ) : (
+                        <div className="font-medium text-storesight-ink dark:text-storesight-ink-dark">
+                          {r.name || `Job ${r.jobId}`}
+                        </div>
+                      )}
                       <div className="mt-0.5 text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
                         {r.projectId && <span>Project {r.projectId}</span>}
-                        {r.jobId && <span className="ml-2">· Job {r.jobId}</span>}
+                        {r.jobId && r.projectId && (
+                          <a
+                            href={buildResponseSearchUrl(r.jobId, r.projectId)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="ml-2 hover:text-storesight-primary dark:hover:text-storesight-accent-light"
+                          >
+                            · Job {r.jobId}
+                          </a>
+                        )}
                       </div>
                     </td>
                     <td className="px-4 py-3">
