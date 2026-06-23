@@ -12,7 +12,7 @@ import { AssignmentsOverview } from "@/components/assign/AssignmentsOverview";
 import { useStore } from "@/lib/store";
 import { useUser } from "@/lib/useUser";
 import { useReviewerSync } from "@/lib/useReviewerSync";
-import { getBloomJobs, publishShift, clearShift } from "@/lib/api";
+import { getBloomJobs, getBloomProjects, publishShift, clearShift } from "@/lib/api";
 import { assignShift, plannedTotal } from "@/lib/assign";
 import {
   emptyShiftDraft,
@@ -69,17 +69,17 @@ export default function AssignmentsPage() {
   useEffect(() => {
     let cancelled = false;
     if (role !== "admin" && role !== "lead") return;
-    getBloomJobs(false, statusFilter || undefined)
-      .then((jobs) => {
-        if (!cancelled) setProjects(jobs as unknown as ProjectSummary[]);
+    getBloomProjects()
+      .then((summaries) => {
+        if (!cancelled) setProjects(summaries);
       })
       .catch(() => {
-        /* job list is a nicety — failures shouldn't block the UI */
+        /* project list is a nicety — failures shouldn't block the UI */
       });
     return () => {
       cancelled = true;
     };
-  }, [role, rows.length, statusFilter]);
+  }, [role, rows.length]);
 
   const isAdmin = role === "admin" || role === "lead";
 
