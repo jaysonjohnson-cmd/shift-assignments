@@ -23,7 +23,7 @@ export function MarkDoneButton({
 }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const projectId = row.projectId || row.id;
+  const jobId = row.jobId || row.id;
   const isDone = !!row.completedAt;
 
   const handleClick = async () => {
@@ -31,10 +31,10 @@ export function MarkDoneButton({
     setError(null);
     try {
       if (isDone) {
-        await unmarkTaskDone(projectId);
+        await unmarkTaskDone(jobId);
         onChange(null);
       } else {
-        await markTaskDone(projectId);
+        await markTaskDone(jobId);
         if (onBeforeChange) await onBeforeChange();
         onChange(new Date().toISOString());
       }

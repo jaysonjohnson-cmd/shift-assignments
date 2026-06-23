@@ -3,12 +3,16 @@
 import { useEffect, useState } from "react";
 import {
   createAdmin,
+  createLead,
   createReviewer,
   deleteAdmin,
+  deleteLead,
   deleteReviewer,
   listAdmins,
+  listLeads,
   listReviewers,
   type Admin,
+  type Lead,
 } from "@/lib/api";
 import type { Reviewer } from "@/lib/types";
 import { useUser } from "@/lib/useUser";
@@ -81,6 +85,7 @@ export default function SettingsPage() {
   const setReviewersStore = useStore((s) => s.setReviewers);
   const [reviewers, setReviewers] = useState<Reviewer[]>([]);
   const [admins, setAdmins] = useState<Admin[]>([]);
+  const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
@@ -90,9 +95,10 @@ export default function SettingsPage() {
     setLoading(true);
     setErr(null);
     try {
-      const [rs, as] = await Promise.all([listReviewers(), listAdmins()]);
+      const [rs, as, ls] = await Promise.all([listReviewers(), listAdmins(), listLeads()]);
       setReviewers(rs);
       setAdmins(as);
+      setLeads(ls);
       setReviewersStore(rs);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Failed to load");
@@ -126,6 +132,15 @@ export default function SettingsPage() {
   const removeAdmin = async (id: string) => {
     await deleteAdmin(id);
     setAdmins(admins.filter((a) => a.id !== id));
+  };
+
+  const addLead = async (name: string, email: string) => {
+    const created = await createLead(name, email);
+    setLeads([...leads, created]);
+  };
+  const removeLead = async (id: string) => {
+    await deleteLead(id);
+    setLeads(leads.filter((l) => l.id !== id));
   };
 
   return (
@@ -206,6 +221,65 @@ export default function SettingsPage() {
             ))
           )}
         </div>
+        </div>
+      </section>
+
+      {/* ---------------- Leads ---------------- */}
+      <section className="mb-8 overflow-hidden rounded-2xl border border-storesight-border bg-storesight-surface shadow-sm dark:border-storesight-border-dark dark:bg-storesight-surface-dark">
+        <div className="h-1 w-full bg-storesight-sun/70 dark:bg-storesight-sun" />
+        <div className="p-5">
+          <h2 className="mb-1 text-base font-semibold text-storesight-ink dark:text-storesight-ink-dark">
+            Leads
+          </h2>
+          <p className="mb-4 text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+            Leads can publish and clear shift assignments and view team progress — but cannot manage the roster. They also appear on My Tasks like reviewers.
+          </p>
+
+          <PersonForm
+            disabled={!isAdmin}
+            onSubmit={addLead}
+            submitLabel="Add lead"
+          />
+
+          <div className="mt-4 divide-y divide-storesight-border dark:divide-storesight-border-dark">
+            {loading ? (
+              <p className="py-6 text-center text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                Loading…
+              </p>
+            ) : leads.length === 0 ? (
+              <p className="py-6 text-center text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                No leads yet.
+              </p>
+            ) : (
+              leads.map((l) => (
+                <div key={l.id} className="flex items-center justify-between gap-3 py-2.5">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-medium text-storesight-ink dark:text-storesight-ink-dark">
+                        {l.name}
+                      </span>
+                      {user?.email?.toLowerCase() === l.email.toLowerCase() && (
+                        <span className="rounded-full bg-storesight-mint/30 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">
+                          You
+                        </span>
+                      )}
+                    </div>
+                    <div className="truncate text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                      {l.email}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeLead(l.id)}
+                    disabled={!isAdmin}
+                    className="rounded-lg border border-transparent px-2 py-1 text-xs text-storesight-ink-muted transition hover:border-storesight-hot-pink hover:text-storesight-hot-pink disabled:cursor-not-allowed disabled:opacity-40 dark:text-storesight-ink-muted-dark"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
         </div>
       </section>
 

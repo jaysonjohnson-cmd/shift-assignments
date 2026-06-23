@@ -55,7 +55,7 @@ export default function TeamAssignmentsPage() {
   const [closing, setClosing] = useState(false);
   const progressRef = useRef<HTMLDivElement>(null);
   const { role } = useUser();
-  const isAdmin = role === "admin";
+  const isAdmin = role === "admin" || role === "lead";
 
   const load = useCallback(async () => {
     setLoading(true);

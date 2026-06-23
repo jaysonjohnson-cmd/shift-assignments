@@ -63,7 +63,7 @@ export function TeamProgressDashboard({ refreshKey = 0, onDismiss }: { refreshKe
   };
 
   useEffect(() => {
-    if (role !== "admin") {
+    if (role !== "admin" && role !== "lead") {
       setLoading(false);
       return;
     }
@@ -72,7 +72,7 @@ export function TeamProgressDashboard({ refreshKey = 0, onDismiss }: { refreshKe
     return () => clearInterval(interval);
   }, [role, refreshKey]);
 
-  if (role !== "admin") {
+  if (role !== "admin" && role !== "lead") {
     return null;
   }
 
@@ -110,13 +110,28 @@ export function TeamProgressDashboard({ refreshKey = 0, onDismiss }: { refreshKe
               {lastRefresh && <>· updated {formatRelative(lastRefresh)}</>}
             </p>
           </div>
-          <button
-            onClick={load}
-            disabled={loading}
-            className="rounded-lg border border-storesight-border bg-white px-3 py-2 text-xs font-medium text-storesight-ink-muted transition hover:border-storesight-accent hover:text-storesight-primary disabled:opacity-50 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
-          >
-            {loading ? "Refreshing…" : "Refresh"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={load}
+              disabled={loading}
+              className="rounded-lg border border-storesight-border bg-white px-3 py-2 text-xs font-medium text-storesight-ink-muted transition hover:border-storesight-accent hover:text-storesight-primary disabled:opacity-50 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
+            >
+              {loading ? "Refreshing…" : "Refresh"}
+            </button>
+            {onDismiss && (
+              <button
+                type="button"
+                onClick={onDismiss}
+                className="rounded-lg border border-storesight-border bg-white p-2 text-storesight-ink-muted transition hover:border-storesight-hot-pink/60 hover:bg-storesight-hot-pink/10 hover:text-storesight-hot-pink dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
+                aria-label="Dismiss"
+                title="Dismiss"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Overall Stats */}
@@ -144,18 +159,6 @@ export function TeamProgressDashboard({ refreshKey = 0, onDismiss }: { refreshKe
           <h3 className="text-base font-semibold text-storesight-ink dark:text-storesight-ink-dark">
             Team Breakdown
           </h3>
-          {onDismiss && (
-            <button
-              type="button"
-              onClick={onDismiss}
-              className="rounded p-1 text-storesight-ink-muted transition hover:bg-storesight-bg-tint hover:text-storesight-ink dark:text-storesight-ink-muted-dark dark:hover:bg-storesight-surface-raised-dark dark:hover:text-storesight-ink-dark"
-              aria-label="Dismiss"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
-                <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              </svg>
-            </button>
-          )}
         </div>
         <div className="space-y-4">
           {data.reviewers.map((reviewer) => (

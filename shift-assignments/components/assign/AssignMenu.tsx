@@ -97,12 +97,18 @@ export function AssignMenu({
 
   const handleClear = async (mode: ClearMode) => {
     const label =
-      mode === "all"
-        ? "ALL assigned tasks AND completion marks"
-        : mode === "active"
-          ? "all unfinished tasks (completed tasks stay visible)"
-          : "all completed tasks and their completion marks";
-    if (!confirm(`Clear ${label} for every reviewer? This cannot be undone.`)) return;
+      mode === "reset"
+        ? "ALL shift history — every snapshot, every task, every completion mark — permanently"
+        : mode === "all"
+          ? "ALL assigned tasks AND completion marks"
+          : mode === "active"
+            ? "all unfinished tasks (completed tasks stay visible)"
+            : "all completed tasks and their completion marks";
+    const confirmMsg =
+      mode === "reset"
+        ? `⚠️ NUCLEAR RESET\n\nThis will permanently delete ALL shift snapshots, ALL task assignments, and ALL completion history across every reviewer.\n\nThis cannot be undone. Continue?`
+        : `Clear ${label} for every reviewer? This cannot be undone.`;
+    if (!confirm(confirmMsg)) return;
     setPickingClear(false);
     setBusy(true);
     setError(null);
@@ -245,6 +251,14 @@ export function AssignMenu({
               onClick={() => handleClear("all")}
               danger
             />
+            <div className="mt-3 border-t border-storesight-border pt-3 dark:border-storesight-border-dark">
+              <ClearOption
+                label="Delete all shift history"
+                desc="Nuclear reset — permanently removes every snapshot, task, and completion mark across all time. Cannot be undone."
+                onClick={() => handleClear("reset")}
+                nuclear
+              />
+            </div>
           </div>
         </Modal>
       )}
@@ -345,29 +359,36 @@ function ClearOption({
   desc,
   onClick,
   danger,
+  nuclear,
 }: {
   label: string;
   desc: string;
   onClick: () => void;
   danger?: boolean;
+  nuclear?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
       className={`w-full rounded-lg border px-4 py-3 text-left transition ${
-        danger
-          ? "border-storesight-hot-pink/60 bg-storesight-hot-pink/5 hover:bg-storesight-hot-pink/15 dark:border-storesight-hot-pink/50"
-          : "border-storesight-border bg-white hover:border-storesight-accent dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:hover:border-storesight-accent-light"
+        nuclear
+          ? "border-red-600/70 bg-red-600/10 hover:bg-red-600/20 dark:border-red-500/60 dark:bg-red-600/10 dark:hover:bg-red-600/20"
+          : danger
+            ? "border-storesight-hot-pink/60 bg-storesight-hot-pink/5 hover:bg-storesight-hot-pink/15 dark:border-storesight-hot-pink/50"
+            : "border-storesight-border bg-white hover:border-storesight-accent dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:hover:border-storesight-accent-light"
       }`}
     >
       <div
         className={`text-sm font-semibold ${
-          danger
-            ? "text-storesight-hot-pink"
-            : "text-storesight-ink dark:text-storesight-ink-dark"
+          nuclear
+            ? "text-red-600 dark:text-red-400"
+            : danger
+              ? "text-storesight-hot-pink"
+              : "text-storesight-ink dark:text-storesight-ink-dark"
         }`}
       >
+        {nuclear && <span className="mr-1.5">⚠️</span>}
         {label}
       </div>
       <div className="mt-0.5 text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">

@@ -27,7 +27,7 @@ const tiles: Tile[] = [
     description:
       "Pull live jobs from Bloom and generate morning / afternoon shift assignments for the review team.",
     accent: "from-storesight-primary/10 to-storesight-accent/10",
-    enabledFor: ["admin", "reviewer", "viewer"],
+    enabledFor: ["admin", "lead", "reviewer", "viewer"],
     icon: (
       <svg viewBox="0 0 24 24" fill="none" className={ICON_CLASS} aria-hidden>
         <path
@@ -46,7 +46,7 @@ const tiles: Tile[] = [
     description:
       "View all jobs assigned to the team in the current shift with detailed status.",
     accent: "from-storesight-violet/15 to-storesight-lilac/15",
-    enabledFor: ["admin", "viewer"],
+    enabledFor: ["admin", "lead", "viewer"],
     icon: (
       <svg viewBox="0 0 24 24" fill="none" className={ICON_CLASS} aria-hidden>
         <path
@@ -174,7 +174,7 @@ export default function HomePage() {
             </Link>
           );
         })}
-        {role === "admin" && !loading && (
+        {(role === "admin" || role === "lead") && !loading && (
           <div className={trackerExpanded ? "sm:col-span-2 lg:col-span-3" : ""}>
             <ProgressTrackerTile
               expanded={trackerExpanded}

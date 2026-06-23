@@ -174,6 +174,13 @@ def _require_admin():
     return None
 
 
+def _require_admin_or_lead():
+    """Return a Flask response if the caller is neither admin nor lead, else None."""
+    if not roles.is_admin_or_lead(g.user.get("email", "")):
+        return jsonify({"error": "admin or lead only"}), 403
+    return None
+
+
 def _validate_person_body(body):
     """Validate an add/update payload. Returns (name, email, error_response)."""
     if not isinstance(body, dict):
@@ -302,6 +309,62 @@ def api_admins_delete(doc_id):
     return jsonify({"data": {"id": doc_id}})
 
 
+# ---------- API: leads ----------
+
+@app.route("/api/leads", methods=["GET"])
+def api_leads_list():
+    return jsonify({"data": roles.list_leads()})
+
+
+@app.route("/api/leads", methods=["POST"])
+def api_leads_create():
+    denied = _require_admin()
+    if denied is not None:
+        return denied
+    body = request.get_json(silent=True) or {}
+    name, email, err = _validate_person_body(body)
+    if err:
+        return err
+    existing = {l["email"] for l in roles.list_leads()}
+    if email in existing:
+        return jsonify({"error": "lead with that email already exists"}), 409
+    doc_id = roles.create_record("lead", name, email)
+    logging.info("POST /api/leads by=%s created lead=%s", g.user.get("email"), email)
+    return jsonify({"data": {"id": doc_id, "name": name, "email": email}}), 201
+
+
+@app.route("/api/leads/<doc_id>", methods=["PUT"])
+def api_leads_update(doc_id):
+    denied = _require_admin()
+    if denied is not None:
+        return denied
+    body = request.get_json(silent=True) or {}
+    name, email, err = _validate_person_body(body)
+    if err:
+        return err
+    try:
+        roles.update_record(doc_id, "lead", name, email)
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 500
+        return jsonify({"error": f"storage api returned {status}"}), status
+    logging.info("PUT /api/leads/%s by=%s email=%s", doc_id, g.user.get("email"), email)
+    return jsonify({"data": {"id": doc_id, "name": name, "email": email}})
+
+
+@app.route("/api/leads/<doc_id>", methods=["DELETE"])
+def api_leads_delete(doc_id):
+    denied = _require_admin()
+    if denied is not None:
+        return denied
+    try:
+        roles.delete_record(doc_id)
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 500
+        return jsonify({"error": f"storage api returned {status}"}), status
+    logging.info("DELETE /api/leads/%s by=%s", doc_id, g.user.get("email"))
+    return jsonify({"data": {"id": doc_id}})
+
+
 # ---------- API: Bloom feed + published shift snapshots ----------
 
 
@@ -406,7 +469,7 @@ def _http_error_response(exc, source="storage api"):
 @app.route("/api/bloom/jobs", methods=["GET"])
 def api_bloom_jobs():
     """Return prioritized Rows pulled live from /api/jobs. Admin-only."""
-    denied = _require_admin()
+    denied = _require_admin_or_lead()
     if denied is not None:
         return denied
     status = request.args.get("status") or bloom.DEFAULT_STATUS
@@ -432,7 +495,7 @@ def api_bloom_projects():
     oldestSubmission}. Shares the 60s cache with /api/bloom/jobs — calling
     force=1 on the jobs endpoint is enough to refresh both.
     """
-    denied = _require_admin()
+    denied = _require_admin_or_lead()
     if denied is not None:
         return denied
     status = request.args.get("status") or bloom.DEFAULT_STATUS
@@ -508,7 +571,7 @@ def api_bloom_submission_ages():
 
     Returns: {data: {"<job_id>": "YYYY-MM-DD", ...}, loading: bool}
     """
-    denied = _require_admin()
+    denied = _require_admin_or_lead()
     if denied is not None:
         return denied
 
@@ -563,7 +626,7 @@ def api_shifts_publish():
     If any per-reviewer write fails, everything written so far is rolled
     back so we never leave an orphan index pointing at missing rows.
     """
-    denied = _require_admin()
+    denied = _require_admin_or_lead()
     if denied is not None:
         return denied
     body = request.get_json(silent=True) or {}
@@ -583,10 +646,89 @@ def api_shifts_publish():
     if not normalized:
         return jsonify({"error": "assignments cannot be empty — assign at least one reviewer before publishing"}), 400
 
+    # Cross-reviewer dedup: if the same job somehow appears in multiple reviewers'
+    # lists, keep it only for the first reviewer (alphabetical). This is a safety
+    # net — the frontend already deduplicates, but belt-and-suspenders here.
+    seen_job_keys: set = set()
+    reviewer_emails = sorted(normalized.keys())
+    for email in reviewer_emails:
+        deduped = []
+        for r in normalized[email]:
+            jk = str(r.get("jobId") or r.get("id") or "")
+            if not jk or jk not in seen_job_keys:
+                deduped.append(r)
+                if jk:
+                    seen_job_keys.add(jk)
+        normalized[email] = deduped
+
     published_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     published_by = g.user.get("email", "")
-    reviewer_emails = sorted(normalized.keys())
 
+    # Merge-into-existing-snapshot: if an active shift is already live, add or
+    # replace only the reviewers being published — everyone else keeps their rows.
+    # Only create a brand-new snapshot when there is no active shift at all.
+    try:
+        existing_snap_id, existing_snap_data = _latest_snapshot()
+    except requests.exceptions.HTTPError:
+        existing_snap_id, existing_snap_data = None, None
+
+    if existing_snap_id:
+        # Delete the old reviewer_shift docs only for the reviewers being replaced.
+        try:
+            all_shift_docs = roles.list_docs_by_kind("reviewer_shift")
+        except requests.exceptions.HTTPError as e:
+            return _http_error_response(e)
+        for doc in all_shift_docs:
+            doc_data = doc.get("data") or {}
+            if doc_data.get("shift_snapshot_id") != existing_snap_id:
+                continue
+            if (doc_data.get("reviewer_email") or "").strip().lower() in normalized:
+                _try_delete(doc.get("id"))
+
+        # Write new reviewer_shift docs under the existing snapshot.
+        snapshot_id = existing_snap_id
+        written = []
+        for email in reviewer_emails:
+            chunks = _chunk_rows_for_storage(normalized[email])
+            for idx, chunk in enumerate(chunks):
+                doc = {
+                    "kind": "reviewer_shift",
+                    "shift_snapshot_id": snapshot_id,
+                    "reviewer_email": email,
+                    "rows": chunk,
+                    "part": idx,
+                    "part_count": len(chunks),
+                }
+                try:
+                    r = internal_api.post(_STORAGE_PATH, json={"data": doc})
+                except requests.exceptions.HTTPError as e:
+                    for did in written:
+                        _try_delete(did)
+                    return _http_error_response(e)
+                written.append((r.get("data") or {}).get("id"))
+
+        # Update the snapshot's reviewer_emails to include the new reviewers.
+        existing_emails = set(existing_snap_data.get("reviewer_emails") or [])
+        merged_emails = sorted(existing_emails | set(reviewer_emails))
+        updated_snap = {
+            **existing_snap_data,
+            "reviewer_emails": merged_emails,
+            "last_updated_at": published_at,
+            "last_updated_by": published_by,
+        }
+        try:
+            internal_api.put(f"{_STORAGE_PATH}/{snapshot_id}", json={"data": updated_snap})
+        except requests.exceptions.HTTPError:
+            pass  # Non-fatal: reviewer_emails list is informational only
+
+        roles.invalidate_doc_cache("shift_snapshot", "reviewer_shift")
+        logging.info(
+            "POST /api/shifts/publish (merge) by=%s snapshot_id=%s reviewers=%d",
+            published_by, snapshot_id, len(reviewer_emails),
+        )
+        return jsonify({"data": {"id": snapshot_id, "published_at": published_at}}), 201
+
+    # No active snapshot — create a fresh one.
     index_doc = {
         "kind": "shift_snapshot",
         "published_at": published_at,
@@ -654,12 +796,6 @@ def _latest_snapshot(reviewer_shift_docs=None):
         if data.get("reviewer_emails") and snap_row_counts.get(snap.get("id"), 0) > 0:
             return snap.get("id"), data
 
-    # Fallback: first snapshot with reviewer_emails (first-ever publish edge case)
-    for snap in snaps:
-        data = snap.get("data") or {}
-        if data.get("reviewer_emails"):
-            return snap.get("id"), data
-
     return None, None
 
 
@@ -724,11 +860,10 @@ def api_shifts_my():
         completions = _list_completions_for_snapshot(snap_id, reviewer_email=email)
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e)
-    done_by_pid = {c["project_id"]: c for c in completions if c.get("project_id")}
+    done_by_jid = {_completion_job_key(c): c for c in completions if _completion_job_key(c)}
     enriched = []
     for row in rows:
-        pid = str(row.get("projectId") or row.get("id") or "")
-        completion = done_by_pid.get(pid)
+        completion = done_by_jid.get(_row_job_key(row))
         enriched.append({
             **row,
             "completedAt": completion.get("completed_at") if completion else None,
@@ -856,9 +991,9 @@ def _notify_reviewer_finished(email, total_jobs, added_jobs):
 def api_shifts_my_complete():
     """Mark a row done for the signed-in reviewer. Idempotent."""
     body = request.get_json(silent=True) or {}
-    project_id = str(body.get("project_id") or "").strip()
-    if not project_id:
-        return jsonify({"error": "project_id is required"}), 400
+    job_id = str(body.get("job_id") or "").strip()
+    if not job_id:
+        return jsonify({"error": "job_id is required"}), 400
     email = (g.user.get("email") or "").strip().lower()
     try:
         snap_id, _ = _latest_snapshot()
@@ -872,13 +1007,13 @@ def api_shifts_my_complete():
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e)
     for c in existing:
-        if str(c.get("project_id")) == project_id:
+        if _completion_job_key(c) == job_id:
             return jsonify({"data": c})
     completed_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     doc = {
         "kind": "completion",
         "reviewer_email": email,
-        "project_id": project_id,
+        "job_id": job_id,
         "shift_snapshot_id": snap_id,
         "completed_at": completed_at,
         "note": (body.get("note") or "").strip(),
@@ -890,16 +1025,16 @@ def api_shifts_my_complete():
     doc_id = (resp.get("data") or {}).get("id")
     roles.invalidate_doc_cache("completion")
     logging.info(
-        "POST /api/shifts/my/complete by=%s project_id=%s snapshot_id=%s",
-        email, project_id, snap_id,
+        "POST /api/shifts/my/complete by=%s job_id=%s snapshot_id=%s",
+        email, job_id, snap_id,
     )
     # If this completion cleared the reviewer's whole queue, ping the admin so
     # they can hand out more work. Best-effort — never block the response.
     try:
         assigned = _rows_for_reviewer(snap_id, email) or []
-        assigned_keys = {_row_project_key(r) for r in assigned}
-        done_keys = {str(c.get("project_id")) for c in existing}
-        done_keys.add(project_id)
+        assigned_keys = {_row_job_key(r) for r in assigned}
+        done_keys = {_completion_job_key(c) for c in existing}
+        done_keys.add(job_id)
         if assigned_keys and assigned_keys <= done_keys:
             # Auto-assign the same number of fresh jobs, then ping the admin.
             added = _auto_refill_reviewer(snap_id, email, len(assigned))
@@ -909,8 +1044,8 @@ def api_shifts_my_complete():
     return jsonify({"data": {"id": doc_id, **doc}}), 201
 
 
-@app.route("/api/shifts/my/complete/<project_id>", methods=["DELETE"])
-def api_shifts_my_uncomplete(project_id):
+@app.route("/api/shifts/my/complete/<job_id>", methods=["DELETE"])
+def api_shifts_my_uncomplete(job_id):
     """Un-complete a row (reviewer misclicked)."""
     email = (g.user.get("email") or "").strip().lower()
     try:
@@ -918,28 +1053,28 @@ def api_shifts_my_uncomplete(project_id):
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e)
     if not snap_id:
-        return jsonify({"data": {"project_id": project_id}})
+        return jsonify({"data": {"job_id": job_id}})
     try:
         existing = _list_completions_for_snapshot(snap_id, reviewer_email=email)
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e)
     for c in existing:
-        if str(c.get("project_id")) == str(project_id):
+        if _completion_job_key(c) == str(job_id):
             try:
                 internal_api.delete(f"{_STORAGE_PATH}/{c['id']}")
             except requests.exceptions.HTTPError as e:
                 return _http_error_response(e)
             logging.info(
-                "DELETE /api/shifts/my/complete/%s by=%s", project_id, email,
+                "DELETE /api/shifts/my/complete/%s by=%s", job_id, email,
             )
             break
-    return jsonify({"data": {"project_id": str(project_id)}})
+    return jsonify({"data": {"job_id": str(job_id)}})
 
 
 @app.route("/api/shifts/completions", methods=["GET"])
 def api_shifts_list_completions():
     """Admin: return all completion docs for the latest snapshot."""
-    denied = _require_admin()
+    denied = _require_admin_or_lead()
     if denied is not None:
         return denied
     try:
@@ -993,6 +1128,16 @@ def _row_project_key(row):
     return str(row.get("projectId") or row.get("id") or "")
 
 
+def _row_job_key(row):
+    """Per-job identity for completion tracking (jobId preferred over id)."""
+    return str(row.get("jobId") or row.get("id") or "")
+
+
+def _completion_job_key(c):
+    """Extract the job key from a completion doc (job_id preferred, falls back to project_id for legacy docs)."""
+    return str(c.get("job_id") or c.get("project_id") or "")
+
+
 @app.route("/api/shifts/overview", methods=["GET"])
 def api_shifts_overview():
     """Admin: live check-in view of the current shift.
@@ -1000,7 +1145,7 @@ def api_shifts_overview():
     Returns per-reviewer totals so admins can see who's keeping up without
     fetching every row into the browser.
     """
-    denied = _require_admin()
+    denied = _require_admin_or_lead()
     if denied is not None:
         return denied
     # Fetch reviewer_shift docs once and reuse for both snapshot selection and
@@ -1027,13 +1172,13 @@ def api_shifts_overview():
     except Exception:  # noqa: BLE001 — name lookup is best-effort
         roster = {}
 
-    done_by_reviewer = {}  # email -> {project_id, ...}
+    done_by_reviewer = {}  # email -> {job_key, ...}
     for c in completions:
         email = (c.get("reviewer_email") or "").lower()
-        pid = str(c.get("project_id") or "")
-        if not email or not pid:
+        jkey = _completion_job_key(c)
+        if not email or not jkey:
             continue
-        done_by_reviewer.setdefault(email, set()).add(pid)
+        done_by_reviewer.setdefault(email, set()).add(jkey)
 
     rows_by_email = {}
     for doc in reviewer_docs:
@@ -1047,7 +1192,7 @@ def api_shifts_overview():
         if total == 0:
             continue
         done_set = done_by_reviewer.get(email, set())
-        completed = sum(1 for r in rows if _row_project_key(r) in done_set)
+        completed = sum(1 for r in rows if _row_job_key(r) in done_set)
         priorities = [r.get("priority") for r in rows if isinstance(r.get("priority"), int)]
         reviewers_out.append({
             "email": email,
@@ -1074,7 +1219,7 @@ def api_shifts_overview():
 @app.route("/api/shifts/jobs", methods=["GET"])
 def api_shifts_jobs():
     """Admin: detailed view of all jobs assigned in the current shift."""
-    denied = _require_admin()
+    denied = _require_admin_or_lead()
     if denied is not None:
         return denied
     try:
@@ -1104,10 +1249,10 @@ def api_shifts_jobs():
     done_by_reviewer = {}
     for c in completions:
         email = (c.get("reviewer_email") or "").lower()
-        pid = str(c.get("project_id") or "")
-        if not email or not pid:
+        jkey = _completion_job_key(c)
+        if not email or not jkey:
             continue
-        done_by_reviewer.setdefault(email, set()).add(pid)
+        done_by_reviewer.setdefault(email, set()).add(jkey)
 
     rows_by_email = {}
     for doc in reviewer_docs:
@@ -1120,7 +1265,7 @@ def api_shifts_jobs():
         done_set = done_by_reviewer.get(email, set())
         jobs = []
         for r in rows:
-            completed = _row_project_key(r) in done_set
+            completed = _row_job_key(r) in done_set
             jobs.append({
                 "id": r.get("id", ""),
                 "projectId": r.get("projectId", ""),
@@ -1158,13 +1303,35 @@ def api_shifts_clear():
       • completed — wipe only rows the reviewer HAS marked done (and their completion docs)
       • all       — wipe everything (rows + completions) for the current snapshot
     """
-    denied = _require_admin()
+    denied = _require_admin_or_lead()
     if denied is not None:
         return denied
     body = request.get_json(silent=True) or {}
     mode = body.get("mode")
-    if mode not in ("active", "completed", "all"):
-        return jsonify({"error": "mode must be 'active', 'completed', or 'all'"}), 400
+    if mode not in ("active", "completed", "all", "reset"):
+        return jsonify({"error": "mode must be 'active', 'completed', 'all', or 'reset'"}), 400
+
+    # "reset" nukes every snapshot + reviewer_shift + completion across all time.
+    if mode == "reset":
+        cleared_rows = 0
+        cleared_completions = 0
+        cleared_snapshots = 0
+        for doc in roles.list_docs_by_kind("reviewer_shift"):
+            rows = (doc.get("data") or {}).get("rows") or []
+            _try_delete(doc.get("id"))
+            cleared_rows += len(rows)
+        for doc in roles.list_docs_by_kind("completion"):
+            _try_delete(doc.get("id"))
+            cleared_completions += 1
+        for doc in roles.list_docs_by_kind("shift_snapshot"):
+            _try_delete(doc.get("id"))
+            cleared_snapshots += 1
+        roles.invalidate_doc_cache("shift_snapshot", "reviewer_shift", "completion")
+        logging.info(
+            "POST /api/shifts/clear mode=reset by=%s snapshots=%d rows=%d completions=%d",
+            g.user.get("email"), cleared_snapshots, cleared_rows, cleared_completions,
+        )
+        return jsonify({"data": {"mode": "reset", "cleared_rows": cleared_rows, "cleared_completions": cleared_completions, "cleared_snapshots": cleared_snapshots}})
 
     try:
         snap_id, _ = _latest_snapshot()
@@ -1186,7 +1353,7 @@ def api_shifts_clear():
         return _http_error_response(e)
 
     done_set = {
-        ((c.get("reviewer_email") or "").lower(), str(c.get("project_id") or ""))
+        ((c.get("reviewer_email") or "").lower(), _completion_job_key(c))
         for c in completions
     }
 
@@ -1216,6 +1383,8 @@ def api_shifts_clear():
                 cleared_completions += 1
             except requests.exceptions.HTTPError:
                 pass
+        # Also delete the snapshot doc itself so it stops surfacing as "latest".
+        _try_delete(snap_id)
     else:
         # Surgical modes rewrite each reviewer_shift doc to filter rows.
         keep_done = mode == "active"  # active: keep done rows, drop pending
@@ -1225,7 +1394,7 @@ def api_shifts_clear():
             rows = data.get("rows") or []
             kept = []
             for r in rows:
-                is_done = (email, _row_project_key(r)) in done_set
+                is_done = (email, _row_job_key(r)) in done_set
                 if keep_done == is_done:
                     kept.append(r)
             cleared_rows += len(rows) - len(kept)

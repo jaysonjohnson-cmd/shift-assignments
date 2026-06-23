@@ -8,7 +8,7 @@ import type {
   ShiftSnapshot,
 } from "./types";
 
-export type Role = "admin" | "reviewer" | "viewer";
+export type Role = "admin" | "lead" | "reviewer" | "viewer";
 
 export type Me = {
   email: string;
@@ -99,6 +99,26 @@ export async function deleteAdmin(id: string): Promise<void> {
   await call<{ data: { id: string } }>("DELETE", `/api/admins/${id}`);
 }
 
+export type Lead = {
+  id: string;
+  name: string;
+  email: string;
+};
+
+export async function listLeads(): Promise<Lead[]> {
+  const resp = await call<{ data: Lead[] }>("GET", "/api/leads");
+  return resp.data;
+}
+
+export async function createLead(name: string, email: string): Promise<Lead> {
+  const resp = await call<{ data: Lead }>("POST", "/api/leads", { name, email });
+  return resp.data;
+}
+
+export async function deleteLead(id: string): Promise<void> {
+  await call<{ data: { id: string } }>("DELETE", `/api/leads/${id}`);
+}
+
 // ---------- Bloom feed + shift snapshots + My Tasks ----------
 
 export async function getSubmissionAges(): Promise<{ data: Record<string, string>; loading: boolean }> {
@@ -149,17 +169,17 @@ export async function getMyTasks(): Promise<MyTasksResponse> {
   return resp.data;
 }
 
-export async function markTaskDone(projectId: string, note?: string): Promise<void> {
+export async function markTaskDone(jobId: string, note?: string): Promise<void> {
   await call<{ data: unknown }>("POST", "/api/shifts/my/complete", {
-    project_id: projectId,
+    job_id: jobId,
     note,
   });
 }
 
-export async function unmarkTaskDone(projectId: string): Promise<void> {
+export async function unmarkTaskDone(jobId: string): Promise<void> {
   await call<{ data: unknown }>(
     "DELETE",
-    `/api/shifts/my/complete/${encodeURIComponent(projectId)}`,
+    `/api/shifts/my/complete/${encodeURIComponent(jobId)}`,
   );
 }
 
@@ -242,7 +262,7 @@ export async function getShiftJobs(): Promise<ShiftJobs> {
 }
 
 
-export type ClearMode = "active" | "completed" | "all";
+export type ClearMode = "active" | "completed" | "all" | "reset";
 
 export async function clearShift(mode: ClearMode): Promise<{
   mode: ClearMode;

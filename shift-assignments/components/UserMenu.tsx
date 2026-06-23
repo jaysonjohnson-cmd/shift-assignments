@@ -54,9 +54,11 @@ export function UserMenu() {
   const roleTone =
     role === "admin"
       ? "bg-storesight-accent/15 text-storesight-primary dark:bg-storesight-accent/25 dark:text-storesight-accent-light"
-      : role === "reviewer"
-        ? "bg-storesight-mint/25 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
-        : "bg-storesight-bg-tint text-storesight-ink-muted dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark";
+      : role === "lead"
+        ? "bg-storesight-sun/20 text-amber-700 dark:bg-storesight-sun/15 dark:text-amber-300"
+        : role === "reviewer"
+          ? "bg-storesight-mint/25 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
+          : "bg-storesight-bg-tint text-storesight-ink-muted dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark";
 
   return (
     <div ref={ref} className="relative">

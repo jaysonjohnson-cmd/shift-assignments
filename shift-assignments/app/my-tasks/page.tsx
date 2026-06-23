@@ -229,23 +229,26 @@ export default function MyTasksPage() {
     load();
   }, [load]);
 
-  useEffect(() => {
-    const onFocus = () => load();
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
-  }, [load]);
-
-  const handleRowChange = (rowId: string, completedAt: string | null) => {
+  const handleRowChange = (jobId: string, completedAt: string | null) => {
     setState((s) => ({
       ...s,
       rows: s.rows.map((r) =>
-        (r.projectId || r.id) === rowId ? { ...r, completedAt } : r,
+        (r.jobId || r.id) === jobId ? { ...r, completedAt } : r,
       ),
     }));
   };
 
   const visibleRows = viewByPid ? groupByProject(state.rows) : state.rows;
   const todo = visibleRows.filter((r) => !r.completedAt);
+
+  // When the queue empties, poll once after 8 seconds in case the backend
+  // auto-refilled the reviewer's queue with new jobs.
+  const queueEmpty = !state.loading && state.snapshotId !== null && todo.length === 0 && state.rows.length > 0;
+  useEffect(() => {
+    if (!queueEmpty) return;
+    const t = window.setTimeout(() => load(), 8000);
+    return () => window.clearTimeout(t);
+  }, [queueEmpty, load]);
   const done = visibleRows.filter((r) => !!r.completedAt);
   const total = todo.length + done.length;
   const pct = total > 0 ? Math.round((done.length / total) * 100) : 0;
@@ -335,12 +338,12 @@ export default function MyTasksPage() {
           <Section title="To do" count={todo.length}>
             {todo.map((row) => (
               <TaskCard
-                key={row.projectId || row.id}
+                key={row.jobId || row.id}
                 row={row}
                 density={density}
                 grouped={viewByPid}
                 onChange={(iso) =>
-                  handleRowChange(row.projectId || row.id, iso)
+                  handleRowChange(row.jobId || row.id, iso)
                 }
               />
             ))}

@@ -68,7 +68,7 @@ export default function AssignmentsPage() {
 
   useEffect(() => {
     let cancelled = false;
-    if (role !== "admin") return;
+    if (role !== "admin" && role !== "lead") return;
     getBloomJobs(false, statusFilter || undefined)
       .then((jobs) => {
         if (!cancelled) setProjects(jobs as unknown as ProjectSummary[]);
@@ -81,7 +81,7 @@ export default function AssignmentsPage() {
     };
   }, [role, rows.length, statusFilter]);
 
-  const isAdmin = role === "admin";
+  const isAdmin = role === "admin" || role === "lead";
 
   const priorityPool = useMemo<Row[]>(() => {
     const filtered = prioritizeAged

@@ -180,8 +180,12 @@ def list_admins():
     return _list_by_kind("admin")
 
 
+def list_leads():
+    return _list_by_kind("lead")
+
+
 def get_role(email):
-    """Return "admin" | "reviewer" | "viewer" for the given email."""
+    """Return "admin" | "lead" | "reviewer" | "viewer" for the given email."""
     normalized = _normalize_email(email)
     if not normalized:
         return "viewer"
@@ -189,6 +193,8 @@ def get_role(email):
         return "admin"
     if any(a["email"] == normalized for a in list_admins()):
         return "admin"
+    if any(l["email"] == normalized for l in list_leads()):
+        return "lead"
     if any(r["email"] == normalized for r in list_reviewers()):
         return "reviewer"
     return "viewer"
@@ -196,6 +202,10 @@ def get_role(email):
 
 def is_admin(email):
     return get_role(email) == "admin"
+
+
+def is_admin_or_lead(email):
+    return get_role(email) in ("admin", "lead")
 
 
 def create_record(kind, name, email):
