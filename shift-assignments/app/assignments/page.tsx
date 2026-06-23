@@ -49,6 +49,7 @@ export default function AssignmentsPage() {
   const [prioritizeFilter, setPrioritizeFilter] = useState(false);
   const [balanceByResponses, setBalanceByResponses] = useState(false);
   const [prioritizeAged, setPrioritizeAged] = useState(false);
+  const [retailPipelineOnly, setRetailPipelineOnly] = useState(false);
   const [showCloseModal, setShowCloseModal] = useState(false);
 
   useReviewerSync();
@@ -84,11 +85,18 @@ export default function AssignmentsPage() {
   const isAdmin = role === "admin" || role === "lead";
 
   const priorityPool = useMemo<Row[]>(() => {
-    const filtered = prioritizeAged
+    let filtered = prioritizeAged
       ? rows.filter((r) => Number(r.extras?.old_sub ?? 0) > 0)
       : rows;
+    if (retailPipelineOnly) {
+      filtered = filtered.filter(
+        (r) =>
+          String(r.extras?.client ?? "").toLowerCase() ===
+          "retailpipeline@fieldagent.net",
+      );
+    }
     return [...filtered].sort((a, b) => b.priority - a.priority);
-  }, [rows, prioritizeAged]);
+  }, [rows, prioritizeAged, retailPipelineOnly]);
 
   const cancel = () => {
     setMode({ kind: "menu" });
@@ -201,9 +209,9 @@ export default function AssignmentsPage() {
                 <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3h.2a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8v.2a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
               </svg>
               Options
-              {(prioritizeFilter || balanceByResponses || statusFilter || prioritizeAged) && (
+              {(prioritizeFilter || balanceByResponses || statusFilter || prioritizeAged || retailPipelineOnly) && (
                 <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-storesight-primary text-[9px] font-bold text-white dark:bg-storesight-accent-light dark:text-storesight-surface-dark">
-                  {[prioritizeFilter, balanceByResponses, !!statusFilter, prioritizeAged].filter(Boolean).length}
+                  {[prioritizeFilter, balanceByResponses, !!statusFilter, prioritizeAged, retailPipelineOnly].filter(Boolean).length}
                 </span>
               )}
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden className={`transition-transform ${showOptions ? "rotate-180" : ""}`}>
@@ -259,6 +267,18 @@ export default function AssignmentsPage() {
                     }`}
                   >
                     {prioritizeAged ? "✓ " : ""}Prioritize old submissions
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRetailPipelineOnly(!retailPipelineOnly)}
+                    title="Only assign Storesight / Retail Pipeline jobs (client retailpipeline@fieldagent.net)"
+                    className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                      retailPipelineOnly
+                        ? "border border-storesight-primary bg-storesight-primary/10 text-storesight-primary dark:border-storesight-accent-light dark:bg-storesight-accent/20 dark:text-storesight-accent-light"
+                        : "border border-storesight-border bg-white text-storesight-ink-muted hover:border-storesight-primary/40 dark:border-storesight-border-dark dark:bg-storesight-surface-dark dark:text-storesight-ink-muted-dark"
+                    }`}
+                  >
+                    {retailPipelineOnly ? "✓ " : ""}Storesight / Retail Pipeline only
                   </button>
                 </div>
               </div>
