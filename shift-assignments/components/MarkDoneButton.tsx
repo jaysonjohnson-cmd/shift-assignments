@@ -47,7 +47,7 @@ export function MarkDoneButton({
 
   if (variant === "ghost") {
     return (
-      <div className="inline-flex flex-col items-end gap-0.5">
+      <div className="inline-flex flex-col items-end gap-1">
         <button
           type="button"
           onClick={handleClick}
@@ -81,7 +81,9 @@ export function MarkDoneButton({
           </svg>
         </button>
         {error && (
-          <span className="text-[10px] text-storesight-hot-pink">{error}</span>
+          <span className="max-w-[160px] rounded bg-storesight-hot-pink/15 px-1.5 py-0.5 text-[11px] font-medium text-storesight-hot-pink">
+            {error}
+          </span>
         )}
       </div>
     );

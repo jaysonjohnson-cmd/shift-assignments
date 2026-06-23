@@ -793,7 +793,10 @@ def _latest_snapshot(reviewer_shift_docs=None):
 
     for snap in snaps:
         data = snap.get("data") or {}
-        if data.get("reviewer_emails") and snap_row_counts.get(snap.get("id"), 0) > 0:
+        row_count = snap_row_counts.get(snap.get("id"), 0)
+        # Accept snapshots that have rows — whether or not reviewer_emails is set
+        # (older snapshots published before merge-publish don't have that field).
+        if row_count > 0:
             return snap.get("id"), data
 
     return None, None
