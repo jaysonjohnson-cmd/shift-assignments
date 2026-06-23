@@ -46,12 +46,12 @@ def _setup_endpoint(monkeypatch, posted, existing_completions, refill_calls, ref
     monkeypatch.setattr(
         main,
         "_rows_for_reviewer",
-        lambda snap, email: [{"projectId": "A"}, {"projectId": "B"}],
+        lambda snap, email: [{"jobId": "A"}, {"jobId": "B"}],
     )
     monkeypatch.setattr(
         main,
         "_list_completions_for_snapshot",
-        lambda snap, reviewer_email=None: existing_completions,
+        lambda snap, reviewer_email=None, force=False: existing_completions,
     )
     monkeypatch.setattr(main.roles, "list_reviewers", lambda: [
         {"id": "r1", "name": "Sam", "email": "sam@storesight.com"},
@@ -77,10 +77,10 @@ def test_finish_triggers_refill_and_ping(client, monkeypatch):
     token_file.write_text(_make_dev_token("sam@storesight.com", "Sam"))
     posted, refill_calls = [], []
     # A already done; completing B finishes the queue. Refill returns 2 jobs.
-    _setup_endpoint(monkeypatch, posted, [{"project_id": "A"}], refill_calls,
+    _setup_endpoint(monkeypatch, posted, [{"job_id": "A"}], refill_calls,
                     refill_return=[{"jobId": "X"}, {"jobId": "Y"}])
 
-    resp = c.post("/api/shifts/my/complete", json={"project_id": "B"})
+    resp = c.post("/api/shifts/my/complete", json={"job_id": "B"})
     assert resp.status_code == 201, resp.get_json()
 
     # Refill was asked for the same count they started with (2).
@@ -97,7 +97,7 @@ def test_no_refill_or_ping_when_work_remains(client, monkeypatch):
     posted, refill_calls = [], []
     _setup_endpoint(monkeypatch, posted, [], refill_calls, refill_return=[])
 
-    resp = c.post("/api/shifts/my/complete", json={"project_id": "A"})
+    resp = c.post("/api/shifts/my/complete", json={"job_id": "A"})
     assert resp.status_code == 201, resp.get_json()
 
     assert refill_calls == []  # B still pending → not finished → no refill
@@ -108,15 +108,41 @@ def test_refill_runs_but_no_ping_when_channel_unset(client, monkeypatch):
     c, token_file = client
     token_file.write_text(_make_dev_token("sam@storesight.com", "Sam"))
     posted, refill_calls = [], []
-    _setup_endpoint(monkeypatch, posted, [{"project_id": "A"}], refill_calls,
+    _setup_endpoint(monkeypatch, posted, [{"job_id": "A"}], refill_calls,
                     refill_return=[{"jobId": "X"}, {"jobId": "Y"}])
     monkeypatch.delenv("SLACK_NOTIFY_CHANNEL", raising=False)
 
-    resp = c.post("/api/shifts/my/complete", json={"project_id": "B"})
+    resp = c.post("/api/shifts/my/complete", json={"job_id": "B"})
     assert resp.status_code == 201, resp.get_json()
 
     assert refill_calls == [("snap1", "sam@storesight.com", 2)]  # still auto-assigns
     assert [p for p in posted if p[0].endswith("/api/slack/post")] == []  # just no ping
+
+
+def test_finish_check_reads_completions_authoritatively(client, monkeypatch):
+    """Regression: the finish check must read completions with force=True so a
+    fast finisher (whose earlier completions haven't landed in the warm cache
+    yet) still triggers the ping. Previously it reused a stale cached list and
+    silently skipped the Slack ping."""
+    c, token_file = client
+    token_file.write_text(_make_dev_token("sam@storesight.com", "Sam"))
+    posted, refill_calls = [], []
+    _setup_endpoint(monkeypatch, posted, [{"job_id": "A"}], refill_calls,
+                    refill_return=[{"jobId": "X"}, {"jobId": "Y"}])
+
+    force_flags = []
+    real = main._list_completions_for_snapshot
+
+    def spy(snap, reviewer_email=None, force=False):
+        force_flags.append(force)
+        return [{"job_id": "A"}]
+
+    monkeypatch.setattr(main, "_list_completions_for_snapshot", spy)
+
+    resp = c.post("/api/shifts/my/complete", json={"job_id": "B"})
+    assert resp.status_code == 201, resp.get_json()
+    # The finish check must have made at least one authoritative (force=True) read.
+    assert True in force_flags
 
 
 # ---------- the refill logic itself ----------

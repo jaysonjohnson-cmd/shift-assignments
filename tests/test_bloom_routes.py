@@ -406,7 +406,7 @@ def test_http_error_response_falls_back_to_raw_text(client, monkeypatch):
     monkeypatch.setattr(roles, "list_admins", lambda: [])
     monkeypatch.setattr(roles, "list_reviewers", lambda: [])
 
-    def fake_list(kind):
+    def fake_list(kind, force=False):
         fake_resp = requests.Response()
         fake_resp.status_code = 502
         fake_resp._content = b"<html>Bad Gateway</html>"
@@ -428,7 +428,7 @@ def test_http_error_response_without_upstream_body(client, monkeypatch):
     monkeypatch.setattr(roles, "list_admins", lambda: [])
     monkeypatch.setattr(roles, "list_reviewers", lambda: [])
 
-    def fake_list(kind):
+    def fake_list(kind, force=False):
         fake_resp = requests.Response()
         fake_resp.status_code = 503
         fake_resp._content = b""
@@ -508,7 +508,7 @@ def test_shifts_my_filters_and_adds_completed_at(client, monkeypatch):
         },
     }
 
-    def fake_list(kind):
+    def fake_list(kind, force=False):
         if kind == "shift_snapshot":
             return [snapshot]
         if kind == "completion":
@@ -570,7 +570,7 @@ def test_shifts_my_reads_from_per_reviewer_doc(client, monkeypatch):
         },
     ]
 
-    def fake_list(kind):
+    def fake_list(kind, force=False):
         if kind == "shift_snapshot":
             return [snapshot]
         if kind == "reviewer_shift":
@@ -617,7 +617,7 @@ def test_complete_is_idempotent(client, monkeypatch):
 
     snapshot_doc = {"id": "snap-1", "data": {"kind": "shift_snapshot", "assignments": {}}}
 
-    def fake_list(kind):
+    def fake_list(kind, force=False):
         if kind == "shift_snapshot":
             return [snapshot_doc]
         if kind == "completion":
@@ -681,7 +681,7 @@ def test_uncomplete_deletes_matching_doc(client, monkeypatch):
     }]
     snapshot = [{"id": "snap-1", "data": {"kind": "shift_snapshot", "assignments": {}}}]
 
-    def fake_list(kind):
+    def fake_list(kind, force=False):
         return snapshot if kind == "shift_snapshot" else existing
 
     deleted_paths = []
@@ -738,7 +738,7 @@ def test_list_completions_returns_all_for_current_snapshot(client, monkeypatch):
     ]
     snapshot = [{"id": "snap-1", "data": {"kind": "shift_snapshot", "assignments": {}}}]
 
-    def fake_list(kind):
+    def fake_list(kind, force=False):
         return snapshot if kind == "shift_snapshot" else completions
 
     monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
@@ -822,7 +822,7 @@ def test_overview_returns_per_reviewer_progress(client, monkeypatch):
         },
     ]
 
-    def fake_list(kind):
+    def fake_list(kind, force=False):
         if kind == "shift_snapshot":
             return [snapshot]
         if kind == "reviewer_shift":
@@ -931,7 +931,7 @@ def _setup_clear_scenario(monkeypatch):
         },
     ]
 
-    def fake_list(kind):
+    def fake_list(kind, force=False):
         if kind == "shift_snapshot":
             return [snapshot]
         if kind == "reviewer_shift":
@@ -1074,7 +1074,7 @@ def test_reset_completions_wipes_current_snapshot(client, monkeypatch):
     ]
     snapshot = [{"id": "snap-1", "data": {"kind": "shift_snapshot", "assignments": {}}}]
 
-    def fake_list(kind):
+    def fake_list(kind, force=False):
         return snapshot if kind == "shift_snapshot" else completions
 
     deleted = []

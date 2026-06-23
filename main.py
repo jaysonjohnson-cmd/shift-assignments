@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import threading
 import time
 from typing import Optional
@@ -194,6 +195,18 @@ def _validate_person_body(body):
     return name, email, None
 
 
+def _validate_color(body):
+    """Extract an optional hex color (#rgb / #rrggbb) from a payload. Returns None if absent."""
+    if not isinstance(body, dict):
+        return None
+    raw = (body.get("color") or "").strip()
+    if not raw:
+        return None
+    if re.fullmatch(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})", raw):
+        return raw.lower()
+    return None
+
+
 @app.route("/api/reviewers", methods=["GET"])
 def api_reviewers_list():
     try:
@@ -208,17 +221,19 @@ def api_reviewers_create():
     denied = _require_admin()
     if denied is not None:
         return denied
-    name, email, err = _validate_person_body(request.get_json(silent=True))
+    body = request.get_json(silent=True)
+    name, email, err = _validate_person_body(body)
     if err:
         return err
+    color = _validate_color(body)
     existing = {r["email"] for r in roles.list_reviewers()}
     if email in existing:
         return jsonify({"error": "reviewer with that email already exists"}), 409
-    doc_id = roles.create_record("reviewer", name, email)
+    doc_id = roles.create_record("reviewer", name, email, color)
     logging.info(
         "POST /api/reviewers by=%s created reviewer=%s", g.user.get("email"), email
     )
-    return jsonify({"data": {"id": doc_id, "name": name, "email": email}}), 201
+    return jsonify({"data": {"id": doc_id, "name": name, "email": email, "color": color}}), 201
 
 
 @app.route("/api/reviewers/<doc_id>", methods=["PUT"])
@@ -226,18 +241,20 @@ def api_reviewers_update(doc_id):
     denied = _require_admin()
     if denied is not None:
         return denied
-    name, email, err = _validate_person_body(request.get_json(silent=True))
+    body = request.get_json(silent=True)
+    name, email, err = _validate_person_body(body)
     if err:
         return err
+    color = _validate_color(body)
     try:
-        roles.update_record(doc_id, "reviewer", name, email)
+        roles.update_record(doc_id, "reviewer", name, email, color)
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else 500
         return jsonify({"error": f"storage api returned {status}"}), status
     logging.info(
         "PUT /api/reviewers/%s by=%s email=%s", doc_id, g.user.get("email"), email
     )
-    return jsonify({"data": {"id": doc_id, "name": name, "email": email}})
+    return jsonify({"data": {"id": doc_id, "name": name, "email": email, "color": color}})
 
 
 @app.route("/api/reviewers/<doc_id>", methods=["DELETE"])
@@ -827,9 +844,13 @@ def _rows_for_reviewer(snapshot_id, email):
     return out
 
 
-def _list_completions_for_snapshot(snapshot_id, reviewer_email=None):
-    """Return completion docs for a snapshot, optionally filtered by reviewer."""
-    docs = roles.list_docs_by_kind("completion")
+def _list_completions_for_snapshot(snapshot_id, reviewer_email=None, force=False):
+    """Return completion docs for a snapshot, optionally filtered by reviewer.
+
+    Pass ``force=True`` on correctness-critical paths (the finish check) to read
+    authoritatively from Storage rather than the warm cache.
+    """
+    docs = roles.list_docs_by_kind("completion", force=force)
     out = []
     norm_email = (reviewer_email or "").strip().lower()
     for doc in docs:
@@ -871,10 +892,18 @@ def api_shifts_my():
             **row,
             "completedAt": completion.get("completed_at") if completion else None,
         })
+    try:
+        color = next(
+            (r.get("color") for r in roles.list_reviewers() if r["email"] == email),
+            None,
+        )
+    except Exception:  # noqa: BLE001 — color lookup is best-effort
+        color = None
     return jsonify({
         "data": {
             "snapshot_id": snap_id,
             "published_at": snap_data.get("published_at"),
+            "color": color,
             "rows": enriched,
         }
     })
@@ -944,7 +973,10 @@ def _auto_refill_reviewer(snap_id, email, count):
             "part_count": next_part + len(chunks),
         }
         try:
-            internal_api.post(_STORAGE_PATH, json={"data": doc})
+            r = internal_api.post(_STORAGE_PATH, json={"data": doc})
+            new_id = (r.get("data") or {}).get("id")
+            if new_id:
+                roles.cache_upsert_doc("reviewer_shift", {"id": new_id, "data": doc})
         except Exception as exc:  # noqa: BLE001 — refill is best-effort
             logging.warning("auto-refill: failed to store chunk for %s: %s", email, exc)
             break
@@ -1026,7 +1058,9 @@ def api_shifts_my_complete():
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e)
     doc_id = (resp.get("data") or {}).get("id")
-    roles.invalidate_doc_cache("completion")
+    # Reflect this write in the warm cache immediately so the finish check (and
+    # any read-after-write) sees it without waiting for the next background scan.
+    roles.cache_upsert_doc("completion", {"id": doc_id, "data": doc})
     logging.info(
         "POST /api/shifts/my/complete by=%s job_id=%s snapshot_id=%s",
         email, job_id, snap_id,
@@ -1036,12 +1070,26 @@ def api_shifts_my_complete():
     try:
         assigned = _rows_for_reviewer(snap_id, email) or []
         assigned_keys = {_row_job_key(r) for r in assigned}
-        done_keys = {_completion_job_key(c) for c in existing}
+        # Cheap pass against the warm cache. The completion we just wrote was
+        # upserted above, and every prior completion was upserted on its own
+        # request, so on a warm instance this already reflects the full set —
+        # which is what fixes the fast-finisher miss (no more wipe-on-write).
+        done = _list_completions_for_snapshot(snap_id, reviewer_email=email)
+        done_keys = {_completion_job_key(c) for c in done}
         done_keys.add(job_id)
         if assigned_keys and assigned_keys <= done_keys:
-            # Auto-assign the same number of fresh jobs, then ping the admin.
-            added = _auto_refill_reviewer(snap_id, email, len(assigned))
-            _notify_reviewer_finished(email, len(assigned), len(added))
+            # Looks finished — confirm with a single authoritative read before the
+            # ping (guards the rare cold-cache / multi-instance case). Bounded to
+            # finish events, so it never hammers the Storage rate limit.
+            confirmed = _list_completions_for_snapshot(
+                snap_id, reviewer_email=email, force=True
+            )
+            confirmed_keys = {_completion_job_key(c) for c in confirmed}
+            confirmed_keys.add(job_id)
+            if assigned_keys <= confirmed_keys:
+                # Auto-assign the same number of fresh jobs, then ping the admin.
+                added = _auto_refill_reviewer(snap_id, email, len(assigned))
+                _notify_reviewer_finished(email, len(assigned), len(added))
     except Exception as exc:  # noqa: BLE001 — refill/ping must not break completion
         logging.warning("finish-check failed for %s: %s", email, exc)
     return jsonify({"data": {"id": doc_id, **doc}}), 201
@@ -1067,6 +1115,7 @@ def api_shifts_my_uncomplete(job_id):
                 internal_api.delete(f"{_STORAGE_PATH}/{c['id']}")
             except requests.exceptions.HTTPError as e:
                 return _http_error_response(e)
+            roles.cache_remove_doc("completion", c["id"])
             logging.info(
                 "DELETE /api/shifts/my/complete/%s by=%s", job_id, email,
             )
@@ -1115,6 +1164,7 @@ def api_shifts_reset_completions():
     for c in completions:
         try:
             internal_api.delete(f"{_STORAGE_PATH}/{c['id']}")
+            roles.cache_remove_doc("completion", c["id"])
             deleted += 1
         except requests.exceptions.HTTPError:
             # skip, continue
@@ -1171,7 +1221,10 @@ def api_shifts_overview():
         return _http_error_response(e)
 
     try:
-        roster = {r["email"].lower(): r.get("name") or "" for r in roles.list_reviewers()}
+        roster = {
+            r["email"].lower(): {"name": r.get("name") or "", "color": r.get("color")}
+            for r in roles.list_reviewers()
+        }
     except Exception:  # noqa: BLE001 — name lookup is best-effort
         roster = {}
 
@@ -1199,7 +1252,7 @@ def api_shifts_overview():
         priorities = [r.get("priority") for r in rows if isinstance(r.get("priority"), int)]
         reviewers_out.append({
             "email": email,
-            "name": roster.get(email, ""),
+            "name": (roster.get(email) or {}).get("name", ""),
             "total": total,
             "completed": completed,
             "pending": total - completed,
@@ -1245,7 +1298,10 @@ def api_shifts_jobs():
         return _http_error_response(e)
 
     try:
-        roster = {r["email"].lower(): r.get("name") or "" for r in roles.list_reviewers()}
+        roster = {
+            r["email"].lower(): {"name": r.get("name") or "", "color": r.get("color")}
+            for r in roles.list_reviewers()
+        }
     except Exception:  # noqa: BLE001 — name lookup is best-effort
         roster = {}
 
@@ -1280,9 +1336,11 @@ def api_shifts_jobs():
                 "oldestSubmission": r.get("oldestSubmission", ""),
                 "groupIds": r.get("groupIds", []),
             })
+        info = roster.get(email) or {}
         jobs_by_reviewer.append({
             "email": email,
-            "name": roster.get(email, ""),
+            "name": info.get("name", ""),
+            "color": info.get("color"),
             "jobs": jobs,
         })
 

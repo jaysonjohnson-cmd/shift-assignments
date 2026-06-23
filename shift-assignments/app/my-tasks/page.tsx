@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { getMyTasks } from "@/lib/api";
 import { useUser } from "@/lib/useUser";
-import type { Row } from "@/lib/types";
+import { reviewerColor, type Row } from "@/lib/types";
 import { OpenInReviewButton } from "@/components/OpenInReviewButton";
 import { MarkDoneButton } from "@/components/MarkDoneButton";
 import { formatRelative, formatPending } from "@/lib/relativeTime";
@@ -14,6 +14,7 @@ type State = {
   error: string | null;
   snapshotId: string | null;
   publishedAt?: string;
+  color?: string | null;
   rows: Row[];
 };
 
@@ -214,6 +215,7 @@ export default function MyTasksPage() {
         error: null,
         snapshotId: data.snapshot_id,
         publishedAt: data.published_at,
+        color: data.color,
         rows: data.rows,
       });
     } catch (e) {
@@ -342,6 +344,7 @@ export default function MyTasksPage() {
                 row={row}
                 density={density}
                 grouped={viewByPid}
+                accentColor={reviewerColor({ color: state.color ?? undefined, email: user?.email })}
                 onChange={(iso) =>
                   handleRowChange(row.jobId || row.id, iso)
                 }
@@ -493,12 +496,15 @@ function TaskCard({
   completed,
   density,
   grouped,
+  accentColor,
 }: {
   row: Row;
   onChange: (iso: string | null) => void;
   completed?: boolean;
   density: Density;
   grouped?: boolean;
+  /** Signed-in reviewer's color, used for the left accent bar. */
+  accentColor?: string;
 }) {
   const jobCount = grouped
     ? (typeof row.extras?.jobCount === "number" ? (row.extras.jobCount as number) : 1)
@@ -531,7 +537,7 @@ function TaskCard({
     <span
       aria-hidden
       className="absolute left-0 top-0 h-full w-1"
-      style={{ backgroundColor: meta.color }}
+      style={{ backgroundColor: accentColor ?? meta.color }}
     />
   );
 

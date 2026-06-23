@@ -11,10 +11,11 @@ import {
   listAdmins,
   listLeads,
   listReviewers,
+  updateReviewer,
   type Admin,
   type Lead,
 } from "@/lib/api";
-import type { Reviewer } from "@/lib/types";
+import { REVIEWER_COLORS, reviewerColor, type Reviewer } from "@/lib/types";
 import { useUser } from "@/lib/useUser";
 import { useStore } from "@/lib/store";
 
@@ -80,6 +81,72 @@ function PersonForm({ disabled, onSubmit, submitLabel }: PersonFormProps) {
   );
 }
 
+function ReviewerColorPicker({
+  reviewer,
+  disabled,
+  onPick,
+}: {
+  reviewer: Reviewer;
+  disabled: boolean;
+  onPick: (color: string) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const current = reviewerColor(reviewer);
+
+  const pick = async (color: string) => {
+    setBusy(true);
+    try {
+      await onPick(color);
+      setOpen(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        type="button"
+        disabled={disabled || busy}
+        onClick={() => setOpen((o) => !o)}
+        title={disabled ? "Only admins can change colors" : "Change color"}
+        className="h-6 w-6 rounded-full border border-storesight-border ring-2 ring-white transition hover:scale-110 disabled:cursor-not-allowed disabled:opacity-60 dark:border-storesight-border-dark dark:ring-storesight-surface-dark"
+        style={{ background: current }}
+        aria-label="Reviewer color"
+      />
+      {open && !disabled && (
+        <>
+          <button
+            type="button"
+            aria-hidden
+            tabIndex={-1}
+            onClick={() => setOpen(false)}
+            className="fixed inset-0 z-10 cursor-default"
+          />
+          <div className="absolute left-0 top-8 z-20 grid w-40 grid-cols-6 gap-1.5 rounded-xl border border-storesight-border bg-white p-2 shadow-xl dark:border-storesight-border-dark dark:bg-storesight-surface-dark">
+            {REVIEWER_COLORS.map((c) => (
+              <button
+                key={c}
+                type="button"
+                disabled={busy}
+                onClick={() => pick(c)}
+                className={`h-5 w-5 rounded-full transition hover:scale-110 ${
+                  current.toLowerCase() === c.toLowerCase()
+                    ? "ring-2 ring-storesight-ink ring-offset-1 dark:ring-storesight-ink-dark dark:ring-offset-storesight-surface-dark"
+                    : ""
+                }`}
+                style={{ background: c }}
+                aria-label={`Set color ${c}`}
+              />
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const { role, user } = useUser();
   const setReviewersStore = useStore((s) => s.setReviewers);
@@ -121,6 +188,12 @@ export default function SettingsPage() {
   const removeReviewer = async (id: string) => {
     await deleteReviewer(id);
     const next = reviewers.filter((r) => r.id !== id);
+    setReviewers(next);
+    setReviewersStore(next);
+  };
+  const changeReviewerColor = async (r: Reviewer, color: string) => {
+    const updated = await updateReviewer(r.id, r.name, r.email, color);
+    const next = reviewers.map((x) => (x.id === r.id ? { ...x, color: updated.color } : x));
     setReviewers(next);
     setReviewersStore(next);
   };
@@ -196,7 +269,13 @@ export default function SettingsPage() {
                 key={r.id}
                 className="flex items-center justify-between gap-3 py-2.5"
               >
-                <div className="min-w-0">
+                <div className="flex min-w-0 items-center gap-3">
+                  <ReviewerColorPicker
+                    reviewer={r}
+                    disabled={!isAdmin}
+                    onPick={(color) => changeReviewerColor(r, color)}
+                  />
+                  <div className="min-w-0">
                   <div className="truncate text-sm font-medium text-storesight-ink dark:text-storesight-ink-dark">
                     {r.name}
                   </div>
@@ -207,6 +286,7 @@ export default function SettingsPage() {
                         You
                       </span>
                     )}
+                  </div>
                   </div>
                 </div>
                 <button

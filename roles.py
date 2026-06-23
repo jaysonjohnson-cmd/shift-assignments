@@ -58,7 +58,7 @@ def _bg_refresh_loop():
     retry_delay = 10  # seconds to wait after a failed scan before retrying
     while True:
         try:
-            _full_namespace_scan()
+            _full_namespace_scan(force=True)
             # Success — wait the full refresh interval (or wake early on invalidation).
             _NEEDS_REFRESH.wait(timeout=_REFRESH_INTERVAL)
             _NEEDS_REFRESH.clear()
@@ -84,7 +84,7 @@ def _ensure_bg_started():
 # Core scan + cache (called ONLY by the background thread)
 # ---------------------------------------------------------------------------
 
-def _full_namespace_scan():
+def _full_namespace_scan(want_kind=None, force=False):
     """Scan all namespace pages and populate every kind cache atomically.
 
     Protected by _SCAN_LOCK so it never runs more than once concurrently
@@ -93,6 +93,15 @@ def _full_namespace_scan():
     """
     global _BG_STARTED  # keep lint happy; _SCAN_LOCK is the real guard
     with _SCAN_LOCK:
+        # Stampede guard: if several requests hit a cold cache at once, they
+        # queue on _SCAN_LOCK. The first scans and populates the cache; the rest
+        # find their kind already present and skip re-scanning. State-based (not
+        # time-based) so there's no cross-call coupling. The bg loop passes
+        # force=True to always refresh on its schedule.
+        if not force and want_kind is not None:
+            with _CACHE_LOCK:
+                if _DOC_CACHE.get(want_kind) is not None:
+                    return
         by_kind: dict = {}
         page = 1
         try:
@@ -125,21 +134,41 @@ def _full_namespace_scan():
         )
 
 
-def list_docs_by_kind(kind):
-    """Return cached docs for `kind`. Never calls Storage API — always from cache.
+def list_docs_by_kind(kind, force=False):
+    """Return docs for `kind`, normally from the warm cache.
 
-    Returns whatever is in the cache (may be slightly stale between background
-    refreshes). Returns [] if the background thread hasn't completed its first
-    scan yet; that resolves within a few seconds of startup.
+    Two cases trigger a synchronous Storage API scan instead of returning
+    possibly-empty cached data:
+
+    * ``force=True`` — the caller needs authoritative data (e.g. the
+      "did this reviewer finish?" check before sending a Slack ping).
+    * the cache for this kind is *cold* (no entry yet) — this happens right
+      after startup or right after an ``invalidate_doc_cache`` wipe. Returning
+      ``[]`` here is what produced wrong roles on cold start and missed finish
+      pings. A forced scan is coalesced (see ``_SCAN_COALESCE_WINDOW``) so a
+      burst of concurrent cold reads costs a single scan, not one each.
     """
     _ensure_bg_started()
     with _CACHE_LOCK:
         entry = _DOC_CACHE.get(kind)
+    if force or entry is None:
+        try:
+            _full_namespace_scan(want_kind=kind, force=force)
+        except Exception as exc:  # noqa: BLE001 — fall back to whatever we have
+            logging.warning("synchronous scan for %s failed: %s", kind, exc)
+        with _CACHE_LOCK:
+            entry = _DOC_CACHE.get(kind)
     return entry["data"] if entry else []
 
 
 def invalidate_doc_cache(*kinds):
-    """Drop cached results and wake the background thread to refresh immediately."""
+    """Drop cached results and wake the background thread to refresh immediately.
+
+    Used by bulk operations (publish, clear). Popped kinds become *cold*, so the
+    next ``list_docs_by_kind`` for them does a synchronous refresh rather than
+    serving stale/empty data. Hot single-doc writes should prefer
+    ``cache_upsert_doc`` / ``cache_remove_doc`` to stay fast.
+    """
     with _CACHE_LOCK:
         if kinds:
             for k in kinds:
@@ -147,6 +176,40 @@ def invalidate_doc_cache(*kinds):
         else:
             _DOC_CACHE.clear()
     _NEEDS_REFRESH.set()  # wake bg thread so fresh data arrives within seconds
+
+
+def cache_upsert_doc(kind, doc):
+    """Reflect a single just-written doc in the warm cache immediately.
+
+    Lets read-after-write be consistent on this instance without waiting for the
+    next background scan. Only mutates an already-populated cache — when the
+    kind's cache is cold we must not fabricate a one-doc list, so we just wake the
+    background thread and let the next read do a full (coalesced) scan.
+    """
+    doc_id = (doc or {}).get("id")
+    if not kind or not doc_id:
+        _NEEDS_REFRESH.set()
+        return
+    with _CACHE_LOCK:
+        entry = _DOC_CACHE.get(kind)
+        if entry is not None:
+            docs = [d for d in entry["data"] if d.get("id") != doc_id]
+            docs.append(doc)
+            _DOC_CACHE[kind] = {"data": docs, "fetched_at": entry["fetched_at"]}
+    _NEEDS_REFRESH.set()
+
+
+def cache_remove_doc(kind, doc_id):
+    """Drop a single just-deleted doc from the warm cache immediately."""
+    if not kind or not doc_id:
+        _NEEDS_REFRESH.set()
+        return
+    with _CACHE_LOCK:
+        entry = _DOC_CACHE.get(kind)
+        if entry is not None:
+            docs = [d for d in entry["data"] if d.get("id") != doc_id]
+            _DOC_CACHE[kind] = {"data": docs, "fetched_at": entry["fetched_at"]}
+    _NEEDS_REFRESH.set()
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +221,7 @@ def _normalize_email(email):
 
 
 def _list_by_kind(kind):
-    """Return docs as {id, name, email}, deduped by email (newest wins)."""
+    """Return docs as {id, name, email, color}, deduped by email (newest wins)."""
     out = []
     seen = set()
     for doc in list_docs_by_kind(kind):
@@ -168,7 +231,12 @@ def _list_by_kind(kind):
             continue
         if email:
             seen.add(email)
-        out.append({"id": doc.get("id"), "name": data.get("name", ""), "email": email})
+        out.append({
+            "id": doc.get("id"),
+            "name": data.get("name", ""),
+            "email": email,
+            "color": data.get("color") or None,
+        })
     return out
 
 
@@ -208,24 +276,31 @@ def is_admin_or_lead(email):
     return get_role(email) in ("admin", "lead")
 
 
-def create_record(kind, name, email):
+def create_record(kind, name, email, color=None):
     """Create a reviewer or admin record. Returns the Storage API doc id."""
-    resp = internal_api.post(_STORAGE_PATH, json={"data": {
+    data = {
         "kind": kind,
         "name": (name or "").strip(),
         "email": _normalize_email(email),
-    }})
-    invalidate_doc_cache(kind)
-    return resp["data"]["id"]
+    }
+    if color:
+        data["color"] = color
+    resp = internal_api.post(_STORAGE_PATH, json={"data": data})
+    new_id = resp["data"]["id"]
+    cache_upsert_doc(kind, {"id": new_id, "data": data})
+    return new_id
 
 
-def update_record(doc_id, kind, name, email):
-    internal_api.put(f"{_STORAGE_PATH}/{doc_id}", json={"data": {
+def update_record(doc_id, kind, name, email, color=None):
+    data = {
         "kind": kind,
         "name": (name or "").strip(),
         "email": _normalize_email(email),
-    }})
-    invalidate_doc_cache(kind)
+    }
+    if color:
+        data["color"] = color
+    internal_api.put(f"{_STORAGE_PATH}/{doc_id}", json={"data": data})
+    cache_upsert_doc(kind, {"id": doc_id, "data": data})
 
 
 def delete_record(doc_id):

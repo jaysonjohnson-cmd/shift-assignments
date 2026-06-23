@@ -58,10 +58,12 @@ export async function listReviewers(): Promise<Reviewer[]> {
 export async function createReviewer(
   name: string,
   email: string,
+  color?: string,
 ): Promise<Reviewer> {
   const resp = await call<{ data: Reviewer }>("POST", "/api/reviewers", {
     name,
     email,
+    color,
   });
   return resp.data;
 }
@@ -70,10 +72,12 @@ export async function updateReviewer(
   id: string,
   name: string,
   email: string,
+  color?: string,
 ): Promise<Reviewer> {
   const resp = await call<{ data: Reviewer }>("PUT", `/api/reviewers/${id}`, {
     name,
     email,
+    color,
   });
   return resp.data;
 }
@@ -247,6 +251,7 @@ export type ShiftJob = {
 export type ReviewerJobs = {
   email: string;
   name: string;
+  color?: string;
   jobs: ShiftJob[];
 };
 

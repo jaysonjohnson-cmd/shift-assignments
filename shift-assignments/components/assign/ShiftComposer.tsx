@@ -11,6 +11,7 @@ import {
 import {
   MAX_SLOTS_PER_SHIFT,
   accentFor,
+  reviewerColor,
   type ProjectSummary,
   type Reviewer,
   type ReviewerSlot,
@@ -260,7 +261,11 @@ export function ShiftComposer({
                   <span
                     aria-hidden
                     className="h-2.5 w-2.5 shrink-0 rounded-full"
-                    style={{ background: accentFor(idx) }}
+                    style={{
+                      background: slot.reviewerId
+                        ? reviewerColor(reviewerById.get(slot.reviewerId))
+                        : accentFor(idx),
+                    }}
                   />
                   <ReviewerPicker
                     value={slot.reviewerId}

@@ -193,7 +193,7 @@ def test_admin_can_create_reviewer(client, monkeypatch):
 
     created = {}
 
-    def fake_create(kind, name, email):
+    def fake_create(kind, name, email, color=None):
         created["kind"] = kind
         created["name"] = name
         created["email"] = email

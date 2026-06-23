@@ -7,6 +7,7 @@ import { useStore } from "@/lib/store";
 import { formatRelative } from "@/lib/relativeTime";
 import { ProgressTrackerTile } from "@/components/assign/ProgressTrackerTile";
 import { useUser } from "@/lib/useUser";
+import { reviewerColor } from "@/lib/types";
 
 const PRIORITY_META: Record<number, { label: string; tint: string; text: string }> = {
   1: { label: "P1", tint: "bg-[#FF4D4D]/15", text: "text-[#FF4D4D]" },
@@ -109,15 +110,19 @@ export default function TeamAssignmentsPage() {
   }, [load]);
 
   const allJobs = useMemo(() => {
-    const jobs: Array<ShiftJob & { reviewer: string; reviewerName: string }> = [];
+    const jobs: Array<
+      ShiftJob & { reviewer: string; reviewerName: string; reviewerColor: string }
+    > = [];
     if (!data) return jobs;
     for (const group of data.jobs_by_reviewer) {
+      const color = reviewerColor(group);
       for (const job of group.jobs) {
         if (filterCompleted && job.completed) continue;
         jobs.push({
           ...job,
           reviewer: group.email,
           reviewerName: group.name || group.email,
+          reviewerColor: color,
         });
       }
     }
@@ -279,6 +284,11 @@ export default function TeamAssignmentsPage() {
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2">
+                                <span
+                                  aria-hidden
+                                  className="h-3 w-3 shrink-0 rounded-full ring-2 ring-white dark:ring-storesight-surface-dark"
+                                  style={{ background: reviewerColor(reviewer) }}
+                                />
                                 <div className="truncate text-sm font-semibold text-storesight-ink dark:text-storesight-ink-dark">
                                   {reviewer.name || reviewer.email}
                                 </div>
@@ -352,7 +362,8 @@ export default function TeamAssignmentsPage() {
                               return (
                                 <div
                                   key={`${reviewer.email}-${job.id}`}
-                                  className={`px-4 py-3 flex items-center justify-between gap-4 text-sm transition ${
+                                  style={{ borderLeftColor: reviewerColor(reviewer) }}
+                                  className={`border-l-4 pl-3 pr-4 py-3 flex items-center justify-between gap-4 text-sm transition ${
                                     job.completed
                                       ? "bg-emerald-50/30 dark:bg-emerald-400/5"
                                       : "hover:bg-storesight-bg-tint dark:hover:bg-storesight-surface-raised-dark"
@@ -482,7 +493,14 @@ export default function TeamAssignmentsPage() {
                           }`}
                         >
                           <td className="px-4 py-3 font-medium text-storesight-ink dark:text-storesight-ink-dark">
-                            {job.reviewerName}
+                            <span className="inline-flex items-center gap-2">
+                              <span
+                                aria-hidden
+                                className="h-2.5 w-2.5 shrink-0 rounded-full"
+                                style={{ background: job.reviewerColor }}
+                              />
+                              {job.reviewerName}
+                            </span>
                           </td>
                           <td className="px-4 py-3">
                             <span className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-bold ${meta.tint} ${meta.text}`}>
