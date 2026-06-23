@@ -205,16 +205,17 @@ export function ShiftComposer({
       </header>
 
       <div className="mt-4 flex flex-wrap items-center gap-3">
-        <label className="text-xs font-medium text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+        <label className="flex items-center gap-2 text-xs font-medium text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
           Total to assign
           <input
             type="number"
             min={0}
             max={pool}
-            value={draft.totalTarget}
+            value={draft.totalTarget || ""}
+            placeholder="e.g. 30"
             disabled={draft.assignAll}
             onChange={(e) => setTotalTarget(Number(e.target.value) || 0)}
-            className="ml-2 h-8 w-20 rounded-md border border-storesight-border bg-white px-2 text-right text-sm outline-none transition focus:border-storesight-accent disabled:opacity-50 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark"
+            className="h-8 w-24 rounded-md border-2 border-storesight-accent/40 bg-white px-2 text-sm text-storesight-ink outline-none transition focus:border-storesight-accent focus:ring-2 focus:ring-storesight-accent/20 disabled:opacity-50 dark:border-storesight-accent/30 dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark dark:focus:border-storesight-accent-light"
           />
         </label>
         <div className="ml-auto flex items-center gap-2">
