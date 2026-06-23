@@ -76,11 +76,13 @@ export default function TeamAssignmentsPage() {
     setError(null);
     try {
       await clearShift("all");
-      // Re-fetch shift view and force-refresh Bloom so the job pool is fresh
-      const [, fetched] = await Promise.all([load(), getBloomJobs(true, "N")]);
-      setRows(fetched, `Bloom · ${fetched.length} jobs (unreviewed)`);
+      await load();
+      // Best-effort Bloom refresh — never block the card clear
+      getBloomJobs(true, "N").then((fetched) =>
+        setRows(fetched, `Bloom · ${fetched.length} jobs (unreviewed)`)
+      ).catch(() => undefined);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to close assignment");
+      setError(e instanceof Error ? e.message : "Failed to end shift");
     } finally {
       setClosing(false);
     }
@@ -182,7 +184,7 @@ export default function TeamAssignmentsPage() {
               title="Close the shift and clear all assigned jobs"
               className="rounded-lg border border-storesight-hot-pink/40 bg-storesight-hot-pink/10 px-3 py-2 text-sm font-medium text-storesight-hot-pink transition hover:border-storesight-hot-pink/60 hover:bg-storesight-hot-pink/20 disabled:opacity-50 dark:border-storesight-hot-pink/40 dark:bg-storesight-hot-pink/10 dark:text-storesight-hot-pink"
             >
-              {closing ? "Closing…" : "Close my assignments"}
+              {closing ? "Ending shift…" : "End shift (clear all)"}
             </button>
           )}
         </div>
@@ -577,10 +579,10 @@ export default function TeamAssignmentsPage() {
               </svg>
             </div>
             <h2 className="text-lg font-semibold text-storesight-ink dark:text-storesight-ink-dark">
-              Close your assignments?
+              End shift and clear all assignments?
             </h2>
             <p className="mt-2 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-              {`This will clear all ${totalCount} jobs currently assigned in this shift. You'll need to publish a new shift to reassign them.`}
+              {`This will clear all ${totalCount} jobs for every reviewer in this shift. You'll need to publish a new shift to reassign them.`}
             </p>
             <div className="mt-6 flex gap-3">
               <button
@@ -595,7 +597,7 @@ export default function TeamAssignmentsPage() {
                 onClick={handleCloseAssignment}
                 className="flex-1 rounded-lg border border-storesight-hot-pink/60 bg-storesight-hot-pink/10 px-4 py-2 text-sm font-semibold text-storesight-hot-pink transition hover:bg-storesight-hot-pink/20"
               >
-                Close it
+                End shift
               </button>
             </div>
           </div>
