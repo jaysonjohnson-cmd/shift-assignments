@@ -504,6 +504,11 @@ def api_bloom_projects():
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e, source="bloom api")
     summaries = bloom.project_summaries(rows)
+    # Enrich with project names from the projects API (best-effort, cached).
+    names = bloom.fetch_project_names([s["projectId"] for s in summaries])
+    for s in summaries:
+        if not s.get("projectName"):
+            s["projectName"] = names.get(s["projectId"], "")
     logging.info(
         "GET /api/bloom/projects by=%s status=%s count=%d",
         g.user.get("email"), status, len(summaries),

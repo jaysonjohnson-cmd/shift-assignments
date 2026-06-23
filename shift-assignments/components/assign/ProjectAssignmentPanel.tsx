@@ -172,14 +172,21 @@ export function ProjectAssignmentPanel({
                   onChange={() => toggleSelect(p.projectId)}
                 />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-xs font-medium text-storesight-ink dark:text-storesight-ink-dark">
+                  <div className="truncate text-xs font-semibold text-storesight-ink dark:text-storesight-ink-dark">
                     {p.projectName || `Project ${p.projectId}`}
                   </div>
-                  <div className="text-[10px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-                    PID {p.projectId} · {p.jidCount} JIDs
-                    {p.oldestSubmission
-                      ? ` · oldest ${p.oldestSubmission.slice(0, 10)}`
-                      : ""}
+                  <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                    <span className="rounded bg-storesight-bg-tint px-1 py-px font-mono dark:bg-storesight-surface-dark">
+                      {p.projectId}
+                    </span>
+                    <span>·</span>
+                    <span>{p.jidCount} JID{p.jidCount === 1 ? "" : "s"}</span>
+                    {p.oldestSubmission && (
+                      <>
+                        <span>·</span>
+                        <span>oldest {p.oldestSubmission.slice(0, 10)}</span>
+                      </>
+                    )}
                   </div>
                 </div>
                 {shiftOwned && owner && (
