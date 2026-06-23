@@ -690,17 +690,37 @@ def api_shifts_publish():
         existing_snap_id, existing_snap_data = None, None
 
     if existing_snap_id:
-        # Delete the old reviewer_shift docs only for the reviewers being replaced.
+        # Single pass over the live shift's docs: delete the docs for reviewers
+        # being replaced, and collect the job keys held by reviewers we are
+        # KEEPING. Those retained jobs must not be handed to anyone in this
+        # publish, or the same job would sit on two reviewers at once. The
+        # assignment pool comes from the live Bloom feed, which doesn't know a
+        # job is already assigned — so this server-side guard is what actually
+        # prevents overlap, regardless of which compose options were used.
         try:
             all_shift_docs = roles.list_docs_by_kind("reviewer_shift")
         except requests.exceptions.HTTPError as e:
             return _http_error_response(e)
+        retained_keys: set = set()
         for doc in all_shift_docs:
             doc_data = doc.get("data") or {}
             if doc_data.get("shift_snapshot_id") != existing_snap_id:
                 continue
             if (doc_data.get("reviewer_email") or "").strip().lower() in normalized:
                 _try_delete(doc.get("id"))
+            else:
+                for r in doc_data.get("rows") or []:
+                    jk = str(r.get("jobId") or r.get("id") or "")
+                    if jk:
+                        retained_keys.add(jk)
+
+        # Drop incoming rows that collide with a retained reviewer's jobs.
+        if retained_keys:
+            for email in reviewer_emails:
+                normalized[email] = [
+                    r for r in normalized[email]
+                    if str(r.get("jobId") or r.get("id") or "") not in retained_keys
+                ]
 
         # Write new reviewer_shift docs under the existing snapshot.
         snapshot_id = existing_snap_id

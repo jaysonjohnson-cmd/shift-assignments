@@ -276,6 +276,55 @@ def test_publish_then_latest_round_trip(client, monkeypatch):
     assert by_email["alex@storesight.com"] == assignments["alex@storesight.com"]
 
 
+def test_merge_publish_drops_jobs_held_by_retained_reviewers(client, monkeypatch):
+    """No overlap: republishing into a live shift must not hand a job to a new
+    reviewer when a reviewer who is being kept already holds it."""
+    c, token_file = client
+    _as_admin(token_file)
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(roles, "list_reviewers", lambda: [])
+
+    published_docs = []
+
+    def fake_post(path, json=None):
+        doc_id = f"doc-{len(published_docs) + 1}"
+        published_docs.append({"id": doc_id, "data": json["data"]})
+        return {"data": {"id": doc_id}}
+
+    def fake_list_docs_by_kind(kind, force=False):
+        return [d for d in reversed(published_docs) if (d["data"] or {}).get("kind") == kind]
+
+    deleted = []
+    monkeypatch.setattr(internal_api, "post", fake_post)
+    monkeypatch.setattr(internal_api, "put", lambda path, json=None: {"data": {}})
+    monkeypatch.setattr(internal_api, "delete", lambda path: deleted.append(path) or {"data": {}})
+    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list_docs_by_kind)
+
+    # First publish: Sam gets job J1.
+    r1 = c.post("/api/shifts/publish", json={"assignments": {
+        "sam@storesight.com": [{"jobId": "J1", "projectId": "10", "name": "Job 1"}],
+    }})
+    assert r1.status_code == 201, r1.get_json()
+
+    # Second publish adds Alex only, but the pool still contains J1 (already Sam's).
+    r2 = c.post("/api/shifts/publish", json={"assignments": {
+        "alex@storesight.com": [
+            {"jobId": "J1", "projectId": "10", "name": "Job 1"},
+            {"jobId": "J2", "projectId": "20", "name": "Job 2"},
+        ],
+    }})
+    assert r2.status_code == 201, r2.get_json()
+
+    # Alex must keep only J2 — J1 stays with Sam, no overlap.
+    alex_docs = [
+        d for d in published_docs
+        if d["data"].get("kind") == "reviewer_shift"
+        and d["data"].get("reviewer_email") == "alex@storesight.com"
+    ]
+    alex_jobs = [r["jobId"] for d in alex_docs for r in d["data"]["rows"]]
+    assert alex_jobs == ["J2"]
+
+
 def test_publish_compacts_rows_to_subset_needed_by_my_tasks(client, monkeypatch):
     """Oversized fields (`groupIds`, `extras`) must never reach Storage API."""
     c, token_file = client
