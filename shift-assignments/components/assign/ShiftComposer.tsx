@@ -212,7 +212,7 @@ export function ShiftComposer({
             min={0}
             max={pool}
             value={draft.totalTarget || ""}
-            placeholder="e.g. 30"
+            placeholder=""
             disabled={draft.assignAll}
             onChange={(e) => setTotalTarget(Number(e.target.value) || 0)}
             className="h-8 w-24 rounded-md border-2 border-storesight-accent/40 bg-white px-2 text-sm text-storesight-ink outline-none transition focus:border-storesight-accent focus:ring-2 focus:ring-storesight-accent/20 disabled:opacity-50 dark:border-storesight-accent/30 dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark dark:focus:border-storesight-accent-light"
