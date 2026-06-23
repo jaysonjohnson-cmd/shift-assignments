@@ -150,14 +150,14 @@ def project_summaries(rows=None):
         if entry is None:
             entry = {
                 "projectId": pid,
-                "projectName": r.get("projectName") or "",
+                "projectName": r.get("projectName") or r.get("name") or "",
                 "jidCount": 0,
                 "oldestSubmission": "",
             }
             by_pid[pid] = entry
         entry["jidCount"] += 1
-        if not entry["projectName"] and r.get("projectName"):
-            entry["projectName"] = r["projectName"]
+        if not entry["projectName"]:
+            entry["projectName"] = r.get("projectName") or r.get("name") or ""
         submitted = r.get("oldestSubmission") or ""
         if submitted:
             prev = entry["oldestSubmission"]
