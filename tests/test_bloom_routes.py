@@ -1026,6 +1026,29 @@ def test_clear_all_deletes_reviewer_shifts_and_completions(client, monkeypatch):
     assert "/api/storage/qc-shift-assignments/comp-1" in deletes
 
 
+def test_clear_scoped_to_one_reviewer_keeps_shift_live(client, monkeypatch):
+    c, token_file = client
+    _as_admin(token_file)
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(roles, "list_reviewers", lambda: [])
+    deletes, puts = _setup_clear_scenario(monkeypatch)
+
+    resp = c.post(
+        "/api/shifts/clear",
+        json={"mode": "all", "reviewer_email": "sam@storesight.com"},
+    )
+    assert resp.status_code == 200, resp.get_json()
+    body = resp.get_json()["data"]
+    assert body["cleared_rows"] == 2  # only sam's two rows
+    assert body["cleared_completions"] == 1  # only sam's completion
+
+    # Sam's docs gone; Alex untouched; snapshot NOT deleted (shift stays live).
+    assert "/api/storage/qc-shift-assignments/rs-sam" in deletes
+    assert "/api/storage/qc-shift-assignments/comp-1" in deletes
+    assert "/api/storage/qc-shift-assignments/rs-alex" not in deletes
+    assert "/api/storage/qc-shift-assignments/snap-1" not in deletes
+
+
 def test_clear_active_keeps_only_completed_rows(client, monkeypatch):
     c, token_file = client
     _as_admin(token_file)

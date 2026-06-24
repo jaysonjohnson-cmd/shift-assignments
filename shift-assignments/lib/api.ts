@@ -269,13 +269,22 @@ export async function getShiftJobs(): Promise<ShiftJobs> {
 
 export type ClearMode = "active" | "completed" | "all" | "reset";
 
-export async function clearShift(mode: ClearMode): Promise<{
+/**
+ * Clear shift tasks/completions. Pass `reviewerEmail` to scope the clear to a
+ * single reviewer — the shift stays live for everyone else.
+ */
+export async function clearShift(
+  mode: ClearMode,
+  reviewerEmail?: string,
+): Promise<{
   mode: ClearMode;
   cleared_rows: number;
   cleared_completions: number;
 }> {
+  const body: { mode: ClearMode; reviewer_email?: string } = { mode };
+  if (reviewerEmail) body.reviewer_email = reviewerEmail;
   const resp = await call<{
     data: { mode: ClearMode; cleared_rows: number; cleared_completions: number };
-  }>("POST", "/api/shifts/clear", { mode });
+  }>("POST", "/api/shifts/clear", body);
   return resp.data;
 }
