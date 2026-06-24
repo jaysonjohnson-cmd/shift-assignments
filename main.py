@@ -1421,10 +1421,13 @@ def api_shifts_jobs():
 def api_shifts_clear():
     """Admin: mass-clear tasks and/or completion marks on the current shift.
 
-    Body: `{mode: "active" | "completed" | "all"}`
+    Body: `{mode: "active" | "completed" | "all", reviewer_email?: string}`
       • active    — wipe only rows the reviewer has NOT marked done
       • completed — wipe only rows the reviewer HAS marked done (and their completion docs)
       • all       — wipe everything (rows + completions) for the current snapshot
+
+    When `reviewer_email` is provided, the clear is scoped to just that reviewer
+    and the shift stays live for everyone else (the snapshot is never deleted).
     """
     denied = _require_admin_or_lead()
     if denied is not None:
@@ -1433,6 +1436,7 @@ def api_shifts_clear():
     mode = body.get("mode")
     if mode not in ("active", "completed", "all", "reset"):
         return jsonify({"error": "mode must be 'active', 'completed', 'all', or 'reset'"}), 400
+    reviewer_email = (body.get("reviewer_email") or "").strip().lower() or None
 
     # "reset" nukes every snapshot + reviewer_shift + completion across all time.
     if mode == "reset":
@@ -1467,11 +1471,15 @@ def api_shifts_clear():
         reviewer_docs = [
             d for d in roles.list_docs_by_kind("reviewer_shift")
             if (d.get("data") or {}).get("shift_snapshot_id") == snap_id
+            and (
+                reviewer_email is None
+                or (d.get("data") or {}).get("reviewer_email", "").lower() == reviewer_email
+            )
         ]
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e)
     try:
-        completions = _list_completions_for_snapshot(snap_id)
+        completions = _list_completions_for_snapshot(snap_id, reviewer_email=reviewer_email)
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e)
 
@@ -1506,8 +1514,10 @@ def api_shifts_clear():
                 cleared_completions += 1
             except requests.exceptions.HTTPError:
                 pass
-        # Also delete the snapshot doc itself so it stops surfacing as "latest".
-        _try_delete(snap_id)
+        # Only end the whole shift on a global clear. A per-reviewer clear must
+        # leave the snapshot intact so the shift stays live for everyone else.
+        if reviewer_email is None:
+            _try_delete(snap_id)
     else:
         # Surgical modes rewrite each reviewer_shift doc to filter rows.
         keep_done = mode == "active"  # active: keep done rows, drop pending
@@ -1538,8 +1548,8 @@ def api_shifts_clear():
 
     roles.invalidate_doc_cache("shift_snapshot", "reviewer_shift", "completion")
     logging.info(
-        "POST /api/shifts/clear by=%s mode=%s snapshot_id=%s rows=%d completions=%d",
-        g.user.get("email"), mode, snap_id, cleared_rows, cleared_completions,
+        "POST /api/shifts/clear by=%s mode=%s reviewer=%s snapshot_id=%s rows=%d completions=%d",
+        g.user.get("email"), mode, reviewer_email or "*", snap_id, cleared_rows, cleared_completions,
     )
     return jsonify({
         "data": {
