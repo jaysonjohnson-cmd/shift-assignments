@@ -60,7 +60,9 @@ function groupByProject(rows: Row[]): Row[] {
   const out: Row[] = [];
   for (const [pid, list] of buckets) {
     if (list.length === 1) {
-      out.push({ ...list[0], jobId: null, groupIds: [] });
+      // A project with a single job keeps its jobId so "Open in Review" opens
+      // that exact job (nulling it sent the button to a blank Collection Review).
+      out.push({ ...list[0], groupIds: [] });
       continue;
     }
     const priority = list.reduce((m, r) => Math.min(m, r.priority), list[0].priority);

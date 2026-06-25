@@ -20,11 +20,15 @@ function buildClipboardPayload(row: Row): string {
 }
 
 function buildUrl(row: Row): string {
-  if (!row.jobId) return COLLECTION_REVIEW_URL;
-  const params = new URLSearchParams({ job: row.jobId });
+  // Open the exact job when we have one; otherwise (a multi-job "By PID" group)
+  // fall back to the project so Collection Review still lands on the right work
+  // instead of a blank page.
   const pid = row.projectId || row.id;
+  const params = new URLSearchParams();
+  if (row.jobId) params.set("job", row.jobId);
   if (pid) params.set("project", pid);
-  return `${COLLECTION_REVIEW_URL}?${params.toString()}#/`;
+  const qs = params.toString();
+  return qs ? `${COLLECTION_REVIEW_URL}?${qs}#/` : COLLECTION_REVIEW_URL;
 }
 
 export function OpenInReviewButton({ row, size = "md", variant = "default" }: Props) {
