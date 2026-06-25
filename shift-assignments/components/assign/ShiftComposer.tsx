@@ -5,6 +5,7 @@ import {
   countPinnedJids,
   effectiveSlotCount,
   evenDistribute,
+  evenSplit,
   plannedTotal,
   rebalance,
 } from "@/lib/assign";
@@ -63,13 +64,31 @@ export function ShiftComposer({
 
   const commit = (patch: Partial<ShiftDraft>) => onChange({ ...draft, ...patch });
 
+  // Count a new reviewer should start with so they match a uniform crew: the
+  // existing crew's average, capped by how many tasks are still unassigned.
+  const newReviewerShare = (existingTotal: number, existingCount: number) => {
+    const avg = existingCount > 0 ? Math.round(existingTotal / existingCount) : 0;
+    return Math.max(0, Math.min(avg, pool - existingTotal));
+  };
+
   const addSlot = () => {
     if (draft.slots.length >= MAX_SLOTS_PER_SHIFT) return;
-    const nextSlots: ReviewerSlot[] = [
-      ...draft.slots,
-      { reviewerId: "", count: 0, locked: false },
-    ];
-    commit({ slots: evenDistribute(nextSlots, draft.totalTarget) });
+    // Assign-all (total pinned to pool) or the first reviewer: even re-split.
+    if (draft.assignAll || draft.slots.length === 0) {
+      const nextSlots: ReviewerSlot[] = [
+        ...draft.slots,
+        { reviewerId: "", count: 0, locked: false },
+      ];
+      commit({ slots: evenDistribute(nextSlots, draft.totalTarget) });
+      return;
+    }
+    // Manual total: keep the crew's counts, grow the total by the new share.
+    const existingTotal = draft.slots.reduce((a, s) => a + Math.max(0, Math.floor(s.count)), 0);
+    const share = newReviewerShare(existingTotal, draft.slots.length);
+    commit({
+      slots: [...draft.slots, { reviewerId: "", count: share, locked: false }],
+      totalTarget: existingTotal + share,
+    });
   };
 
   const addMultipleSlots = (reviewerIds: string[]) => {
@@ -77,13 +96,43 @@ export function ShiftComposer({
       reviewerIds.length,
       MAX_SLOTS_PER_SHIFT - draft.slots.length,
     );
-    const newSlots: ReviewerSlot[] = reviewerIds.slice(0, slotsToAdd).map((id) => ({
+    const newIds = reviewerIds.slice(0, slotsToAdd);
+    if (newIds.length === 0) {
+      setShowMultiSelect(false);
+      return;
+    }
+    // Assign-all (total pinned to pool) or the first reviewers: even re-split.
+    if (draft.assignAll || draft.slots.length === 0) {
+      const newSlots: ReviewerSlot[] = newIds.map((id) => ({
+        reviewerId: id,
+        count: 0,
+        locked: false,
+      }));
+      commit({ slots: evenDistribute([...draft.slots, ...newSlots], draft.totalTarget) });
+      setShowMultiSelect(false);
+      return;
+    }
+    // Manual total: keep the existing crew's counts exactly as they are and grow
+    // the total. Each new reviewer starts at the crew's average; if the pool
+    // can't cover the full shares, split whatever's left across the new ones.
+    const existingTotal = draft.slots.reduce((a, s) => a + Math.max(0, Math.floor(s.count)), 0);
+    const perShare = draft.slots.length > 0 ? Math.round(existingTotal / draft.slots.length) : 0;
+    const availForNew = Math.max(0, pool - existingTotal);
+    const desiredForNew = perShare * newIds.length;
+    const counts =
+      desiredForNew <= availForNew
+        ? newIds.map(() => perShare)
+        : evenSplit(availForNew, newIds.length);
+    const newSlots: ReviewerSlot[] = newIds.map((id, i) => ({
       reviewerId: id,
-      count: 0,
+      count: counts[i],
       locked: false,
     }));
     const nextSlots = [...draft.slots, ...newSlots];
-    commit({ slots: evenDistribute(nextSlots, draft.totalTarget) });
+    commit({
+      slots: nextSlots,
+      totalTarget: existingTotal + counts.reduce((a, c) => a + c, 0),
+    });
     setShowMultiSelect(false);
   };
 
@@ -97,8 +146,18 @@ export function ShiftComposer({
     const nextSlots = draft.slots.filter((_, i) => i !== idx);
     const nextPins = { ...draft.projectPins };
     if (removed) delete nextPins[removed];
+    // Removing a reviewer should NOT bump everyone else's counts. Keep the
+    // remaining reviewers' counts exactly as they were and just drop the
+    // removed reviewer's share from the total (their work falls to overflow).
+    // In "assign all" mode the total is pinned to the pool, so the freed tasks
+    // show up as overflow instead of being redistributed.
+    const remainingTotal = nextSlots.reduce(
+      (a, s) => a + Math.max(0, Math.floor(s.count)),
+      0,
+    );
     commit({
-      slots: evenDistribute(nextSlots, draft.totalTarget),
+      slots: nextSlots,
+      totalTarget: draft.assignAll ? draft.totalTarget : remainingTotal,
       projectPins: nextPins,
     });
   };

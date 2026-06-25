@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { getShiftOverview, type ShiftOverview, getShiftJobs, type ShiftJobs, type ShiftJob, clearShift } from "@/lib/api";
+import { getShiftOverview, type ShiftOverview, getShiftJobs, type ShiftJobs, type ShiftJob, clearShift, type ClearMode } from "@/lib/api";
 import { formatRelative } from "@/lib/relativeTime";
 
 export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
@@ -13,6 +13,7 @@ export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
   const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
   const [expandedReviewers, setExpandedReviewers] = useState<Set<string>>(new Set());
   const [showCloseModal, setShowCloseModal] = useState(false);
+  const [clearTarget, setClearTarget] = useState<{ email: string; name: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -64,6 +65,22 @@ export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to close assignment");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleClearReviewer = async (mode: ClearMode) => {
+    if (!clearTarget) return;
+    const email = clearTarget.email;
+    setClearTarget(null);
+    setBusy(true);
+    setError(null);
+    try {
+      await clearShift(mode, email);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to clear reviewer");
     } finally {
       setBusy(false);
     }
@@ -139,13 +156,27 @@ export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
               const isExpanded = expandedReviewers.has(r.email);
               return (
                 <div key={r.email}>
-                  <button
-                    type="button"
-                    onClick={() => toggleExpanded(r.email)}
-                    className="w-full"
-                  >
-                    <ReviewerCard r={r} isExpanded={isExpanded} jobCount={reviewerJobs?.jobs.length || 0} />
-                  </button>
+                  <div className="flex items-stretch gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleExpanded(r.email)}
+                      className="min-w-0 flex-1"
+                    >
+                      <ReviewerCard r={r} isExpanded={isExpanded} jobCount={reviewerJobs?.jobs.length || 0} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setClearTarget({ email: r.email, name: r.name || r.email })}
+                      disabled={busy || r.total === 0}
+                      title={`Clear ${r.name || r.email}'s assignments (shift stays live for everyone else)`}
+                      aria-label={`Clear ${r.name || r.email}'s assignments`}
+                      className="shrink-0 self-stretch rounded-2xl border border-storesight-hot-pink/30 px-3 text-storesight-hot-pink transition hover:border-storesight-hot-pink/60 hover:bg-storesight-hot-pink/10 disabled:opacity-40 dark:border-storesight-hot-pink/30"
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+                        <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-8 0v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </button>
+                  </div>
                   {isExpanded && reviewerJobs && reviewerJobs.jobs.length > 0 && (
                     <div className="mt-2 rounded-lg border border-storesight-border bg-storesight-surface-dark/50 dark:border-storesight-border-dark overflow-hidden">
                       <div className="divide-y divide-storesight-border dark:divide-storesight-border-dark">
@@ -280,6 +311,58 @@ export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
                 End shift
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {clearTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="mx-4 w-full max-w-md rounded-2xl border border-storesight-border bg-white p-6 shadow-2xl animate-in fade-in zoom-in duration-300 dark:border-storesight-border-dark dark:bg-storesight-surface-dark">
+            <h2 className="text-lg font-semibold text-storesight-ink dark:text-storesight-ink-dark">
+              Clear {clearTarget.name}'s assignments
+            </h2>
+            <p className="mt-2 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+              Choose what to remove. The shift stays live for every other reviewer.
+            </p>
+            <div className="mt-5 flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => handleClearReviewer("active")}
+                className="rounded-lg border border-storesight-border bg-white px-4 py-2 text-left text-sm font-medium text-storesight-ink transition hover:border-storesight-accent hover:text-storesight-primary dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark"
+              >
+                Clear pending only
+                <span className="block text-[11px] font-normal text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                  Keep what they've finished, drop the rest
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleClearReviewer("completed")}
+                className="rounded-lg border border-storesight-border bg-white px-4 py-2 text-left text-sm font-medium text-storesight-ink transition hover:border-storesight-accent hover:text-storesight-primary dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark"
+              >
+                Clear completed only
+                <span className="block text-[11px] font-normal text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                  Remove finished jobs, keep pending work
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleClearReviewer("all")}
+                className="rounded-lg border border-storesight-hot-pink/60 bg-storesight-hot-pink/10 px-4 py-2 text-left text-sm font-semibold text-storesight-hot-pink transition hover:bg-storesight-hot-pink/20"
+              >
+                Clear everything
+                <span className="block text-[11px] font-normal text-storesight-hot-pink/80">
+                  Remove all of this reviewer's jobs from the shift
+                </span>
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setClearTarget(null)}
+              className="mt-4 w-full rounded-lg border border-storesight-border bg-white px-4 py-2 text-sm font-medium text-storesight-ink hover:border-storesight-accent hover:text-storesight-primary transition dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark"
+            >
+              Cancel
+            </button>
           </div>
         </div>
       )}
