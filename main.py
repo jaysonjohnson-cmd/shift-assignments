@@ -1042,6 +1042,26 @@ def _notify_reviewer_finished(email, total_jobs, added_jobs):
         logging.warning("failed to send finish ping for %s: %s", email, exc)
 
 
+def _live_unreviewed_count(job_id, force=False):
+    """Unreviewed-response count for a job from Bloom's prioritized feed.
+
+    A fully-reviewed job drops out of the feed entirely (or shows 0), so:
+      • >0  → still has unreviewed responses
+      •  0  → reviewed / not in the feed
+      • None → couldn't reach Bloom (caller should fail open, not block)
+    """
+    try:
+        feed = bloom.fetch_prioritized_jobs(use_cache=not force)
+    except Exception as exc:  # noqa: BLE001 — never block completion on a Bloom hiccup
+        logging.warning("unreviewed-count lookup failed for job %s: %s", job_id, exc)
+        return None
+    target = str(job_id)
+    for j in feed:
+        if str(j.get("jobId") or j.get("id") or "") == target:
+            return int(j.get("unreviewedCount") or 0)
+    return 0
+
+
 @app.route("/api/shifts/my/complete", methods=["POST"])
 def api_shifts_my_complete():
     """Mark a row done for the signed-in reviewer. Idempotent."""
@@ -1064,6 +1084,23 @@ def api_shifts_my_complete():
     for c in existing:
         if _completion_job_key(c) == job_id:
             return jsonify({"data": c})
+
+    # Guard against marking a job done while it still has unreviewed responses —
+    # that usually means the reviewer hasn't actually cleared it. The cached feed
+    # can lag, so only block after confirming against a fresh pull.
+    remaining = _live_unreviewed_count(job_id)
+    if remaining:
+        remaining = _live_unreviewed_count(job_id, force=True)
+    if remaining:
+        return jsonify({
+            "error": (
+                f"This job still has {remaining} unreviewed "
+                f"response{'s' if remaining != 1 else ''} — finish reviewing it "
+                "before marking it done."
+            ),
+            "unreviewed": remaining,
+        }), 409
+
     completed_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     doc = {
         "kind": "completion",
