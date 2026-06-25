@@ -1087,19 +1087,22 @@ def api_shifts_my_complete():
 
     # Guard against marking a job done while it still has unreviewed responses —
     # that usually means the reviewer hasn't actually cleared it. The cached feed
-    # can lag, so only block after confirming against a fresh pull.
-    remaining = _live_unreviewed_count(job_id)
-    if remaining:
-        remaining = _live_unreviewed_count(job_id, force=True)
-    if remaining:
-        return jsonify({
-            "error": (
-                f"This job still has {remaining} unreviewed "
-                f"response{'s' if remaining != 1 else ''} — finish reviewing it "
-                "before marking it done."
-            ),
-            "unreviewed": remaining,
-        }), 409
+    # can lag, so only block after confirming against a fresh pull. The reviewer
+    # can override (e.g. when responses are unreviewable due to the FieldAgent
+    # alt-picture bug) by re-submitting with override=true.
+    if not body.get("override"):
+        remaining = _live_unreviewed_count(job_id)
+        if remaining:
+            remaining = _live_unreviewed_count(job_id, force=True)
+        if remaining:
+            return jsonify({
+                "error": (
+                    f"This job still has {remaining} unreviewed "
+                    f"response{'s' if remaining != 1 else ''} — finish reviewing it "
+                    "before marking it done."
+                ),
+                "unreviewed": remaining,
+            }), 409
 
     completed_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     doc = {
@@ -1109,6 +1112,8 @@ def api_shifts_my_complete():
         "shift_snapshot_id": snap_id,
         "completed_at": completed_at,
         "note": (body.get("note") or "").strip(),
+        # True when the reviewer confirmed past the unreviewed-responses warning.
+        "overridden": bool(body.get("override")),
     }
     try:
         resp = internal_api.post(_STORAGE_PATH, json={"data": doc})

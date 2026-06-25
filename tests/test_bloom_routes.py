@@ -730,6 +730,46 @@ def test_complete_blocked_when_job_still_unreviewed(client, monkeypatch):
     assert created == []  # nothing recorded
 
 
+def test_complete_override_bypasses_unreviewed_guard(client, monkeypatch):
+    c, token_file = client
+    _as_reviewer(token_file, "sam@storesight.com")
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(
+        roles, "list_reviewers",
+        lambda: [{"id": "r", "name": "Sam", "email": "sam@storesight.com"}],
+    )
+    snapshot_doc = {"id": "snap-1", "data": {"kind": "shift_snapshot"}}
+    reviewer_doc = {"id": "rs-1", "data": {"kind": "reviewer_shift",
+                    "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
+                    "rows": [{"jobId": "55", "id": "55"}], "part": 0}}
+    created = []
+
+    def fake_list(kind, force=False):
+        if kind == "shift_snapshot":
+            return [snapshot_doc]
+        if kind == "reviewer_shift":
+            return [reviewer_doc]
+        if kind == "completion":
+            return list(created)
+        return []
+
+    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
+    monkeypatch.setattr(
+        internal_api, "post",
+        lambda path, json=None: created.append({"id": "c1", "data": json["data"]}) or {"data": {"id": "c1"}},
+    )
+    # Job still shows 7 unreviewed, but override=true should record it anyway.
+    monkeypatch.setattr(
+        main.bloom, "fetch_prioritized_jobs",
+        lambda status=None, use_cache=True: [{"jobId": "55", "id": "55", "unreviewedCount": 7}],
+    )
+
+    resp = c.post("/api/shifts/my/complete", json={"job_id": "55", "override": True})
+    assert resp.status_code == 201, resp.get_json()
+    assert len(created) == 1
+    assert created[0]["data"]["overridden"] is True
+
+
 def test_complete_allowed_when_job_reviewed(client, monkeypatch):
     c, token_file = client
     _as_reviewer(token_file, "sam@storesight.com")
