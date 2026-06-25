@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { markTaskDone, unmarkTaskDone } from "@/lib/api";
+import { markTaskDone, unmarkTaskDone, ApiError } from "@/lib/api";
 import type { Row } from "@/lib/types";
 
 type Props = {
@@ -23,27 +23,78 @@ export function MarkDoneButton({
 }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set to the remaining unreviewed count when completion is blocked, so we can
+  // offer a "mark done anyway" override (e.g. responses unreviewable via the
+  // FieldAgent alt-picture bug).
+  const [blocked, setBlocked] = useState<number | null>(null);
   const jobId = row.jobId || row.id;
   const isDone = !!row.completedAt;
 
-  const handleClick = async () => {
+  const complete = async (override: boolean) => {
     setBusy(true);
     setError(null);
     try {
-      if (isDone) {
-        await unmarkTaskDone(jobId);
-        onChange(null);
-      } else {
-        await markTaskDone(jobId);
-        if (onBeforeChange) await onBeforeChange();
-        onChange(new Date().toISOString());
-      }
+      await markTaskDone(jobId, undefined, override);
+      setBlocked(null);
+      if (onBeforeChange) await onBeforeChange();
+      onChange(new Date().toISOString());
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed");
+      const unreviewed =
+        e instanceof ApiError && e.status === 409
+          ? (e.data as { unreviewed?: number } | null)?.unreviewed
+          : undefined;
+      if (typeof unreviewed === "number") {
+        setBlocked(unreviewed);
+      } else {
+        setError(e instanceof Error ? e.message : "Failed");
+      }
     } finally {
       setBusy(false);
     }
   };
+
+  const handleClick = async () => {
+    if (isDone) {
+      setBusy(true);
+      setError(null);
+      try {
+        await unmarkTaskDone(jobId);
+        onChange(null);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Failed");
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    await complete(false);
+  };
+
+  const blockedConfirm = blocked !== null && (
+    <div className="max-w-[210px] rounded-md border border-[#FFA500]/40 bg-[#FFA500]/10 px-2 py-1.5 text-[11px] text-[#B26A00] dark:text-[#FFA500]">
+      <div>
+        {blocked} unreviewed response{blocked === 1 ? "" : "s"} still showing on this
+        job.
+      </div>
+      <div className="mt-1 flex gap-2">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => complete(true)}
+          className="font-semibold underline hover:no-underline disabled:opacity-50"
+        >
+          Mark done anyway
+        </button>
+        <button
+          type="button"
+          onClick={() => setBlocked(null)}
+          className="text-storesight-ink-muted hover:text-storesight-ink dark:text-storesight-ink-muted-dark"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
 
   if (variant === "ghost") {
     return (
@@ -85,6 +136,7 @@ export function MarkDoneButton({
             {error}
           </span>
         )}
+        {blockedConfirm}
       </div>
     );
   }
@@ -124,6 +176,7 @@ export function MarkDoneButton({
       {error && (
         <span className="text-[10px] text-storesight-hot-pink">{error}</span>
       )}
+      {blockedConfirm}
     </div>
   );
 }

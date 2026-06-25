@@ -35,15 +35,28 @@ async function call<T>(
   });
   if (!resp.ok) {
     let message = `${method} ${path} failed with ${resp.status}`;
+    let data: unknown = null;
     try {
-      const data = await resp.json();
-      if (data?.error) message = data.error;
+      data = await resp.json();
+      if ((data as { error?: string })?.error) message = (data as { error: string }).error;
     } catch {
       // non-JSON error body — keep the default message
     }
-    throw new Error(message);
+    throw new ApiError(message, resp.status, data);
   }
   return (await resp.json()) as T;
+}
+
+/** Error thrown by `call` on a non-2xx response, carrying status + parsed body. */
+export class ApiError extends Error {
+  status: number;
+  data: unknown;
+  constructor(message: string, status: number, data: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.data = data;
+  }
 }
 
 export async function getMe(): Promise<Me> {
@@ -173,10 +186,15 @@ export async function getMyTasks(): Promise<MyTasksResponse> {
   return resp.data;
 }
 
-export async function markTaskDone(jobId: string, note?: string): Promise<void> {
+export async function markTaskDone(
+  jobId: string,
+  note?: string,
+  override?: boolean,
+): Promise<void> {
   await call<{ data: unknown }>("POST", "/api/shifts/my/complete", {
     job_id: jobId,
     note,
+    ...(override ? { override: true } : {}),
   });
 }
 
