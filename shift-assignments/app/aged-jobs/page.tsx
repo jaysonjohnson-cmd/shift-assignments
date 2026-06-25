@@ -8,6 +8,15 @@ import type { Row } from "@/lib/types";
 
 type AgedRow = Row & { daysOld: number | null; oldestSubDate: string | null };
 
+type SortMode = "urgency" | "closing" | "waiting" | "backlog";
+
+const SORTS: { key: SortMode; label: string }[] = [
+  { key: "urgency", label: "Urgency" },
+  { key: "closing", label: "Closing soon" },
+  { key: "waiting", label: "Longest waiting" },
+  { key: "backlog", label: "Biggest backlog" },
+];
+
 const PRESETS = [
   { label: "All old", min: 0 },
   { label: "3+ days", min: 3 },
@@ -27,26 +36,87 @@ function formatDate(iso: string): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
-function AgeBadge({ days }: { days: number | null }) {
-  if (days === null) {
-    return (
-      <span className="inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium bg-storesight-bg-tint text-storesight-ink-muted dark:bg-storesight-accent/20 dark:text-storesight-accent-light">
-        —
-      </span>
-    );
-  }
-  let cls = "bg-storesight-bg-tint text-storesight-ink-muted dark:bg-storesight-accent/20 dark:text-storesight-accent-light";
-  if (days >= 30) cls = "bg-[#FF4D4D]/15 text-[#FF4D4D]";
-  else if (days >= 14) cls = "bg-[#FFA500]/15 text-[#FFA500]";
-  else if (days >= 7) cls = "bg-yellow-400/15 text-yellow-600 dark:text-yellow-400";
-  return (
-    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-bold tabular-nums ${cls}`}>
-      {days === 0 ? "<1d" : `${days}d`}
-    </span>
-  );
+/** Days until the job's end date. null when no/invalid date; negative = overdue. */
+function daysUntilClose(r: Row): number | null {
+  const raw = String(r.extras?.endDate ?? "");
+  if (!raw) return null;
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return null;
+  return Math.ceil((d.getTime() - Date.now()) / 86_400_000);
 }
 
-function buildResponseSearchUrl(jobId: string, projectId: string): string {
+function pendingOf(r: Row): number {
+  return Math.round(Number(r.extras?.pendingRatio ?? 0));
+}
+
+/**
+ * Blended 0–100 urgency: how risky it is to leave this job's unreviewed work
+ * sitting. Weights the hard deadline most, then how long it's waited, then how
+ * much of the job is still pending. Deadline pressure comes from the job's end
+ * date; the feed's `days_remaining` is ignored (its values don't match endDate).
+ */
+function closeScore(days: number | null): number {
+  if (days === null) return 20; // unknown deadline — mild
+  if (days < 0) return 100; // overdue
+  if (days <= 3) return 100;
+  if (days <= 7) return 85;
+  if (days <= 14) return 65;
+  if (days <= 30) return 40;
+  return 15;
+}
+
+function waitScore(days: number | null): number {
+  if (days === null) return 0;
+  if (days >= 30) return 100;
+  if (days >= 14) return 75;
+  if (days >= 7) return 50;
+  if (days >= 3) return 25;
+  return 10;
+}
+
+function urgencyScore(r: AgedRow): number {
+  const close = closeScore(daysUntilClose(r));
+  const wait = waitScore(r.daysOld);
+  const pending = Math.min(100, pendingOf(r));
+  const score = 0.45 * close + 0.35 * wait + 0.2 * pending;
+  // No unreviewed work left → not urgent regardless of the other signals.
+  return r.unreviewedCount > 0 ? Math.round(score) : 0;
+}
+
+function urgencyLevel(score: number): "High" | "Medium" | "Low" {
+  if (score >= 66) return "High";
+  if (score >= 40) return "Medium";
+  return "Low";
+}
+
+const URGENCY_STYLE: Record<string, string> = {
+  High: "bg-[#FF4D4D]/15 text-[#FF4D4D]",
+  Medium: "bg-[#FFA500]/15 text-[#B26A00] dark:text-[#FFA500]",
+  Low: "bg-storesight-bg-tint text-storesight-ink-muted dark:bg-storesight-accent/20 dark:text-storesight-accent-light",
+};
+
+function waitingColor(days: number | null): string {
+  if (days === null) return "text-storesight-ink-muted dark:text-storesight-ink-muted-dark";
+  if (days >= 21) return "text-[#FF4D4D]";
+  if (days >= 14) return "text-[#B26A00] dark:text-[#FFA500]";
+  return "text-storesight-ink dark:text-storesight-ink-dark";
+}
+
+function closesColor(days: number | null): string {
+  if (days === null) return "text-storesight-ink-muted dark:text-storesight-ink-muted-dark";
+  if (days <= 7) return "text-[#FF4D4D]";
+  if (days <= 21) return "text-[#B26A00] dark:text-[#FFA500]";
+  return "text-storesight-ink dark:text-storesight-ink-dark";
+}
+
+function closesLabel(days: number | null): string {
+  if (days === null) return "—";
+  if (days < 0) return `overdue ${Math.abs(days)}d`;
+  if (days === 0) return "today";
+  return `in ${days}d`;
+}
+
+function buildResponseSearchUrl(jobId: string): string {
   const params = new URLSearchParams({ job_id: jobId, resp_status: "N" });
   return `https://prod.fieldagent.net/admin/fieldagent/responseSearch/?${params.toString()}`;
 }
@@ -65,13 +135,24 @@ function priorityMeta(p: number) {
   return PRIORITY_META[p] ?? { label: `P${p}`, tint: "bg-storesight-bg-tint", text: "text-storesight-primary" };
 }
 
+function StatCard({ label, value, danger }: { label: string; value: number | string; danger?: boolean }) {
+  return (
+    <div className="rounded-lg border border-storesight-border bg-white px-4 py-3 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark">
+      <div className="text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">{label}</div>
+      <div className={`mt-0.5 text-2xl font-semibold tabular-nums ${danger ? "text-[#FF4D4D]" : "text-storesight-ink dark:text-storesight-ink-dark"}`}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
 export default function AgedJobsPage() {
   const [rows, setRows] = useState<AgedRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [agesLoading, setAgesLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [minDays, setMinDays] = useState(0);
-  const [sortDir, setSortDir] = useState<"desc" | "asc">("desc");
+  const [sortMode, setSortMode] = useState<SortMode>("urgency");
   const [copied, setCopied] = useState(false);
   const router = useRouter();
 
@@ -135,12 +216,28 @@ export default function AgedJobsPage() {
   const filtered = [...rows]
     .filter((r) => minDays === 0 || (r.daysOld !== null && r.daysOld >= minDays))
     .sort((a, b) => {
-      const ad = a.daysOld ?? -1;
-      const bd = b.daysOld ?? -1;
-      return sortDir === "desc" ? bd - ad : ad - bd;
+      if (sortMode === "closing") {
+        const ac = daysUntilClose(a);
+        const bc = daysUntilClose(b);
+        // Soonest close first; unknown dates sink to the bottom.
+        return (ac ?? Infinity) - (bc ?? Infinity);
+      }
+      if (sortMode === "waiting") {
+        return (b.daysOld ?? -1) - (a.daysOld ?? -1);
+      }
+      if (sortMode === "backlog") {
+        if (b.unreviewedCount !== a.unreviewedCount) return b.unreviewedCount - a.unreviewedCount;
+        return pendingOf(b) - pendingOf(a);
+      }
+      return urgencyScore(b) - urgencyScore(a);
     });
 
-  const oldest = rows.reduce((max, r) => r.daysOld !== null && r.daysOld > max ? r.daysOld : max, 0);
+  const closingWithBacklog = rows.filter((r) => {
+    const c = daysUntilClose(r);
+    return c !== null && c <= 7 && r.unreviewedCount > 0;
+  }).length;
+  const waiting14 = rows.filter((r) => r.daysOld !== null && r.daysOld >= 14).length;
+  const totalUnreviewed = rows.reduce((s, r) => s + (r.unreviewedCount || 0), 0);
 
   return (
     <div className="mx-auto w-full max-w-5xl flex-1 px-6 py-8">
@@ -160,7 +257,7 @@ export default function AgedJobsPage() {
               ? "Loading…"
               : agesLoading
               ? `${filtered.length} job${filtered.length !== 1 ? "s" : ""} · loading submission ages…`
-              : `${filtered.length} job${filtered.length !== 1 ? "s" : ""} with old submissions${oldest > 0 ? ` · oldest waiting ${oldest} days` : ""}`}
+              : `${filtered.length} job${filtered.length !== 1 ? "s" : ""} with old submissions, ranked by urgency`}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -189,7 +286,29 @@ export default function AgedJobsPage() {
         </div>
       )}
 
+      <div className="mb-5 grid grid-cols-3 gap-3">
+        <StatCard label="Closing ≤7d with backlog" value={closingWithBacklog} danger={closingWithBacklog > 0} />
+        <StatCard label="Waiting ≥14 days" value={waiting14} />
+        <StatCard label="Unreviewed (aged)" value={totalUnreviewed} />
+      </div>
+
       <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-1 rounded-lg border border-storesight-border bg-white p-1 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark">
+          {SORTS.map((s) => (
+            <button
+              key={s.key}
+              type="button"
+              onClick={() => setSortMode(s.key)}
+              className={`rounded px-3 py-1.5 text-xs font-medium transition ${
+                sortMode === s.key
+                  ? "bg-storesight-accent/20 text-storesight-primary dark:text-storesight-accent-light"
+                  : "text-storesight-ink-muted hover:text-storesight-primary dark:text-storesight-ink-muted-dark"
+              }`}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
         <div className="flex items-center gap-1 rounded-lg border border-storesight-border bg-white p-1 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark">
           {PRESETS.map((p) => (
             <button
@@ -206,13 +325,6 @@ export default function AgedJobsPage() {
             </button>
           ))}
         </div>
-        <button
-          type="button"
-          onClick={() => setSortDir((d) => (d === "desc" ? "asc" : "desc"))}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-storesight-border bg-white px-3 py-1.5 text-xs font-medium text-storesight-ink-muted transition hover:border-storesight-accent hover:text-storesight-primary dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
-        >
-          {sortDir === "desc" ? "Oldest first" : "Newest first"}
-        </button>
         <button
           type="button"
           disabled={filtered.length === 0}
@@ -248,95 +360,96 @@ export default function AgedJobsPage() {
             <thead className="border-b border-storesight-border bg-storesight-bg-tint dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark">
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Job</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Priority</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Waiting</th>
-                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Unreviewed</th>
-                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Links</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Closes</th>
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Unrev.</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Pending</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Urgency</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-storesight-border dark:divide-storesight-border-dark">
               {filtered.map((r) => {
                 const meta = priorityMeta(r.priority);
+                const dClose = daysUntilClose(r);
+                const pending = pendingOf(r);
+                const level = urgencyLevel(urgencyScore(r));
                 return (
                   <tr
                     key={`${r.id}-${r.projectId}`}
                     className="bg-white transition hover:bg-storesight-bg-tint dark:bg-storesight-surface-dark dark:hover:bg-storesight-surface-raised-dark"
                   >
                     <td className="px-4 py-3">
-                      {r.jobId && r.projectId ? (
-                        <a
-                          href={buildCollectionReviewUrl(r.jobId, r.projectId)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="font-medium text-storesight-ink hover:text-storesight-primary dark:text-storesight-ink-dark dark:hover:text-storesight-accent-light"
-                        >
-                          {r.name || `Job ${r.jobId}`}
-                        </a>
-                      ) : (
-                        <div className="font-medium text-storesight-ink dark:text-storesight-ink-dark">
-                          {r.name || `Job ${r.jobId}`}
-                        </div>
-                      )}
-                      <div className="mt-0.5 text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                      <div className="flex items-center gap-2">
+                        <span className={`inline-flex shrink-0 items-center rounded-md px-1.5 py-0.5 text-[10px] font-bold ${meta.tint} ${meta.text}`}>
+                          {meta.label}
+                        </span>
+                        {r.jobId && r.projectId ? (
+                          <a
+                            href={buildCollectionReviewUrl(r.jobId, r.projectId)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="truncate font-medium text-storesight-ink hover:text-storesight-primary dark:text-storesight-ink-dark dark:hover:text-storesight-accent-light"
+                          >
+                            {r.name || `Job ${r.jobId}`}
+                          </a>
+                        ) : (
+                          <div className="truncate font-medium text-storesight-ink dark:text-storesight-ink-dark">
+                            {r.name || `Job ${r.jobId}`}
+                          </div>
+                        )}
+                      </div>
+                      <div className="mt-0.5 flex items-center gap-2 text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
                         {r.projectId && <span>Project {r.projectId}</span>}
                         {r.jobId && r.projectId && (
                           <a
-                            href={buildResponseSearchUrl(r.jobId, r.projectId)}
+                            href={buildResponseSearchUrl(r.jobId)}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="ml-2 hover:text-storesight-primary dark:hover:text-storesight-accent-light"
+                            className="hover:text-storesight-primary dark:hover:text-storesight-accent-light"
                           >
-                            · Job {r.jobId}
+                            · Responses
                           </a>
                         )}
                       </div>
                     </td>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-bold ${meta.tint} ${meta.text}`}>
-                        {meta.label}
-                      </span>
+                    <td className={`px-4 py-3 font-semibold tabular-nums ${waitingColor(r.daysOld)}`}>
+                      {r.daysOld === null ? (
+                        agesLoading ? (
+                          <span className="inline-block h-3 w-10 animate-pulse rounded bg-storesight-bg-tint dark:bg-storesight-surface-raised-dark" />
+                        ) : (
+                          "—"
+                        )
+                      ) : (
+                        <>
+                          {r.daysOld === 0 ? "<1d" : `${r.daysOld}d`}
+                          {r.oldestSubDate && (
+                            <div className="text-[10px] font-normal text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                              since {formatDate(r.oldestSubDate)}
+                            </div>
+                          )}
+                        </>
+                      )}
                     </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <AgeBadge days={r.daysOld} />
-                        {r.oldestSubDate && (
-                          <span className="text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-                            since {formatDate(r.oldestSubDate)}
-                          </span>
-                        )}
-                        {!r.oldestSubDate && agesLoading && (
-                          <span className="h-3 w-12 animate-pulse rounded bg-storesight-bg-tint dark:bg-storesight-surface-raised-dark" />
-                        )}
-                      </div>
+                    <td className={`px-4 py-3 tabular-nums ${closesColor(dClose)}`}>
+                      {closesLabel(dClose)}
                     </td>
                     <td className="px-4 py-3 text-right font-semibold tabular-nums text-storesight-ink dark:text-storesight-ink-dark">
                       {r.unreviewedCount}
                     </td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="inline-flex items-center gap-2">
-                        {r.jobId && r.projectId && (
-                          <>
-                            <a
-                              href={buildCollectionReviewUrl(r.jobId, r.projectId)}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-storesight-primary hover:bg-storesight-accent/10 dark:text-storesight-accent-light dark:hover:bg-storesight-accent/20"
-                            >
-                              Review
-                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden><path d="M14 3h7v7M10 14 21 3M19 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                            </a>
-                            <a
-                              href={buildResponseSearchUrl(r.jobId, r.projectId)}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-storesight-primary hover:bg-storesight-accent/10 dark:text-storesight-accent-light dark:hover:bg-storesight-accent/20"
-                            >
-                              Responses
-                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden><path d="M14 3h7v7M10 14 21 3M19 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                            </a>
-                          </>
-                        )}
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <div className="h-1.5 w-16 overflow-hidden rounded-full bg-storesight-bg-tint dark:bg-storesight-surface-raised-dark">
+                          <div className="h-full rounded-full bg-[#FFA500]" style={{ width: `${Math.min(100, pending)}%` }} />
+                        </div>
+                        <span className="text-[11px] tabular-nums text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                          {pending}%
+                        </span>
                       </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-semibold ${URGENCY_STYLE[level]}`}>
+                        {level}
+                      </span>
                     </td>
                   </tr>
                 );

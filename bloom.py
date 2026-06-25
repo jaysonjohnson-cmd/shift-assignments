@@ -74,6 +74,12 @@ def _row_from_api(job):
         "extras": {
             "old_sub": int((job.get("priority_details") or {}).get("old_sub") or 0),
             "startDate": str(job.get("startDate") or ""),
+            # Deadline + backlog signals used by the Old Submissions triage view.
+            "endDate": str(job.get("endDate") or ""),
+            "pendingRatio": float((job.get("priority_details") or {}).get("pending_ratio") or 0),
+            "numSubs": float((job.get("priority_details") or {}).get("num_subs") or 0),
+            # Client owner email — used to scope to Storesight / Retail Pipeline jobs.
+            "client": str(job.get("client") or ""),
         },
     }
 
