@@ -243,7 +243,11 @@ export default function MyTasksPage() {
   };
 
   const visibleRows = viewByPid ? groupByProject(state.rows) : state.rows;
-  const todo = visibleRows.filter((r) => !r.completedAt);
+  // Reviewers work the biggest backlogs first: most unreviewed responses on top,
+  // priority as the tiebreaker.
+  const byResponses = (a: Row, b: Row) =>
+    (b.unreviewedCount || 0) - (a.unreviewedCount || 0) || a.priority - b.priority;
+  const todo = visibleRows.filter((r) => !r.completedAt).sort(byResponses);
 
   // When the queue empties, poll once after 8 seconds in case the backend
   // auto-refilled the reviewer's queue with new jobs.
@@ -253,7 +257,7 @@ export default function MyTasksPage() {
     const t = window.setTimeout(() => load(), 8000);
     return () => window.clearTimeout(t);
   }, [queueEmpty, load]);
-  const done = visibleRows.filter((r) => !!r.completedAt);
+  const done = visibleRows.filter((r) => !!r.completedAt).sort(byResponses);
   const total = todo.length + done.length;
   const pct = total > 0 ? Math.round((done.length / total) * 100) : 0;
 
