@@ -690,6 +690,85 @@ def test_complete_is_idempotent(client, monkeypatch):
     assert len(created_docs) == 1
 
 
+def test_complete_blocked_when_job_still_unreviewed(client, monkeypatch):
+    c, token_file = client
+    _as_reviewer(token_file, "sam@storesight.com")
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(
+        roles, "list_reviewers",
+        lambda: [{"id": "r", "name": "Sam", "email": "sam@storesight.com"}],
+    )
+    snapshot_doc = {"id": "snap-1", "data": {"kind": "shift_snapshot"}}
+    reviewer_doc = {"id": "rs-1", "data": {"kind": "reviewer_shift",
+                    "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
+                    "rows": [{"jobId": "55", "id": "55"}], "part": 0}}
+    created = []
+
+    def fake_list(kind, force=False):
+        if kind == "shift_snapshot":
+            return [snapshot_doc]
+        if kind == "reviewer_shift":
+            return [reviewer_doc]
+        if kind == "completion":
+            return list(created)
+        return []
+
+    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
+    monkeypatch.setattr(
+        internal_api, "post",
+        lambda path, json=None: created.append({"id": "c1", "data": json["data"]}) or {"data": {"id": "c1"}},
+    )
+    # Bloom still shows 7 unreviewed responses for job 55 → must not complete.
+    monkeypatch.setattr(
+        main.bloom, "fetch_prioritized_jobs",
+        lambda status=None, use_cache=True: [{"jobId": "55", "id": "55", "unreviewedCount": 7}],
+    )
+
+    resp = c.post("/api/shifts/my/complete", json={"job_id": "55"})
+    assert resp.status_code == 409, resp.get_json()
+    assert resp.get_json()["unreviewed"] == 7
+    assert created == []  # nothing recorded
+
+
+def test_complete_allowed_when_job_reviewed(client, monkeypatch):
+    c, token_file = client
+    _as_reviewer(token_file, "sam@storesight.com")
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(
+        roles, "list_reviewers",
+        lambda: [{"id": "r", "name": "Sam", "email": "sam@storesight.com"}],
+    )
+    snapshot_doc = {"id": "snap-1", "data": {"kind": "shift_snapshot"}}
+    reviewer_doc = {"id": "rs-1", "data": {"kind": "reviewer_shift",
+                    "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
+                    "rows": [{"jobId": "55", "id": "55"}], "part": 0}}
+    created = []
+
+    def fake_list(kind, force=False):
+        if kind == "shift_snapshot":
+            return [snapshot_doc]
+        if kind == "reviewer_shift":
+            return [reviewer_doc]
+        if kind == "completion":
+            return list(created)
+        return []
+
+    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
+    monkeypatch.setattr(
+        internal_api, "post",
+        lambda path, json=None: created.append({"id": "c1", "data": json["data"]}) or {"data": {"id": "c1"}},
+    )
+    # Job 55 is gone from the feed (fully reviewed) → completion goes through.
+    monkeypatch.setattr(
+        main.bloom, "fetch_prioritized_jobs",
+        lambda status=None, use_cache=True: [],
+    )
+
+    resp = c.post("/api/shifts/my/complete", json={"job_id": "55"})
+    assert resp.status_code == 201, resp.get_json()
+    assert len(created) == 1
+
+
 def test_complete_requires_project_id(client, monkeypatch):
     c, token_file = client
     _as_reviewer(token_file, "sam@storesight.com")
