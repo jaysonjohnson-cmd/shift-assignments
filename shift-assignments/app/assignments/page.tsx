@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AssignMenu } from "@/components/assign/AssignMenu";
 import { ShiftComposer } from "@/components/assign/ShiftComposer";
 import {
@@ -12,7 +12,7 @@ import { AssignmentsOverview } from "@/components/assign/AssignmentsOverview";
 import { useStore } from "@/lib/store";
 import { useUser } from "@/lib/useUser";
 import { useReviewerSync } from "@/lib/useReviewerSync";
-import { getBloomJobs, getBloomProjects, publishShift, clearShift } from "@/lib/api";
+import { getBloomJobs, getBloomProjects, publishShift, clearShift, getShiftJobs, type ShiftJobs } from "@/lib/api";
 import { assignShift, plannedTotal } from "@/lib/assign";
 import {
   emptyShiftDraft,
@@ -51,6 +51,7 @@ export default function AssignmentsPage() {
   const [prioritizeAged, setPrioritizeAged] = useState(false);
   const [retailPipelineOnly, setRetailPipelineOnly] = useState(false);
   const [showCloseModal, setShowCloseModal] = useState(false);
+  const [liveJobs, setLiveJobs] = useState<ShiftJobs | null>(null);
 
   useReviewerSync();
 
@@ -84,6 +85,50 @@ export default function AssignmentsPage() {
 
   const isAdmin = role === "admin" || role === "lead";
 
+  // Pull the live shift's current assignments so we can hide already-assigned
+  // jobs from the compose pool — otherwise a newly added reviewer is handed the
+  // same top-priority jobs the existing crew holds, and publish strips them as
+  // duplicates, leaving the new reviewer with nothing.
+  const refreshLiveJobs = useCallback(() => {
+    if (role !== "admin" && role !== "lead") return;
+    getShiftJobs()
+      .then(setLiveJobs)
+      .catch(() => {
+        /* best-effort — exclusion is a nicety, never block composing */
+      });
+  }, [role]);
+
+  useEffect(() => {
+    if (mode.kind === "shift") refreshLiveJobs();
+  }, [mode.kind, refreshLiveJobs]);
+
+  const reviewerEmailById = useMemo(
+    () => new Map(reviewers.map((r) => [r.id, r.email.toLowerCase()])),
+    [reviewers],
+  );
+
+  // Job keys held by live reviewers who are NOT part of the current draft. Those
+  // jobs stay with their reviewer on a merge-publish, so they shouldn't be
+  // offered again here. A reviewer being (re)assigned in this draft keeps their
+  // jobs available so re-cutting them still works.
+  const assignedElsewhereKeys = useMemo(() => {
+    const keys = new Set<string>();
+    if (!liveJobs) return keys;
+    const draftEmails = new Set(
+      (mode.kind === "shift" ? mode.draft.slots : [])
+        .map((s) => reviewerEmailById.get(s.reviewerId))
+        .filter((e): e is string => !!e),
+    );
+    for (const group of liveJobs.jobs_by_reviewer) {
+      if (draftEmails.has(group.email.toLowerCase())) continue;
+      for (const job of group.jobs) {
+        const k = String(job.jobId || job.id || "");
+        if (k) keys.add(k);
+      }
+    }
+    return keys;
+  }, [liveJobs, mode, reviewerEmailById]);
+
   const priorityPool = useMemo<Row[]>(() => {
     let filtered = prioritizeAged
       ? rows.filter((r) => Number(r.extras?.old_sub ?? 0) > 0)
@@ -95,8 +140,13 @@ export default function AssignmentsPage() {
           "retailpipeline@fieldagent.net",
       );
     }
+    if (assignedElsewhereKeys.size > 0) {
+      filtered = filtered.filter(
+        (r) => !assignedElsewhereKeys.has(String(r.jobId || r.id || "")),
+      );
+    }
     return [...filtered].sort((a, b) => b.priority - a.priority);
-  }, [rows, prioritizeAged, retailPipelineOnly]);
+  }, [rows, prioritizeAged, retailPipelineOnly, assignedElsewhereKeys]);
 
   const cancel = () => {
     setMode({ kind: "menu" });
@@ -149,6 +199,7 @@ export default function AssignmentsPage() {
       const byEmail = toEmailMap(result.assignments, reviewers);
       const resp = await publishShift(byEmail);
       setLastPublishedAt(resp.published_at);
+      refreshLiveJobs();
       const lines = summarizeShift("Shift", result.assignments, reviewers);
       setMode({
         kind: "summary",
@@ -197,6 +248,9 @@ export default function AssignmentsPage() {
           </h1>
           <p className="mt-0.5 text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
             {priorityPool.length} task{priorityPool.length === 1 ? "" : "s"} pulled from Bloom
+            {assignedElsewhereKeys.size > 0 && (
+              <> · {assignedElsewhereKeys.size} already assigned in the live shift (hidden)</>
+            )}
           </p>
           <div className="mt-3">
             <button
