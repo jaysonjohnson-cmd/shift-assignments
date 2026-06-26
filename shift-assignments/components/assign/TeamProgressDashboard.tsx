@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { getShiftOverview, listAllCompletions } from "@/lib/api";
+import { getShiftOverview } from "@/lib/api";
 import { formatRelative } from "@/lib/relativeTime";
 import { useUser } from "@/lib/useUser";
 
@@ -30,12 +30,13 @@ export function TeamProgressDashboard({ refreshKey = 0, onDismiss }: { refreshKe
   const load = async () => {
     setLoading(true);
     try {
-      const [overview, completions] = await Promise.all([
-        getShiftOverview(),
-        listAllCompletions(),
-      ]);
+      const overview = await getShiftOverview();
 
-      const totalCompleted = completions.completions.length;
+      // Count only completions that match a currently-assigned job (what each
+      // reviewer's `completed` already reflects). Counting raw completion docs
+      // double-counts duplicates and stale/orphaned completions, which produced
+      // impossible totals like "273 of 178 (153%)".
+      const totalCompleted = overview.reviewers.reduce((sum, r) => sum + r.completed, 0);
       const totalJobs = overview.reviewers.reduce((sum, r) => sum + r.total, 0);
       const overallPct = totalJobs === 0 ? 0 : Math.round((totalCompleted / totalJobs) * 100);
 
