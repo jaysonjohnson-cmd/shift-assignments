@@ -248,7 +248,12 @@ export default function MyTasksPage() {
   // priority as the tiebreaker.
   const byResponses = (a: Row, b: Row) =>
     (b.unreviewedCount || 0) - (a.unreviewedCount || 0) || a.priority - b.priority;
-  const todo = visibleRows.filter((r) => !r.completedAt).sort(byResponses);
+  // A job is "done" when explicitly marked complete OR when its LIVE unreviewed
+  // count (overlaid by the backend) has dropped to 0 — i.e. it's already been
+  // reviewed/approved, so it leaves the To-Do list on its own instead of
+  // lingering with a stale count.
+  const isDone = (r: Row) => !!r.completedAt || (r.unreviewedCount || 0) === 0;
+  const todo = visibleRows.filter((r) => !isDone(r)).sort(byResponses);
 
   // When the queue empties, poll once after 8 seconds in case the backend
   // auto-refilled the reviewer's queue with new jobs.
@@ -258,7 +263,7 @@ export default function MyTasksPage() {
     const t = window.setTimeout(() => load(), 8000);
     return () => window.clearTimeout(t);
   }, [queueEmpty, load]);
-  const done = visibleRows.filter((r) => !!r.completedAt).sort(byResponses);
+  const done = visibleRows.filter(isDone).sort(byResponses);
   const total = todo.length + done.length;
   const pct = total > 0 ? Math.round((done.length / total) * 100) : 0;
 

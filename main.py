@@ -907,13 +907,35 @@ def api_shifts_my():
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e)
     done_by_jid = {_completion_job_key(c): c for c in completions if _completion_job_key(c)}
+
+    # Overlay LIVE unreviewed counts from the prioritized feed so the list shows
+    # reality, not the publish-time snapshot. A job that has dropped out of the
+    # feed has no unreviewed responses left (fully reviewed) → count 0, which the
+    # UI treats as already-done. Best-effort: if the feed is unavailable we keep
+    # the stored counts rather than blanking the page.
+    try:
+        feed = bloom.fetch_prioritized_jobs()
+        live_by_job = {
+            str(j.get("jobId")): j.get("unreviewedCount", 0)
+            for j in feed
+            if j.get("jobId")
+        }
+    except Exception:  # noqa: BLE001 — live overlay is best-effort
+        live_by_job = None
+
     enriched = []
     for row in rows:
         completion = done_by_jid.get(_row_job_key(row))
-        enriched.append({
+        item = {
             **row,
             "completedAt": completion.get("completed_at") if completion else None,
-        })
+        }
+        # Only override jobs we can identify in the live feed by jobId; rows
+        # without a jobId (legacy) keep their stored count untouched.
+        jid = str(row.get("jobId") or "")
+        if live_by_job is not None and jid:
+            item["unreviewedCount"] = live_by_job.get(jid, 0)
+        enriched.append(item)
     try:
         color = next(
             (r.get("color") for r in roles.list_reviewers() if r["email"] == email),

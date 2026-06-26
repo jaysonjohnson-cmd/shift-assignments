@@ -644,6 +644,83 @@ def test_shifts_my_reads_from_per_reviewer_doc(client, monkeypatch):
     assert [r["projectId"] for r in body["rows"]] == ["10", "20"]
 
 
+def test_shifts_my_overlays_live_unreviewed_counts(client, monkeypatch):
+    """The stored (publish-time) unreviewedCount is replaced with the LIVE feed
+    value so already-reviewed jobs show 0 and drop out of To-Do, while jobs that
+    have left the feed entirely are treated as fully reviewed (0)."""
+    c, token_file = client
+    _as_reviewer(token_file, "sam@storesight.com")
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(
+        roles, "list_reviewers",
+        lambda: [{"id": "r", "name": "Sam", "email": "sam@storesight.com"}],
+    )
+
+    snapshot = {"id": "snap-1", "data": {"kind": "shift_snapshot",
+                "reviewer_emails": ["sam@storesight.com"]}}
+    reviewer_shift = {"id": "rs-1", "data": {"kind": "reviewer_shift",
+                      "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
+                      "rows": [
+                          {"jobId": "A", "projectId": "10", "unreviewedCount": 18},  # live: 5
+                          {"jobId": "B", "projectId": "20", "unreviewedCount": 9},   # gone → 0
+                      ]}}
+
+    def fake_list(kind, force=False):
+        if kind == "shift_snapshot":
+            return [snapshot]
+        if kind == "reviewer_shift":
+            return [reviewer_shift]
+        return []
+
+    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
+    # Live feed: job A still has 5 unreviewed; job B is absent (fully reviewed).
+    monkeypatch.setattr(
+        main.bloom, "fetch_prioritized_jobs",
+        lambda status=None, use_cache=True: [{"jobId": "A", "unreviewedCount": 5}],
+    )
+
+    resp = c.get("/api/shifts/my")
+    assert resp.status_code == 200
+    rows = {r["jobId"]: r for r in resp.get_json()["data"]["rows"]}
+    assert rows["A"]["unreviewedCount"] == 5   # overlaid from live feed
+    assert rows["B"]["unreviewedCount"] == 0   # absent from feed → fully reviewed
+
+
+def test_shifts_my_keeps_stored_count_when_feed_unavailable(client, monkeypatch):
+    """If the live feed errors, fall back to the stored count rather than
+    blanking every job to 0 (which would wrongly mark all work done)."""
+    c, token_file = client
+    _as_reviewer(token_file, "sam@storesight.com")
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(
+        roles, "list_reviewers",
+        lambda: [{"id": "r", "name": "Sam", "email": "sam@storesight.com"}],
+    )
+    snapshot = {"id": "snap-1", "data": {"kind": "shift_snapshot",
+                "reviewer_emails": ["sam@storesight.com"]}}
+    reviewer_shift = {"id": "rs-1", "data": {"kind": "reviewer_shift",
+                      "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
+                      "rows": [{"jobId": "A", "projectId": "10", "unreviewedCount": 18}]}}
+
+    def fake_list(kind, force=False):
+        if kind == "shift_snapshot":
+            return [snapshot]
+        if kind == "reviewer_shift":
+            return [reviewer_shift]
+        return []
+
+    def boom(status=None, use_cache=True):
+        raise RuntimeError("feed down")
+
+    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
+    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", boom)
+
+    resp = c.get("/api/shifts/my")
+    assert resp.status_code == 200
+    rows = resp.get_json()["data"]["rows"]
+    assert rows[0]["unreviewedCount"] == 18  # stored count preserved
+
+
 def test_shifts_my_returns_empty_when_no_snapshot(client, monkeypatch):
     c, token_file = client
     _as_reviewer(token_file, "sam@storesight.com")
