@@ -7,6 +7,7 @@ import { useUser } from "@/lib/useUser";
 import { reviewerColor, type Row } from "@/lib/types";
 import { OpenInReviewButton } from "@/components/OpenInReviewButton";
 import { MarkDoneButton } from "@/components/MarkDoneButton";
+import { Confetti } from "@/components/Confetti";
 import { formatRelative, formatPending } from "@/lib/relativeTime";
 
 type State = {
@@ -335,7 +336,7 @@ export default function MyTasksPage() {
       )}
 
       {total > 0 && todo.length === 0 && (
-        <EmptyQueue message={EMPTY_QUEUE_MESSAGES[emptyMsgIdx]} />
+        <EmptyQueue message={EMPTY_QUEUE_MESSAGES[emptyMsgIdx]} celebrate />
       )}
 
       <div
@@ -396,12 +397,19 @@ function Section({
   );
 }
 
-function EmptyQueue({ message }: { message: string }) {
+function EmptyQueue({
+  message,
+  celebrate = false,
+}: {
+  message: string;
+  celebrate?: boolean;
+}) {
   return (
     <div
       key={message}
       className="mt-8 flex min-h-[50vh] items-center justify-center px-4 text-center animate-[tasklist-fade_320ms_ease-out]"
     >
+      {celebrate && <Confetti />}
       <h2 className="max-w-3xl bg-gradient-to-r from-storesight-primary via-storesight-accent to-storesight-accent-light bg-clip-text text-lg font-black leading-snug tracking-tight text-transparent sm:text-xl md:text-2xl">
         {message}
       </h2>
