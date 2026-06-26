@@ -49,7 +49,7 @@ export default function TeamAssignmentsPage() {
   const [data, setData] = useState<ShiftJobs | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [sortBy, setSortBy] = useState<"reviewer" | "priority">("reviewer");
+  const [sortBy, setSortBy] = useState<"reviewer" | "priority" | "summary">("reviewer");
   const [filterCompleted, setFilterCompleted] = useState(true);
   const [expandedReviewers, setExpandedReviewers] = useState<Set<string>>(new Set());
   const [showCloseModal, setShowCloseModal] = useState(false);
@@ -168,6 +168,27 @@ export default function TeamAssignmentsPage() {
     () => (data?.jobs_by_reviewer ?? []).reduce((sum, r) => sum + r.jobs.length, 0),
     [data],
   );
+  const overallPct = totalCount === 0 ? 0 : Math.round((completedCount / totalCount) * 100);
+
+  // Per-reviewer rollup for the Summary tab — assigned / done / remaining,
+  // sorted least-complete first so whoever's behind surfaces at the top.
+  const reviewerSummary = useMemo(() => {
+    return (data?.jobs_by_reviewer ?? [])
+      .map((r) => {
+        const assigned = r.jobs.length;
+        const completed = r.jobs.filter((j) => j.completed).length;
+        return {
+          email: r.email,
+          name: r.name || r.email,
+          color: reviewerColor(r),
+          assigned,
+          completed,
+          remaining: assigned - completed,
+          pct: assigned === 0 ? 0 : Math.round((completed / assigned) * 100),
+        };
+      })
+      .sort((a, b) => a.pct - b.pct || b.remaining - a.remaining);
+  }, [data]);
 
   return (
     <div className="mx-auto w-full max-w-7xl flex-1 px-6 py-8">
@@ -260,7 +281,19 @@ export default function TeamAssignmentsPage() {
               >
                 By Priority
               </button>
+              <button
+                type="button"
+                onClick={() => setSortBy("summary")}
+                className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+                  sortBy === "summary"
+                    ? "bg-storesight-accent/20 text-storesight-primary dark:text-storesight-accent-light"
+                    : "text-storesight-ink-muted hover:text-storesight-primary dark:text-storesight-ink-muted-dark"
+                }`}
+              >
+                Summary
+              </button>
             </div>
+            {sortBy !== "summary" && (
             <button
               type="button"
               onClick={() => setFilterCompleted(!filterCompleted)}
@@ -273,9 +306,120 @@ export default function TeamAssignmentsPage() {
               <input type="checkbox" checked={filterCompleted} readOnly className="cursor-pointer" />
               Hide completed
             </button>
+            )}
           </div>
 
-          {sortBy === "reviewer" ? (
+          {sortBy === "summary" ? (
+            <div className="space-y-4">
+              {/* Overall completion */}
+              <div className="rounded-2xl border border-storesight-border bg-white p-5 dark:border-storesight-border-dark dark:bg-storesight-surface-dark">
+                <div className="flex items-end justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                      Overall completion
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-storesight-ink dark:text-storesight-ink-dark tabular-nums">
+                      {completedCount}
+                      <span className="text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                        {" / "}{totalCount}
+                      </span>
+                      <span className="ml-2 text-base font-medium text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                        jobs done
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-2xl font-semibold text-storesight-primary dark:text-storesight-accent-light tabular-nums">
+                      {overallPct}%
+                    </div>
+                    <div className="text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark tabular-nums">
+                      {totalCount - completedCount} remaining
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-storesight-bg-tint dark:bg-storesight-surface-raised-dark">
+                  <div
+                    className={`h-full rounded-full transition-[width] duration-500 ${
+                      overallPct === 100
+                        ? "bg-emerald-500"
+                        : "bg-gradient-to-r from-storesight-accent to-storesight-primary"
+                    }`}
+                    style={{ width: `${overallPct}%` }}
+                  />
+                </div>
+              </div>
+
+              {/* Per-reviewer breakdown */}
+              <div className="overflow-hidden rounded-2xl border border-storesight-border bg-white dark:border-storesight-border-dark dark:bg-storesight-surface-dark">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-storesight-border text-[11px] uppercase tracking-wide text-storesight-ink-muted dark:border-storesight-border-dark dark:text-storesight-ink-muted-dark">
+                      <th className="px-4 py-2.5 text-left font-medium">Reviewer</th>
+                      <th className="px-3 py-2.5 text-right font-medium tabular-nums">Done</th>
+                      <th className="px-3 py-2.5 text-right font-medium tabular-nums">Remaining</th>
+                      <th className="px-3 py-2.5 text-right font-medium tabular-nums">Assigned</th>
+                      <th className="px-4 py-2.5 text-left font-medium w-40">Progress</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reviewerSummary.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="px-4 py-8 text-center text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                          No reviewers in this shift
+                        </td>
+                      </tr>
+                    ) : (
+                      reviewerSummary.map((r) => (
+                        <tr
+                          key={r.email}
+                          className="border-b border-storesight-border/60 last:border-0 dark:border-storesight-border-dark/60"
+                        >
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-2">
+                              <span
+                                aria-hidden
+                                className="h-2.5 w-2.5 shrink-0 rounded-full"
+                                style={{ background: r.color }}
+                              />
+                              <span className="truncate font-medium text-storesight-ink dark:text-storesight-ink-dark">
+                                {r.name}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-3 py-3 text-right tabular-nums text-storesight-ink dark:text-storesight-ink-dark">
+                            {r.completed}
+                          </td>
+                          <td className="px-3 py-3 text-right tabular-nums text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                            {r.remaining}
+                          </td>
+                          <td className="px-3 py-3 text-right tabular-nums text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                            {r.assigned}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-2">
+                              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-storesight-bg-tint dark:bg-storesight-surface-raised-dark">
+                                <div
+                                  className={`h-full rounded-full ${
+                                    r.pct === 100
+                                      ? "bg-emerald-500"
+                                      : "bg-gradient-to-r from-storesight-accent to-storesight-primary"
+                                  }`}
+                                  style={{ width: `${r.pct}%` }}
+                                />
+                              </div>
+                              <span className="w-9 shrink-0 text-right text-[11px] tabular-nums text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                                {r.pct}%
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : sortBy === "reviewer" ? (
             <div className="space-y-3">
               {(data?.jobs_by_reviewer ?? []).length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-storesight-border bg-white/60 px-6 py-10 text-center text-sm text-storesight-ink-muted dark:border-storesight-border-dark dark:bg-storesight-surface-dark/60 dark:text-storesight-ink-muted-dark">

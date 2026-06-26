@@ -181,6 +181,39 @@ def test_auto_refill_excludes_already_assigned(monkeypatch):
     assert [r["jobId"] for r in doc["rows"]] == ["J4", "J5"]
 
 
+def test_auto_refill_uses_stored_batch_size_not_grown_queue(monkeypatch):
+    """The refill batch is the original allotment (batch_size), not the
+    accumulated queue — so finishing never doubles the next refill. Sam started
+    with a batch of 2 but has grown to 4 assigned jobs; the refill must add 2."""
+    shift_docs = [
+        {"id": "d0", "data": {"kind": "reviewer_shift", "shift_snapshot_id": "snap1",
+                              "reviewer_email": "sam@storesight.com",
+                              "rows": [{"jobId": "J1"}, {"jobId": "J2"}],
+                              "part": 0, "batch_size": 2}},
+        {"id": "d1", "data": {"kind": "reviewer_shift", "shift_snapshot_id": "snap1",
+                              "reviewer_email": "sam@storesight.com",
+                              "rows": [{"jobId": "J3"}, {"jobId": "J4"}],
+                              "part": 1, "batch_size": 2}},
+    ]
+    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind: shift_docs)
+    feed = [
+        {"id": j, "jobId": j, "projectId": f"p{j}", "priority": 1, "name": j,
+         "unreviewedCount": 3, "oldestSubmission": ""}
+        for j in ["J1", "J2", "J3", "J4", "J5", "J6", "J7"]
+    ]
+    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda: feed)
+    stored = []
+    monkeypatch.setattr(internal_api, "post", lambda path, json=None: stored.append(json) or {"data": {"id": "new"}})
+
+    # fallback_count is 4 (grown queue) — but stored batch_size=2 must win.
+    added = main._auto_refill_reviewer("snap1", "sam@storesight.com", 4)
+
+    assert [r["jobId"] for r in added] == ["J5", "J6"]  # 2 fresh, not 4
+    doc = stored[0]["data"]
+    assert doc["part"] == 2
+    assert doc["batch_size"] == 2  # persisted onto the refill chunk
+
+
 def test_auto_refill_returns_empty_when_feed_exhausted(monkeypatch):
     shift_docs = [
         {"id": "d1", "data": {"kind": "reviewer_shift", "shift_snapshot_id": "snap1",

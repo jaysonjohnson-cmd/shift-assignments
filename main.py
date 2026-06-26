@@ -735,6 +735,7 @@ def api_shifts_publish():
                     "rows": chunk,
                     "part": idx,
                     "part_count": len(chunks),
+                    "batch_size": len(normalized[email]),
                 }
                 try:
                     r = internal_api.post(_STORAGE_PATH, json={"data": doc})
@@ -789,6 +790,7 @@ def api_shifts_publish():
                 "rows": chunk,
                 "part": idx,
                 "part_count": len(chunks),
+                "batch_size": len(normalized[email]),
             }
             try:
                 r = internal_api.post(_STORAGE_PATH, json={"data": doc})
@@ -934,8 +936,14 @@ def _job_key(row):
     return str((row or {}).get("jobId") or (row or {}).get("id") or "")
 
 
-def _auto_refill_reviewer(snap_id, email, count):
-    """Top up a finished reviewer's queue with up to `count` fresh jobs.
+def _auto_refill_reviewer(snap_id, email, fallback_count):
+    """Top up a finished reviewer's queue with a fresh fixed-size batch.
+
+    The batch is the reviewer's original allotment (`batch_size`, stamped on
+    their reviewer_shift docs at publish) — NOT their accumulated queue size, so
+    finishing a queue of 20 yields 20 new jobs every cycle instead of doubling.
+    `fallback_count` is used only for legacy snapshots published before
+    batch_size was recorded.
 
     Pulls from the live prioritized feed, skipping any job already assigned to
     anyone in the current shift (preserving the no-overlap guarantee), and
@@ -946,6 +954,7 @@ def _auto_refill_reviewer(snap_id, email, count):
     norm = (email or "").strip().lower()
     assigned_keys = set()
     max_part = -1
+    batch_size = None
     try:
         docs = roles.list_docs_by_kind("reviewer_shift")
     except Exception as exc:  # noqa: BLE001 — refill is best-effort
@@ -961,6 +970,14 @@ def _auto_refill_reviewer(snap_id, email, count):
                 assigned_keys.add(k)
         if (data.get("reviewer_email") or "").strip().lower() == norm:
             max_part = max(max_part, int(data.get("part") or 0))
+            bs = data.get("batch_size")
+            if bs:
+                batch_size = bs if batch_size is None else min(batch_size, bs)
+
+    # Refill the original allotment, not the (possibly grown) current queue.
+    count = batch_size if batch_size else fallback_count
+    if count <= 0:
+        return []
 
     try:
         pool = bloom.fetch_prioritized_jobs()
@@ -991,6 +1008,7 @@ def _auto_refill_reviewer(snap_id, email, count):
             "rows": chunk,
             "part": next_part + idx,
             "part_count": next_part + len(chunks),
+            "batch_size": count,
         }
         try:
             r = internal_api.post(_STORAGE_PATH, json={"data": doc})
@@ -1149,7 +1167,9 @@ def api_shifts_my_complete():
             confirmed_keys = {_completion_job_key(c) for c in confirmed}
             confirmed_keys.add(job_id)
             if assigned_keys <= confirmed_keys:
-                # Auto-assign the same number of fresh jobs, then ping the admin.
+                # Refill a fresh fixed-size batch (the original allotment), then
+                # ping the admin. len(assigned) is only a fallback for legacy
+                # snapshots that predate the stored batch_size.
                 added = _auto_refill_reviewer(snap_id, email, len(assigned))
                 _notify_reviewer_finished(email, len(assigned), len(added))
     except Exception as exc:  # noqa: BLE001 — refill/ping must not break completion
