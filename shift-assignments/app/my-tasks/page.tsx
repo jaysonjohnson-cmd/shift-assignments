@@ -243,7 +243,6 @@ export default function MyTasksPage() {
     }));
   };
 
-  const visibleRows = viewByPid ? groupByProject(state.rows) : state.rows;
   // Reviewers work the biggest backlogs first: most unreviewed responses on top,
   // priority as the tiebreaker.
   const byResponses = (a: Row, b: Row) =>
@@ -253,7 +252,11 @@ export default function MyTasksPage() {
   // reviewed/approved, so it leaves the To-Do list on its own instead of
   // lingering with a stale count.
   const isDone = (r: Row) => !!r.completedAt || (r.unreviewedCount || 0) === 0;
-  const todo = visibleRows.filter((r) => !isDone(r)).sort(byResponses);
+  // Drop done jobs BEFORE grouping. Otherwise a By-PID group would still fold in
+  // already-reviewed jobs — inflating its "N jobs" count and sending "Open in
+  // Review" to a project page that includes finished work.
+  const pendingRows = state.rows.filter((r) => !isDone(r));
+  const todo = (viewByPid ? groupByProject(pendingRows) : pendingRows).sort(byResponses);
 
   // When the queue empties, poll once after 8 seconds in case the backend
   // auto-refilled the reviewer's queue with new jobs.
@@ -263,9 +266,11 @@ export default function MyTasksPage() {
     const t = window.setTimeout(() => load(), 8000);
     return () => window.clearTimeout(t);
   }, [queueEmpty, load]);
-  const done = visibleRows.filter(isDone).sort(byResponses);
-  const total = todo.length + done.length;
-  const pct = total > 0 ? Math.round((done.length / total) * 100) : 0;
+  // Progress is measured in jobs (not groups) so the bar reads the same whether
+  // or not "By PID" is on.
+  const doneCount = state.rows.length - pendingRows.length;
+  const total = state.rows.length;
+  const pct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
 
   return (
     <div className="mx-auto w-full max-w-4xl flex-1 px-6 py-8">
@@ -295,7 +300,7 @@ export default function MyTasksPage() {
                 />
               </div>
               <span className="text-[11px] font-semibold tabular-nums text-storesight-ink dark:text-storesight-ink-dark">
-                {done.length}/{total}
+                {doneCount}/{total}
               </span>
             </div>
           )}
