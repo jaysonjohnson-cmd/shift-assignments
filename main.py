@@ -1566,6 +1566,24 @@ def api_shifts_clear():
                 except requests.exceptions.HTTPError:
                     pass
 
+    # A global surgical clear can empty every reviewer's rows (e.g. "clear
+    # completed" on a fully-finished shift, or "clear pending" before anyone
+    # started). That leaves a snapshot with zero assignments — a zombie that
+    # _latest_snapshot rejects, so the app shows "no active shift" instead of a
+    # clean slate. End the shift in that case. (Per-reviewer clears never touch
+    # the snapshot; "all" already deletes it above.)
+    if mode != "all" and reviewer_email is None:
+        try:
+            remaining = [
+                d for d in roles.list_docs_by_kind("reviewer_shift", force=True)
+                if (d.get("data") or {}).get("shift_snapshot_id") == snap_id
+                and (d.get("data") or {}).get("rows")
+            ]
+            if not remaining:
+                _try_delete(snap_id)
+        except requests.exceptions.HTTPError:
+            pass  # best-effort cleanup; the zombie is harmless to a re-publish
+
     roles.invalidate_doc_cache("shift_snapshot", "reviewer_shift", "completion")
     logging.info(
         "POST /api/shifts/clear by=%s mode=%s reviewer=%s snapshot_id=%s rows=%d completions=%d",
