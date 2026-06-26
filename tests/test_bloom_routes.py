@@ -537,20 +537,26 @@ def test_shifts_my_filters_and_adds_completed_at(client, monkeypatch):
         "data": {
             "kind": "shift_snapshot",
             "published_at": "2026-04-21T00:00:00+00:00",
-            "assignments": {
-                "sam@storesight.com": [
-                    {"projectId": "10", "name": "A"},
-                    {"projectId": "20", "name": "B"},
-                ],
-                "alex@storesight.com": [{"projectId": "30", "name": "C"}],
-            },
+            "reviewer_emails": ["alex@storesight.com", "sam@storesight.com"],
         },
     }
+    reviewer_shifts = [
+        {"id": "rs-1", "data": {"kind": "reviewer_shift", "shift_snapshot_id": "snap-1",
+                                "reviewer_email": "sam@storesight.com", "part": 0,
+                                "rows": [
+                                    {"jobId": "10", "projectId": "10", "name": "A"},
+                                    {"jobId": "20", "projectId": "20", "name": "B"},
+                                ]}},
+        {"id": "rs-2", "data": {"kind": "reviewer_shift", "shift_snapshot_id": "snap-1",
+                                "reviewer_email": "alex@storesight.com", "part": 0,
+                                "rows": [{"jobId": "30", "projectId": "30", "name": "C"}]}},
+    ]
     completion = {
         "id": "comp-1",
         "data": {
             "kind": "completion",
             "reviewer_email": "sam@storesight.com",
+            "job_id": "10",
             "project_id": "10",
             "shift_snapshot_id": "snap-1",
             "completed_at": "2026-04-21T01:00:00+00:00",
@@ -560,6 +566,8 @@ def test_shifts_my_filters_and_adds_completed_at(client, monkeypatch):
     def fake_list(kind, force=False):
         if kind == "shift_snapshot":
             return [snapshot]
+        if kind == "reviewer_shift":
+            return list(reviewer_shifts)
         if kind == "completion":
             return [completion]
         return []
@@ -664,11 +672,16 @@ def test_complete_is_idempotent(client, monkeypatch):
 
     created_docs = []
 
-    snapshot_doc = {"id": "snap-1", "data": {"kind": "shift_snapshot", "assignments": {}}}
+    snapshot_doc = {"id": "snap-1", "data": {"kind": "shift_snapshot"}}
+    reviewer_doc = {"id": "rs-1", "data": {"kind": "reviewer_shift",
+                    "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
+                    "rows": [{"jobId": "10", "id": "10"}], "part": 0}}
 
     def fake_list(kind, force=False):
         if kind == "shift_snapshot":
             return [snapshot_doc]
+        if kind == "reviewer_shift":
+            return [reviewer_doc]
         if kind == "completion":
             return list(created_docs)
         return []
@@ -680,12 +693,17 @@ def test_complete_is_idempotent(client, monkeypatch):
 
     monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
     monkeypatch.setattr(internal_api, "post", fake_post)
+    # Job 10 is fully reviewed (absent from the feed) → completion is allowed.
+    monkeypatch.setattr(
+        main.bloom, "fetch_prioritized_jobs",
+        lambda status=None, use_cache=True: [],
+    )
 
-    first = c.post("/api/shifts/my/complete", json={"project_id": "10"})
+    first = c.post("/api/shifts/my/complete", json={"job_id": "10"})
     assert first.status_code == 201, first.get_json()
     assert len(created_docs) == 1
 
-    second = c.post("/api/shifts/my/complete", json={"project_id": "10"})
+    second = c.post("/api/shifts/my/complete", json={"job_id": "10"})
     assert second.status_code == 200  # existing doc returned, no create
     assert len(created_docs) == 1
 
@@ -824,8 +842,8 @@ def test_complete_requires_published_snapshot(client, monkeypatch):
     _as_reviewer(token_file, "sam@storesight.com")
     monkeypatch.setattr(roles, "list_admins", lambda: [])
     monkeypatch.setattr(roles, "list_reviewers", lambda: [])
-    monkeypatch.setattr(roles, "list_docs_by_kind", lambda kind: [])
-    resp = c.post("/api/shifts/my/complete", json={"project_id": "10"})
+    monkeypatch.setattr(roles, "list_docs_by_kind", lambda kind, force=False: [])
+    resp = c.post("/api/shifts/my/complete", json={"job_id": "10"})
     assert resp.status_code == 409
 
 
@@ -848,9 +866,16 @@ def test_uncomplete_deletes_matching_doc(client, monkeypatch):
         },
     }]
     snapshot = [{"id": "snap-1", "data": {"kind": "shift_snapshot", "assignments": {}}}]
+    reviewer_shift = [{"id": "rs-1", "data": {"kind": "reviewer_shift",
+                       "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
+                       "rows": [{"jobId": "10", "id": "10"}], "part": 0}}]
 
     def fake_list(kind, force=False):
-        return snapshot if kind == "shift_snapshot" else existing
+        if kind == "shift_snapshot":
+            return snapshot
+        if kind == "reviewer_shift":
+            return reviewer_shift
+        return existing
 
     deleted_paths = []
 
@@ -905,9 +930,16 @@ def test_list_completions_returns_all_for_current_snapshot(client, monkeypatch):
         },
     ]
     snapshot = [{"id": "snap-1", "data": {"kind": "shift_snapshot", "assignments": {}}}]
+    reviewer_shift = [{"id": "rs-1", "data": {"kind": "reviewer_shift",
+                       "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
+                       "rows": [{"jobId": "10", "id": "10"}], "part": 0}}]
 
     def fake_list(kind, force=False):
-        return snapshot if kind == "shift_snapshot" else completions
+        if kind == "shift_snapshot":
+            return snapshot
+        if kind == "reviewer_shift":
+            return reviewer_shift
+        return completions
 
     monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
 
@@ -974,6 +1006,7 @@ def test_overview_returns_per_reviewer_progress(client, monkeypatch):
                 "kind": "completion",
                 "shift_snapshot_id": "snap-1",
                 "reviewer_email": "sam@storesight.com",
+                "job_id": "1",
                 "project_id": "10",
                 "completed_at": "2026-04-22T01:00:00+00:00",
             },
@@ -984,6 +1017,7 @@ def test_overview_returns_per_reviewer_progress(client, monkeypatch):
                 "kind": "completion",
                 "shift_snapshot_id": "snap-1",
                 "reviewer_email": "sam@storesight.com",
+                "job_id": "2",
                 "project_id": "20",
                 "completed_at": "2026-04-22T01:30:00+00:00",
             },
@@ -1093,6 +1127,8 @@ def _setup_clear_scenario(monkeypatch):
                 "kind": "completion",
                 "shift_snapshot_id": "snap-1",
                 "reviewer_email": "sam@storesight.com",
+                # Completions key off the row's job id (id "1" → projectId "10").
+                "job_id": "1",
                 "project_id": "10",
                 "completed_at": "2026-04-22T01:00:00+00:00",
             },
@@ -1166,6 +1202,53 @@ def test_clear_scoped_to_one_reviewer_keeps_shift_live(client, monkeypatch):
     assert "/api/storage/qc-shift-assignments/comp-1" in deletes
     assert "/api/storage/qc-shift-assignments/rs-alex" not in deletes
     assert "/api/storage/qc-shift-assignments/snap-1" not in deletes
+
+
+def test_clear_active_emptying_all_rows_ends_the_shift(client, monkeypatch):
+    """Regression: a global surgical clear that empties every reviewer's rows
+    must delete the snapshot too, not leave a zombie that _latest_snapshot
+    rejects (which surfaced to users as 'no active shift' with no recovery)."""
+    c, token_file = client
+    _as_admin(token_file)
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(roles, "list_reviewers", lambda: [])
+
+    # No completions, so a 'clear active' (drop pending, keep done) drops EVERY
+    # row from both reviewers, leaving the snapshot with nothing assigned.
+    snapshot = {"id": "snap-1", "data": {"kind": "shift_snapshot",
+                "reviewer_emails": ["alex@storesight.com", "sam@storesight.com"]}}
+    reviewer_docs = [
+        {"id": "rs-sam", "data": {"kind": "reviewer_shift", "shift_snapshot_id": "snap-1",
+                                  "reviewer_email": "sam@storesight.com",
+                                  "rows": [{"id": "1", "projectId": "10"}]}},
+        {"id": "rs-alex", "data": {"kind": "reviewer_shift", "shift_snapshot_id": "snap-1",
+                                   "reviewer_email": "alex@storesight.com",
+                                   "rows": [{"id": "2", "projectId": "20"}]}},
+    ]
+    # Stateful store so the post-clear force=True re-read reflects the deletions.
+    store = {"shift_snapshot": [snapshot], "reviewer_shift": list(reviewer_docs)}
+    deletes = []
+
+    def fake_list(kind, force=False):
+        return list(store.get(kind, []))
+
+    def fake_delete(path):
+        doc_id = path.rsplit("/", 1)[-1]
+        deletes.append(path)
+        for kind in store:
+            store[kind] = [d for d in store[kind] if d["id"] != doc_id]
+
+    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
+    monkeypatch.setattr(internal_api, "delete", fake_delete)
+    monkeypatch.setattr(internal_api, "put", lambda path, json=None: {"data": {}})
+
+    resp = c.post("/api/shifts/clear", json={"mode": "active"})
+    assert resp.status_code == 200, resp.get_json()
+
+    # Both empty reviewer docs deleted AND the now-empty snapshot ended.
+    assert "/api/storage/qc-shift-assignments/rs-sam" in deletes
+    assert "/api/storage/qc-shift-assignments/rs-alex" in deletes
+    assert "/api/storage/qc-shift-assignments/snap-1" in deletes
 
 
 def test_clear_active_keeps_only_completed_rows(client, monkeypatch):
@@ -1264,9 +1347,16 @@ def test_reset_completions_wipes_current_snapshot(client, monkeypatch):
         {"id": "c3", "data": {"kind": "completion", "shift_snapshot_id": "snap-OLD", "project_id": "99"}},
     ]
     snapshot = [{"id": "snap-1", "data": {"kind": "shift_snapshot", "assignments": {}}}]
+    reviewer_shift = [{"id": "rs-1", "data": {"kind": "reviewer_shift",
+                       "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
+                       "rows": [{"jobId": "10", "id": "10"}], "part": 0}}]
 
     def fake_list(kind, force=False):
-        return snapshot if kind == "shift_snapshot" else completions
+        if kind == "shift_snapshot":
+            return snapshot
+        if kind == "reviewer_shift":
+            return reviewer_shift
+        return completions
 
     deleted = []
     monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)

@@ -259,12 +259,19 @@ def get_role(email):
         return "viewer"
     if normalized == _normalize_email(ROOT_ADMIN_EMAIL):
         return "admin"
-    if any(a["email"] == normalized for a in list_admins()):
-        return "admin"
-    if any(l["email"] == normalized for l in list_leads()):
-        return "lead"
-    if any(r["email"] == normalized for r in list_reviewers()):
-        return "reviewer"
+    # Never let a Storage API failure crash the request that resolves a role —
+    # degrade to viewer (least privilege). The root admin is handled above so
+    # the system is never locked out even when the roster is unreadable.
+    try:
+        if any(a["email"] == normalized for a in list_admins()):
+            return "admin"
+        if any(l["email"] == normalized for l in list_leads()):
+            return "lead"
+        if any(r["email"] == normalized for r in list_reviewers()):
+            return "reviewer"
+    except Exception:  # noqa: BLE001 — any roster read failure degrades to viewer
+        logging.warning("role lookup failed for %s; defaulting to viewer", normalized)
+        return "viewer"
     return "viewer"
 
 
