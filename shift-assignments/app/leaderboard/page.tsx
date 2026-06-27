@@ -25,6 +25,8 @@ export default function LeaderboardPage() {
   const [data, setData] = useState<Leaderboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // "week" = whole week; a number 0–6 = a single weekday (Mon–Sun).
+  const [view, setView] = useState<"week" | number>("week");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -65,13 +67,36 @@ export default function LeaderboardPage() {
     );
   }
 
-  const reviewers = data?.reviewers ?? [];
+  const allReviewers = data?.reviewers ?? [];
+  // Day index of "today" within the shown week (0=Mon), or -1 if outside it.
+  const todayIdx = (() => {
+    if (!data?.week_start) return -1;
+    const start = new Date(data.week_start + "T00:00:00").getTime();
+    const diff = Math.floor((Date.now() - start) / 86_400_000);
+    return diff >= 0 && diff <= 6 ? diff : -1;
+  })();
+  // Metric for the active view: whole-week total, or a single day's count.
+  const metric = (r: LeaderboardReviewer) =>
+    view === "week" ? r.total : r.days[view] ?? 0;
+  const scopeLabel = view === "week" ? "this week" : (data?.day_labels[view] ?? "");
+  // Re-rank by the active metric. In day view, hide reviewers with nothing that day.
+  const reviewers = [...allReviewers]
+    .filter((r) => (view === "week" ? true : metric(r) > 0))
+    .sort((a, b) => metric(b) - metric(a) || a.name.localeCompare(b.name));
   const top3 = reviewers.slice(0, 3);
-  const max = reviewers[0]?.total || 1;
+  const max = (reviewers[0] ? metric(reviewers[0]) : 0) || 1;
   const maxDay = Math.max(1, ...(data?.totals_by_day ?? [0]));
-  // Podium display order: 2nd, 1st, 3rd.
+  const teamTotal =
+    view === "week"
+      ? data?.team_total ?? 0
+      : reviewers.reduce((s, r) => s + metric(r), 0);
+  const leader = reviewers[0];
+  // Day highlighted in the daily chart: the selected day, else the best day.
+  const highlightDay = view === "week" ? data?.best_day ?? -1 : view;
+  // Podium display order: 2nd, 1st, 3rd. barHeights is indexed by RANK
+  // (0 = winner → tallest), not by display position.
   const podiumOrder = [1, 0, 2].filter((i) => top3[i]);
-  const barHeights = [88, 130, 66];
+  const barHeights = [130, 88, 66];
 
   return (
     <div className="mx-auto w-full max-w-4xl flex-1 px-6 py-8">
@@ -106,18 +131,35 @@ export default function LeaderboardPage() {
         </div>
       )}
 
-      {reviewers.length === 0 ? (
+      {allReviewers.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-storesight-border bg-white p-10 text-center text-sm text-storesight-ink-muted dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark">
           No reviews logged yet this week. Standings appear as reviewers mark jobs done.
         </div>
       ) : (
         <>
+          <div className="mb-4 flex flex-wrap items-center gap-1.5">
+            <RangeChip active={view === "week"} onClick={() => setView("week")}>
+              Week
+            </RangeChip>
+            {(data?.day_labels ?? []).map((lbl, i) => (
+              <RangeChip key={i} active={view === i} today={i === todayIdx} onClick={() => setView(i)}>
+                {lbl}
+              </RangeChip>
+            ))}
+          </div>
+
+          {reviewers.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-storesight-border bg-white p-8 text-center text-sm text-storesight-ink-muted dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark">
+              No jobs reviewed on {scopeLabel} yet.
+            </div>
+          ) : (
+          <>
           <div className="mb-5 grid grid-cols-3 gap-3">
-            <StatCard label="Reviewed this week" value={data?.team_total ?? 0} />
+            <StatCard label={`Reviewed ${scopeLabel}`} value={teamTotal} />
             <StatCard
-              label="Best day"
-              value={data?.best_day != null ? (data.totals_by_day[data.best_day] ?? 0) : 0}
-              sub={data?.best_day != null ? data.day_labels[data.best_day] : undefined}
+              label="Top reviewer"
+              value={leader ? metric(leader) : 0}
+              sub={leader ? leader.name.split(" ")[0] : undefined}
             />
             <StatCard label="Active reviewers" value={reviewers.length} />
           </div>
@@ -144,7 +186,7 @@ export default function LeaderboardPage() {
                         {r.name.split(" ")[0]}
                       </div>
                       <div className="text-lg font-semibold text-storesight-ink dark:text-storesight-ink-dark">
-                        {r.total}
+                        {metric(r)}
                       </div>
                       <div
                         className="w-full rounded-t-lg"
@@ -171,11 +213,14 @@ export default function LeaderboardPage() {
                     <div className="text-[11px] font-medium tabular-nums text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
                       {v}
                     </div>
-                    <div
+                    <button
+                      type="button"
+                      onClick={() => setView(i)}
+                      aria-label={`Show ${data?.day_labels[i]}`}
                       className={`w-full rounded-t-md transition-[height] ${
-                        data?.best_day === i
+                        highlightDay === i
                           ? "bg-storesight-accent dark:bg-storesight-accent-light"
-                          : "bg-storesight-accent/35 dark:bg-storesight-accent/40"
+                          : "bg-storesight-accent/35 hover:bg-storesight-accent/55 dark:bg-storesight-accent/40"
                       }`}
                       style={{ height: `${Math.max(4, (v / maxDay) * 110)}px` }}
                     />
@@ -212,20 +257,54 @@ export default function LeaderboardPage() {
                     <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-storesight-bg-tint dark:bg-storesight-surface-dark">
                       <div
                         className="h-full rounded-full"
-                        style={{ width: `${Math.round((r.total / max) * 100)}%`, backgroundColor: c }}
+                        style={{ width: `${Math.round((metric(r) / max) * 100)}%`, backgroundColor: c }}
                       />
                     </div>
                     <div className="w-9 text-right text-sm font-semibold tabular-nums text-storesight-ink dark:text-storesight-ink-dark">
-                      {r.total}
+                      {metric(r)}
                     </div>
                   </div>
                 );
               })}
             </div>
           </div>
+          </>
+          )}
         </>
       )}
     </div>
+  );
+}
+
+function RangeChip({
+  active,
+  today,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  today?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`relative rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+        active
+          ? "border border-storesight-primary bg-storesight-primary/10 text-storesight-primary dark:border-storesight-accent-light dark:bg-storesight-accent/20 dark:text-storesight-accent-light"
+          : "border border-storesight-border bg-white text-storesight-ink-muted hover:border-storesight-primary/40 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
+      }`}
+    >
+      {children}
+      {today && (
+        <span
+          aria-hidden
+          className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-storesight-accent dark:bg-storesight-accent-light"
+        />
+      )}
+    </button>
   );
 }
 

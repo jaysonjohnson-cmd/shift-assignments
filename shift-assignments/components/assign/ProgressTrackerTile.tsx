@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getShiftOverview, getShiftJobs, type ReviewerJobs, type ShiftJob } from "@/lib/api";
+import Link from "next/link";
+import { getShiftOverview, getShiftJobs, getLeaderboard, type ReviewerJobs, type ShiftJob, type Leaderboard } from "@/lib/api";
+import { reviewerColor } from "@/lib/types";
 
 type TileProps = {
   /** Controlled expand state. When `onToggle` is provided the tile expands in place. */
@@ -24,6 +26,14 @@ export function ProgressTrackerTile({ expanded = false, onToggle, onClick, disab
 
   // Filter for the expanded job list: show all jobs, only pending, or only done.
   const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "done">("all");
+
+  // Weekly leaderboard top-5, loaded lazily alongside the expanded view.
+  const [leaders, setLeaders] = useState<Leaderboard | null>(null);
+
+  useEffect(() => {
+    if (!expandable || !expanded || leaders !== null) return;
+    getLeaderboard().then(setLeaders).catch(() => setLeaders(null));
+  }, [expandable, expanded, leaders]);
 
   useEffect(() => {
     const load = async () => {
@@ -137,6 +147,52 @@ export function ProgressTrackerTile({ expanded = false, onToggle, onClick, disab
       {/* Expanded panel — what each team member is working on */}
       {expandable && expanded && (
         <div className="border-t border-storesight-border px-6 pb-6 pt-4 dark:border-storesight-border-dark">
+          {leaders && leaders.reviewers.length > 0 && (
+            <div className="mb-5 rounded-xl border border-storesight-border bg-white/60 p-4 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark/60">
+              <div className="mb-3 flex items-center justify-between">
+                <span className="text-xs font-medium uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                  This week&apos;s leaders
+                </span>
+                <Link
+                  href="/leaderboard"
+                  className="text-xs font-medium text-storesight-primary hover:underline dark:text-storesight-accent-light"
+                >
+                  Full leaderboard →
+                </Link>
+              </div>
+              <div className="flex flex-col gap-2">
+                {leaders.reviewers.slice(0, 5).map((r, i) => {
+                  const c = reviewerColor({ color: r.color ?? undefined, email: r.email });
+                  const top = leaders.reviewers[0]?.total || 1;
+                  return (
+                    <div key={r.email} className="flex items-center gap-2.5">
+                      <span className="w-4 text-right text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                        {i + 1}
+                      </span>
+                      <span
+                        className="h-5 w-5 shrink-0 rounded-full text-center text-[10px] font-medium leading-5 text-white"
+                        style={{ backgroundColor: c }}
+                      >
+                        {r.name.split(" ").map((w) => w[0]).filter(Boolean).join("").slice(0, 2).toUpperCase()}
+                      </span>
+                      <span className="w-28 truncate text-xs text-storesight-ink dark:text-storesight-ink-dark">
+                        {r.name}
+                      </span>
+                      <span className="h-2 flex-1 overflow-hidden rounded-full bg-storesight-bg-tint dark:bg-storesight-surface-dark">
+                        <span
+                          className="block h-full rounded-full"
+                          style={{ width: `${Math.round((r.total / top) * 100)}%`, backgroundColor: c }}
+                        />
+                      </span>
+                      <span className="w-8 text-right text-xs font-semibold tabular-nums text-storesight-ink dark:text-storesight-ink-dark">
+                        {r.total}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           {jobsLoading && (
             <p className="text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
               Loading team jobs…
