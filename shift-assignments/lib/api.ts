@@ -254,6 +254,30 @@ export async function getShiftOverview(): Promise<ShiftOverview> {
   return resp.data;
 }
 
+export type LeaderboardReviewer = {
+  email: string;
+  name: string;
+  color?: string | null;
+  total: number;
+  /** Mon–Sun jobs-completed counts. */
+  days: number[];
+};
+
+export type Leaderboard = {
+  week: string;
+  week_start: string;
+  day_labels: string[];
+  reviewers: LeaderboardReviewer[];
+  team_total: number;
+  totals_by_day: number[];
+  best_day: number | null;
+};
+
+export async function getLeaderboard(): Promise<Leaderboard> {
+  const resp = await call<{ data: Leaderboard }>("GET", "/api/shifts/leaderboard");
+  return resp.data;
+}
+
 export type ShiftJob = {
   id: string;
   projectId: string;

@@ -764,12 +764,16 @@ def test_complete_is_idempotent(client, monkeypatch):
         return []
 
     def fake_post(path, json=None):
+        # Ignore the best-effort weekly-tally write; only count completions.
+        if (json or {}).get("data", {}).get("kind") != "completion":
+            return {"data": {"id": "tally"}}
         doc_id = f"comp-{len(created_docs) + 1}"
         created_docs.append({"id": doc_id, "data": json["data"]})
         return {"data": {"id": doc_id}}
 
     monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
     monkeypatch.setattr(internal_api, "post", fake_post)
+    monkeypatch.setattr(internal_api, "put", lambda path, json=None: {"data": {}})
     # Job 10 is fully reviewed (absent from the feed) → completion is allowed.
     monkeypatch.setattr(
         main.bloom, "fetch_prioritized_jobs",
@@ -811,7 +815,7 @@ def test_complete_blocked_when_job_still_unreviewed(client, monkeypatch):
     monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
     monkeypatch.setattr(
         internal_api, "post",
-        lambda path, json=None: created.append({"id": "c1", "data": json["data"]}) or {"data": {"id": "c1"}},
+        lambda path, json=None: (created.append({"id": "c1", "data": json["data"]}) if (json or {}).get("data", {}).get("kind") == "completion" else None) or {"data": {"id": "c1"}},
     )
     # Bloom still shows 7 unreviewed responses for job 55 → must not complete.
     monkeypatch.setattr(
@@ -851,7 +855,7 @@ def test_complete_override_bypasses_unreviewed_guard(client, monkeypatch):
     monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
     monkeypatch.setattr(
         internal_api, "post",
-        lambda path, json=None: created.append({"id": "c1", "data": json["data"]}) or {"data": {"id": "c1"}},
+        lambda path, json=None: (created.append({"id": "c1", "data": json["data"]}) if (json or {}).get("data", {}).get("kind") == "completion" else None) or {"data": {"id": "c1"}},
     )
     # Job still shows 7 unreviewed, but override=true should record it anyway.
     monkeypatch.setattr(
@@ -891,7 +895,7 @@ def test_complete_allowed_when_job_reviewed(client, monkeypatch):
     monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
     monkeypatch.setattr(
         internal_api, "post",
-        lambda path, json=None: created.append({"id": "c1", "data": json["data"]}) or {"data": {"id": "c1"}},
+        lambda path, json=None: (created.append({"id": "c1", "data": json["data"]}) if (json or {}).get("data", {}).get("kind") == "completion" else None) or {"data": {"id": "c1"}},
     )
     # Job 55 is gone from the feed (fully reviewed) → completion goes through.
     monkeypatch.setattr(
@@ -1159,6 +1163,96 @@ def test_overview_requires_admin(client, monkeypatch):
     monkeypatch.setattr(roles, "list_reviewers", lambda: [])
     resp = c.get("/api/shifts/overview")
     assert resp.status_code == 403
+
+
+# /api/shifts/leaderboard — weekly standings
+
+
+def test_leaderboard_aggregates_current_week(client, monkeypatch):
+    c, token_file = client
+    _as_admin(token_file)
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(
+        roles, "list_reviewers",
+        lambda: [
+            {"id": "r1", "name": "Sam", "email": "sam@storesight.com", "color": "#7554c2"},
+            {"id": "r2", "name": "Alex", "email": "alex@storesight.com", "color": "#00b8a3"},
+        ],
+    )
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    this_week = main._iso_week_key(now)
+    last_week = main._iso_week_key(now - _dt.timedelta(days=7))
+    day_today = now.date().isoformat()
+    tallies = [
+        {"id": "t1", "data": {"kind": "review_tally", "reviewer_email": "sam@storesight.com",
+                              "week": this_week, "total": 9, "days": {day_today: 9}}},
+        {"id": "t2", "data": {"kind": "review_tally", "reviewer_email": "alex@storesight.com",
+                              "week": this_week, "total": 4, "days": {day_today: 4}}},
+        # Last week's tally must be ignored.
+        {"id": "t3", "data": {"kind": "review_tally", "reviewer_email": "alex@storesight.com",
+                              "week": last_week, "total": 99, "days": {}}},
+    ]
+    monkeypatch.setattr(
+        roles, "list_docs_by_kind",
+        lambda kind, force=False: tallies if kind == "review_tally" else [],
+    )
+
+    resp = c.get("/api/shifts/leaderboard")
+    assert resp.status_code == 200, resp.get_json()
+    body = resp.get_json()["data"]
+    assert body["week"] == this_week
+    assert body["team_total"] == 13  # 9 + 4, last week excluded
+    # Sorted by total desc — Sam first.
+    assert [r["email"] for r in body["reviewers"]] == ["sam@storesight.com", "alex@storesight.com"]
+    sam = body["reviewers"][0]
+    assert sam["total"] == 9 and sam["color"] == "#7554c2" and sam["name"] == "Sam"
+    assert len(sam["days"]) == 7  # Mon–Sun breakdown
+
+
+def test_leaderboard_requires_admin(client, monkeypatch):
+    c, token_file = client
+    _as_reviewer(token_file, "nobody@storesight.com")
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(roles, "list_reviewers", lambda: [])
+    resp = c.get("/api/shifts/leaderboard")
+    assert resp.status_code == 403
+
+
+def test_record_review_event_creates_then_increments(monkeypatch):
+    """First review of the week creates the tally doc; the next increments it."""
+    store = []
+
+    def fake_list(kind, force=False):
+        return list(store) if kind == "review_tally" else []
+
+    def fake_post(path, json=None):
+        doc = {"id": f"t{len(store)+1}", "data": json["data"]}
+        store.append(doc)
+        return {"data": {"id": doc["id"]}}
+
+    puts = []
+
+    def fake_put(path, json=None):
+        puts.append(json["data"])
+        # reflect into store so a later read sees the new total
+        did = path.rsplit("/", 1)[-1]
+        for d in store:
+            if d["id"] == did:
+                d["data"] = json["data"]
+        return {"data": {}}
+
+    monkeypatch.setattr(main.roles, "list_docs_by_kind", fake_list)
+    monkeypatch.setattr(main.internal_api, "post", fake_post)
+    monkeypatch.setattr(main.internal_api, "put", fake_put)
+
+    iso = "2026-06-25T12:00:00+00:00"
+    main._record_review_event("sam@storesight.com", iso)
+    assert len(store) == 1 and store[0]["data"]["total"] == 1
+
+    main._record_review_event("sam@storesight.com", iso)
+    assert puts and puts[-1]["total"] == 2
+    assert puts[-1]["days"]["2026-06-25"] == 2
 
 
 def _setup_clear_scenario(monkeypatch):

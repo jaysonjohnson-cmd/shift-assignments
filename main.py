@@ -1102,6 +1102,116 @@ def _live_unreviewed_count(job_id, force=False):
     return 0
 
 
+def _iso_week_key(dt):
+    """Return an ISO year-week key like '2026-W26' for grouping tallies."""
+    iso = dt.isocalendar()
+    return f"{iso[0]}-W{iso[1]:02d}"
+
+
+def _week_start_utc(dt):
+    """Monday 00:00:00 UTC of the week containing dt."""
+    monday = (dt - datetime.timedelta(days=dt.weekday())).date()
+    return datetime.datetime(monday.year, monday.month, monday.day, tzinfo=datetime.timezone.utc)
+
+
+def _record_review_event(email, completed_at_iso):
+    """Increment the reviewer's per-week leaderboard tally (one doc per
+    reviewer+ISO-week). Bounded growth (reviewers × weeks) keeps us well under
+    the namespace cap, and it survives shift clears because it isn't a
+    completion doc."""
+    try:
+        dt = datetime.datetime.fromisoformat(completed_at_iso)
+    except (ValueError, TypeError):
+        dt = datetime.datetime.now(datetime.timezone.utc)
+    week = _iso_week_key(dt)
+    day = dt.date().isoformat()
+    norm = (email or "").strip().lower()
+
+    existing = None
+    for d in roles.list_docs_by_kind("review_tally"):
+        data = d.get("data") or {}
+        if data.get("week") == week and (data.get("reviewer_email") or "").lower() == norm:
+            existing = d
+            break
+
+    if existing:
+        data = {**(existing.get("data") or {})}
+        days = {**(data.get("days") or {})}
+        days[day] = int(days.get(day, 0)) + 1
+        data["days"] = days
+        data["total"] = int(data.get("total", 0)) + 1
+        internal_api.put(f"{_STORAGE_PATH}/{existing['id']}", json={"data": data})
+        roles.cache_upsert_doc("review_tally", {"id": existing["id"], "data": data})
+    else:
+        data = {
+            "kind": "review_tally",
+            "reviewer_email": norm,
+            "week": week,
+            "days": {day: 1},
+            "total": 1,
+        }
+        resp = internal_api.post(_STORAGE_PATH, json={"data": data})
+        new_id = (resp.get("data") or {}).get("id")
+        if new_id:
+            roles.cache_upsert_doc("review_tally", {"id": new_id, "data": data})
+
+
+@app.route("/api/shifts/leaderboard", methods=["GET"])
+def api_shifts_leaderboard():
+    """Weekly reviewer leaderboard: jobs completed per reviewer for the current
+    ISO week, with a Mon–Sun daily breakdown. Visible to admins and leads."""
+    denied = _require_admin_or_lead()
+    if denied is not None:
+        return denied
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    week = _iso_week_key(now)
+    week_start = _week_start_utc(now)
+    day_keys = [(week_start + datetime.timedelta(days=i)).date().isoformat() for i in range(7)]
+
+    try:
+        tallies = [
+            d for d in roles.list_docs_by_kind("review_tally")
+            if (d.get("data") or {}).get("week") == week
+        ]
+    except requests.exceptions.HTTPError as e:
+        return _http_error_response(e)
+
+    try:
+        roster = {
+            r["email"].lower(): {"name": r.get("name") or "", "color": r.get("color")}
+            for r in roles.list_reviewers()
+        }
+    except Exception:  # noqa: BLE001 — name/color lookup is best-effort
+        roster = {}
+
+    reviewers = []
+    for d in tallies:
+        data = d.get("data") or {}
+        email = (data.get("reviewer_email") or "").lower()
+        days = data.get("days") or {}
+        info = roster.get(email) or {}
+        reviewers.append({
+            "email": email,
+            "name": info.get("name") or email.split("@")[0],
+            "color": info.get("color"),
+            "total": int(data.get("total", 0)),
+            "days": [int(days.get(k, 0)) for k in day_keys],
+        })
+    reviewers.sort(key=lambda r: (-r["total"], r["name"]))
+
+    totals_by_day = [sum(r["days"][i] for r in reviewers) for i in range(7)]
+    return jsonify({"data": {
+        "week": week,
+        "week_start": week_start.date().isoformat(),
+        "day_labels": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+        "reviewers": reviewers,
+        "team_total": sum(r["total"] for r in reviewers),
+        "totals_by_day": totals_by_day,
+        "best_day": max(range(7), key=lambda i: totals_by_day[i]) if any(totals_by_day) else None,
+    }})
+
+
 @app.route("/api/shifts/my/complete", methods=["POST"])
 def api_shifts_my_complete():
     """Mark a row done for the signed-in reviewer. Idempotent."""
@@ -1163,6 +1273,13 @@ def api_shifts_my_complete():
     # Reflect this write in the warm cache immediately so the finish check (and
     # any read-after-write) sees it without waiting for the next background scan.
     roles.cache_upsert_doc("completion", {"id": doc_id, "data": doc})
+    # Tally this review into the reviewer's weekly leaderboard total. Stored
+    # separately from completions (kind "review_tally") so clearing/republishing
+    # a shift never erases the week's standings. Best-effort.
+    try:
+        _record_review_event(email, completed_at)
+    except Exception as exc:  # noqa: BLE001 — leaderboard must not break completion
+        logging.warning("review tally failed for %s: %s", email, exc)
     logging.info(
         "POST /api/shifts/my/complete by=%s job_id=%s snapshot_id=%s",
         email, job_id, snap_id,

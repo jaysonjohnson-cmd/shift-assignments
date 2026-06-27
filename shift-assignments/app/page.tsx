@@ -93,6 +93,25 @@ const tiles: Tile[] = [
     ),
   },
   {
+    href: "/leaderboard",
+    title: "Leaderboard",
+    description:
+      "See who's reviewed the most jobs this week — podium, daily output, and full standings.",
+    accent: "from-amber-400/15 to-storesight-accent/10",
+    enabledFor: ["admin", "lead"],
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" className={ICON_CLASS} aria-hidden>
+        <path
+          d="M8 4h8v5a4 4 0 0 1-8 0V4Z M8 5H5v2a3 3 0 0 0 3 3 M16 5h3v2a3 3 0 0 1-3 3 M9 17h6 M10 17v-2.2 M14 17v-2.2 M8 21h8"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    ),
+  },
+  {
     href: "/my-tasks",
     title: "My Tasks",
     description:
