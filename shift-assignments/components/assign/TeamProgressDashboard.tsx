@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getShiftOverview } from "@/lib/api";
 import { formatRelative } from "@/lib/relativeTime";
 import { useUser } from "@/lib/useUser";
@@ -63,14 +63,30 @@ export function TeamProgressDashboard({ refreshKey = 0, onDismiss }: { refreshKe
     }
   };
 
+  const firstLoad = useRef(true);
   useEffect(() => {
     if (role !== "admin" && role !== "lead") {
       setLoading(false);
       return;
     }
-    void load();
+    // On a clear (refreshKey bumps), drop the now-stale breakdown immediately so
+    // it disappears at once, then re-read authoritatively after a short delay —
+    // long enough for the Storage deletes to propagate, so we don't re-cache the
+    // pre-clear data. A still-live shift (partial clear) repopulates; a fully
+    // cleared one stays empty ("No shift published yet").
+    let delay = 0;
+    if (!firstLoad.current) {
+      setData(null);
+      setLoading(true);
+      delay = 1500;
+    }
+    firstLoad.current = false;
+    const t = setTimeout(() => void load(), delay);
     const interval = setInterval(() => load(), 120000); // Refresh every 2 minutes
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(t);
+      clearInterval(interval);
+    };
   }, [role, refreshKey]);
 
   if (role !== "admin" && role !== "lead") {
