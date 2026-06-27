@@ -12,7 +12,7 @@ import { AssignmentsOverview } from "@/components/assign/AssignmentsOverview";
 import { useStore } from "@/lib/store";
 import { useUser } from "@/lib/useUser";
 import { useReviewerSync } from "@/lib/useReviewerSync";
-import { getBloomJobs, getBloomProjects, publishShift, clearShift, getShiftJobs, type ShiftJobs } from "@/lib/api";
+import { getBloomJobs, getBloomProjects, publishShift, clearShift, getShiftJobs, getSubmissionAges, type ShiftJobs } from "@/lib/api";
 import { assignShift, plannedTotal } from "@/lib/assign";
 import {
   emptyShiftDraft,
@@ -49,6 +49,10 @@ export default function AssignmentsPage() {
   const [prioritizeFilter, setPrioritizeFilter] = useState(false);
   const [balanceByResponses, setBalanceByResponses] = useState(false);
   const [prioritizeAged, setPrioritizeAged] = useState(false);
+  // True oldest-unreviewed-submission date per jobId, used to rank the aged pool.
+  const [agedSubDates, setAgedSubDates] = useState<Record<string, string>>({});
+  // "Only assign jobs older than N days" (0 = no threshold, just oldest-first).
+  const [agedMinDays, setAgedMinDays] = useState(0);
   const [retailPipelineOnly, setRetailPipelineOnly] = useState(false);
   const [showCloseModal, setShowCloseModal] = useState(false);
   const [liveJobs, setLiveJobs] = useState<ShiftJobs | null>(null);
@@ -67,6 +71,30 @@ export default function AssignmentsPage() {
   useEffect(() => {
     setHydrated(true);
   }, []);
+
+  // While aged mode is on, pull the true oldest-unreviewed-submission date per
+  // job from the server cache (built in the background at ~1 job/sec). Poll
+  // until the cache reports it's done so ranking sharpens as ages arrive.
+  useEffect(() => {
+    if (!prioritizeAged) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      try {
+        const result = await getSubmissionAges();
+        if (cancelled) return;
+        setAgedSubDates(result.data);
+        if (result.loading) timer = setTimeout(poll, 5000);
+      } catch {
+        // best-effort — fall back to priority order until ages load
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [prioritizeAged]);
 
   useEffect(() => {
     let cancelled = false;
@@ -145,8 +173,37 @@ export default function AssignmentsPage() {
         (r) => !assignedElsewhereKeys.has(String(r.jobId || r.id || "")),
       );
     }
+    // Aged mode: rank by the job's TRUE oldest unreviewed submission (from the
+    // submission-ages cache), oldest first — so reviewers get the genuinely
+    // oldest backlog, not whatever has the highest priority flag. An optional
+    // "older than N days" threshold drops jobs whose oldest submission isn't
+    // actually that old yet (unknown ages count as 0 days until they load, so
+    // a positive threshold only ever assigns confirmed-old work).
+    if (prioritizeAged) {
+      const dateOf = (r: Row) =>
+        agedSubDates[String(r.jobId || r.id || "")] || "";
+      const daysOf = (r: Row) => {
+        const iso = dateOf(r);
+        if (!iso) return -1; // unknown age
+        const t = new Date(iso).getTime();
+        return isNaN(t) ? -1 : Math.floor((Date.now() - t) / 86_400_000);
+      };
+      if (agedMinDays > 0) {
+        filtered = filtered.filter((r) => daysOf(r) >= agedMinDays);
+      }
+      return [...filtered].sort((a, b) => {
+        const da = dateOf(a);
+        const db = dateOf(b);
+        // Known oldest dates first (ascending = oldest), unknowns sink last,
+        // priority as the final tiebreak.
+        if (da && db) return da < db ? -1 : da > db ? 1 : b.priority - a.priority;
+        if (da) return -1;
+        if (db) return 1;
+        return b.priority - a.priority;
+      });
+    }
     return [...filtered].sort((a, b) => b.priority - a.priority);
-  }, [rows, prioritizeAged, retailPipelineOnly, assignedElsewhereKeys]);
+  }, [rows, prioritizeAged, retailPipelineOnly, assignedElsewhereKeys, agedSubDates, agedMinDays]);
 
   const cancel = () => {
     setMode({ kind: "menu" });
@@ -322,6 +379,25 @@ export default function AssignmentsPage() {
                   >
                     {prioritizeAged ? "✓ " : ""}Prioritize old submissions
                   </button>
+                  {prioritizeAged && (
+                    <label
+                      title="Only assign jobs whose oldest unreviewed submission is at least this many days old. 0 = no minimum (just oldest-first)."
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-storesight-border bg-white px-3 py-1.5 text-xs font-medium text-storesight-ink-muted dark:border-storesight-border-dark dark:bg-storesight-surface-dark dark:text-storesight-ink-muted-dark"
+                    >
+                      Older than
+                      <input
+                        type="number"
+                        min={0}
+                        max={60}
+                        value={agedMinDays}
+                        onChange={(e) =>
+                          setAgedMinDays(Math.max(0, Number(e.target.value) || 0))
+                        }
+                        className="w-12 rounded border border-storesight-border bg-transparent px-1.5 py-0.5 text-center tabular-nums text-storesight-ink dark:border-storesight-border-dark dark:text-storesight-ink-dark"
+                      />
+                      days
+                    </label>
+                  )}
                   <button
                     type="button"
                     onClick={() => setRetailPipelineOnly(!retailPipelineOnly)}
