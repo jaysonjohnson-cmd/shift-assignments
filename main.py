@@ -936,6 +936,30 @@ def api_shifts_my():
         if live_by_job is not None and jid:
             item["unreviewedCount"] = live_by_job.get(jid, 0)
         enriched.append(item)
+
+    # Self-healing refill: if the reviewer has work assigned but nothing left to
+    # do (every row completed or down to 0 live unreviewed), top the queue up
+    # here — not just on the completion POST. With live-count auto-done a queue
+    # can empty without a final completion event, so the POST trigger alone
+    # missed cases (a finished reviewer stuck with no new jobs). Best-effort and
+    # idempotent: it only fires when there's genuinely nothing pending, so once
+    # fresh work lands it won't fire again until that's worked down too.
+    pending = [
+        r for r in enriched
+        if not r.get("completedAt") and (r.get("unreviewedCount") or 0) > 0
+    ]
+    if rows and not pending:
+        try:
+            added = _auto_refill_reviewer(snap_id, email, len(rows))
+            for r in added:
+                a_jid = str(r.get("jobId") or "")
+                a_item = {**r, "completedAt": None}
+                if live_by_job is not None and a_jid and a_jid in live_by_job:
+                    a_item["unreviewedCount"] = live_by_job[a_jid]
+                enriched.append(a_item)
+        except Exception as exc:  # noqa: BLE001 — refill must not break the list
+            logging.warning("my-tasks refill failed for %s: %s", email, exc)
+
     try:
         color = next(
             (r.get("color") for r in roles.list_reviewers() if r["email"] == email),
@@ -1011,6 +1035,10 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
     for r in pool:
         k = _job_key(r)
         if not k or k in assigned_keys:
+            continue
+        # Skip jobs with no unreviewed work left — assigning one would just
+        # auto-clear on the reviewer's screen and immediately re-trigger refill.
+        if int(r.get("unreviewedCount") or 0) <= 0:
             continue
         fresh.append(_compact_row(r))
         assigned_keys.add(k)  # guard against dupes within the same feed
