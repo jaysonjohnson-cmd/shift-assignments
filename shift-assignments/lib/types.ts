@@ -32,6 +32,8 @@ export type MyTasksResponse = {
   /** Signed-in reviewer's assigned color, if any. */
   color?: string | null;
   rows: Row[];
+  /** >0 when this load just cleared the queue and handed out a fresh batch. */
+  refilled?: number;
 };
 
 export type Reviewer = {

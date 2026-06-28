@@ -951,9 +951,11 @@ def api_shifts_my():
         r for r in enriched
         if not r.get("completedAt") and (r.get("unreviewedCount") or 0) > 0
     ]
+    refilled = 0
     if rows and not pending:
         try:
             added = _auto_refill_reviewer(snap_id, email, len(rows))
+            refilled = len(added)
             for r in added:
                 a_jid = str(r.get("jobId") or "")
                 a_item = {**r, "completedAt": None}
@@ -976,6 +978,9 @@ def api_shifts_my():
             "published_at": snap_data.get("published_at"),
             "color": color,
             "rows": enriched,
+            # >0 means the reviewer just cleared their whole queue and a fresh
+            # batch was handed out — the client fires a confetti burst on this.
+            "refilled": refilled,
         }
     })
 

@@ -765,11 +765,13 @@ def test_shifts_my_refills_when_queue_is_finished(client, monkeypatch):
 
     resp = c.get("/api/shifts/my")
     assert resp.status_code == 200
-    jobs = {r["jobId"]: r for r in resp.get_json()["data"]["rows"]}
+    body = resp.get_json()["data"]
+    jobs = {r["jobId"]: r for r in body["rows"]}
     # The finished job stays (it's completed) and the fresh job B was added;
     # the already-reviewed Z was skipped.
     assert "B" in jobs
     assert "Z" not in jobs
+    assert body["refilled"] == 1  # signals the client to fire confetti
     assert jobs["B"]["completedAt"] is None
     # A fresh reviewer_shift chunk was actually persisted.
     assert any((s.get("data") or {}).get("reviewer_email") == "sam@storesight.com"
