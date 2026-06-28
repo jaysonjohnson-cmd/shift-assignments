@@ -947,10 +947,10 @@ def api_shifts_my():
     # missed cases (a finished reviewer stuck with no new jobs). Best-effort and
     # idempotent: it only fires when there's genuinely nothing pending, so once
     # fresh work lands it won't fire again until that's worked down too.
-    pending = [
-        r for r in enriched
-        if not r.get("completedAt") and (r.get("unreviewedCount") or 0) > 0
-    ]
+    # Pending = not yet checked off. A job the reviewer has finished reviewing
+    # (0 live unreviewed) still counts as pending until they click the checkmark,
+    # so the queue only refills once everything is actually marked done.
+    pending = [r for r in enriched if not r.get("completedAt")]
     refilled = 0
     if rows and not pending:
         try:
@@ -1493,30 +1493,6 @@ def api_shifts_overview():
             continue
         done_by_reviewer.setdefault(email, set()).add(jkey)
 
-    # Live overlay so progress matches My Tasks: a job counts as done if it was
-    # explicitly marked complete OR its live unreviewed count is now 0 (reviewed
-    # without a checkmark — which auto-clears on the reviewer's screen). Without
-    # this the tracker undercounts badly (e.g. 2/30 while the reviewer is at
-    # 28/30) because reviewers rarely click the checkmark anymore.
-    try:
-        feed = bloom.fetch_prioritized_jobs()
-        live_by_job = {
-            str(j.get("jobId")): int(j.get("unreviewedCount") or 0)
-            for j in feed if j.get("jobId")
-        }
-    except Exception:  # noqa: BLE001 — overlay is best-effort
-        live_by_job = None
-    # An empty feed (transient upstream blip) must NOT mark every job done —
-    # treat "no data" as no overlay rather than "everything reviewed".
-    if not live_by_job:
-        live_by_job = None
-
-    def _effectively_done(row, done_set):
-        if _row_job_key(row) in done_set:
-            return True
-        jid = str(row.get("jobId") or "")
-        return live_by_job is not None and jid != "" and live_by_job.get(jid, 0) == 0
-
     rows_by_email = {}
     for doc in reviewer_docs:
         data = doc.get("data") or {}
@@ -1529,7 +1505,9 @@ def api_shifts_overview():
         if total == 0:
             continue
         done_set = done_by_reviewer.get(email, set())
-        completed = sum(1 for r in rows if _effectively_done(r, done_set))
+        # Done = checked off. The checkmark is the single source of truth shared
+        # with My Tasks and the Leaderboard.
+        completed = sum(1 for r in rows if _row_job_key(r) in done_set)
         priorities = [r.get("priority") for r in rows if isinstance(r.get("priority"), int)]
         reviewers_out.append({
             "email": email,
@@ -1623,7 +1601,9 @@ def api_shifts_jobs():
         for r in rows:
             jid = str(r.get("jobId") or "")
             live = live_by_job.get(jid, 0) if (live_by_job is not None and jid) else None
-            completed = _row_job_key(r) in done_set or live == 0
+            # Done = checked off only (live count is shown for context, not used
+            # to mark done — keeps this view in step with the checkmark).
+            completed = _row_job_key(r) in done_set
             jobs.append({
                 "id": r.get("id", ""),
                 "projectId": r.get("projectId", ""),

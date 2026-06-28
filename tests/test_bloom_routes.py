@@ -1223,9 +1223,10 @@ def test_overview_requires_admin(client, monkeypatch):
     assert resp.status_code == 403
 
 
-def test_overview_counts_live_zero_as_done(client, monkeypatch):
-    """A job reviewed without a checkmark (0 live unreviewed) counts as done in
-    the overview, matching My Tasks — so the tracker doesn't undercount."""
+def test_overview_counts_only_checkmarked_as_done(client, monkeypatch):
+    """The checkmark is the single source of truth: a job reviewed but NOT
+    checked off (0 live unreviewed) still counts as pending in the overview —
+    it does not auto-complete. Only explicit completions count."""
     c, token_file = client
     _as_admin(token_file)
     monkeypatch.setattr(roles, "list_admins", lambda: [])
@@ -1238,9 +1239,9 @@ def test_overview_counts_live_zero_as_done(client, monkeypatch):
     reviewer_doc = {"id": "rs-1", "data": {"kind": "reviewer_shift",
                     "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
                     "rows": [
-                        {"jobId": "A", "projectId": "10", "priority": 1},  # explicit completion
-                        {"jobId": "B", "projectId": "20", "priority": 2},  # live 0 → done
-                        {"jobId": "C", "projectId": "30", "priority": 3},  # live 5 → pending
+                        {"jobId": "A", "projectId": "10", "priority": 1},  # checked off
+                        {"jobId": "B", "projectId": "20", "priority": 2},  # reviewed, NOT checked
+                        {"jobId": "C", "projectId": "30", "priority": 3},  # still has work
                     ]}}
     completion = {"id": "c1", "data": {"kind": "completion", "reviewer_email": "sam@storesight.com",
                   "job_id": "A", "shift_snapshot_id": "snap-1", "completed_at": "x"}}
@@ -1257,18 +1258,16 @@ def test_overview_counts_live_zero_as_done(client, monkeypatch):
     monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
     monkeypatch.setattr(
         main.bloom, "fetch_prioritized_jobs",
-        lambda status=None, use_cache=True: [
-            {"jobId": "C", "unreviewedCount": 5},  # only C still has work; B absent → 0
-        ],
+        lambda status=None, use_cache=True: [{"jobId": "C", "unreviewedCount": 5}],
     )
 
     resp = c.get("/api/shifts/overview")
     assert resp.status_code == 200, resp.get_json()
     sam = resp.get_json()["data"]["reviewers"][0]
-    # A (completed) + B (live 0) = 2 done; C still pending.
+    # Only A is checked off. B (reviewed, no checkmark) and C are both pending.
     assert sam["total"] == 3
-    assert sam["completed"] == 2
-    assert sam["pending"] == 1
+    assert sam["completed"] == 1
+    assert sam["pending"] == 2
 
 
 # /api/shifts/leaderboard — weekly standings

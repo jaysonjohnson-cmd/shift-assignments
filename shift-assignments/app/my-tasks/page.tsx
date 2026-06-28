@@ -252,14 +252,13 @@ export default function MyTasksPage() {
   // priority as the tiebreaker.
   const byResponses = (a: Row, b: Row) =>
     (b.unreviewedCount || 0) - (a.unreviewedCount || 0) || a.priority - b.priority;
-  // A job is "done" when explicitly marked complete OR when its LIVE unreviewed
-  // count (overlaid by the backend) has dropped to 0 — i.e. it's already been
-  // reviewed/approved, so it leaves the To-Do list on its own instead of
-  // lingering with a stale count.
-  const isDone = (r: Row) => !!r.completedAt || (r.unreviewedCount || 0) === 0;
-  // Drop done jobs BEFORE grouping. Otherwise a By-PID group would still fold in
-  // already-reviewed jobs — inflating its "N jobs" count and sending "Open in
-  // Review" to a project page that includes finished work.
+  // A job is "done" ONLY when the reviewer checks it off. A job they've finished
+  // reviewing (0 live unreviewed) still shows here — reading "0 unreviewed" as a
+  // cue to click the checkmark — and stays until they do. The checkmark is the
+  // single source of truth the Progress Tracker and Leaderboard both read.
+  const isDone = (r: Row) => !!r.completedAt;
+  // Drop done jobs BEFORE grouping so a By-PID group never folds in a checked-off
+  // job (which would inflate its "N jobs" count and the Open-in-Review target).
   const pendingRows = state.rows.filter((r) => !isDone(r));
   const todo = (viewByPid ? groupByProject(pendingRows) : pendingRows).sort(byResponses);
 
