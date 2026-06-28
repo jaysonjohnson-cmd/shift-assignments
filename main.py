@@ -922,6 +922,9 @@ def api_shifts_my():
         }
     except Exception:  # noqa: BLE001 — live overlay is best-effort
         live_by_job = None
+    # Empty feed → treat as no data (don't auto-mark every job reviewed).
+    if not live_by_job:
+        live_by_job = None
 
     enriched = []
     for row in rows:
@@ -1485,6 +1488,30 @@ def api_shifts_overview():
             continue
         done_by_reviewer.setdefault(email, set()).add(jkey)
 
+    # Live overlay so progress matches My Tasks: a job counts as done if it was
+    # explicitly marked complete OR its live unreviewed count is now 0 (reviewed
+    # without a checkmark — which auto-clears on the reviewer's screen). Without
+    # this the tracker undercounts badly (e.g. 2/30 while the reviewer is at
+    # 28/30) because reviewers rarely click the checkmark anymore.
+    try:
+        feed = bloom.fetch_prioritized_jobs()
+        live_by_job = {
+            str(j.get("jobId")): int(j.get("unreviewedCount") or 0)
+            for j in feed if j.get("jobId")
+        }
+    except Exception:  # noqa: BLE001 — overlay is best-effort
+        live_by_job = None
+    # An empty feed (transient upstream blip) must NOT mark every job done —
+    # treat "no data" as no overlay rather than "everything reviewed".
+    if not live_by_job:
+        live_by_job = None
+
+    def _effectively_done(row, done_set):
+        if _row_job_key(row) in done_set:
+            return True
+        jid = str(row.get("jobId") or "")
+        return live_by_job is not None and jid != "" and live_by_job.get(jid, 0) == 0
+
     rows_by_email = {}
     for doc in reviewer_docs:
         data = doc.get("data") or {}
@@ -1497,7 +1524,7 @@ def api_shifts_overview():
         if total == 0:
             continue
         done_set = done_by_reviewer.get(email, set())
-        completed = sum(1 for r in rows if _row_job_key(r) in done_set)
+        completed = sum(1 for r in rows if _effectively_done(r, done_set))
         priorities = [r.get("priority") for r in rows if isinstance(r.get("priority"), int)]
         reviewers_out.append({
             "email": email,
@@ -1562,6 +1589,22 @@ def api_shifts_jobs():
             continue
         done_by_reviewer.setdefault(email, set()).add(jkey)
 
+    # Live overlay (same as overview / My Tasks): a job is done when explicitly
+    # completed OR its live unreviewed count is 0. Keeps this detailed view in
+    # step with what reviewers actually see.
+    try:
+        feed = bloom.fetch_prioritized_jobs()
+        live_by_job = {
+            str(j.get("jobId")): int(j.get("unreviewedCount") or 0)
+            for j in feed if j.get("jobId")
+        }
+    except Exception:  # noqa: BLE001 — overlay is best-effort
+        live_by_job = None
+    # An empty feed (transient upstream blip) must NOT mark every job done —
+    # treat "no data" as no overlay rather than "everything reviewed".
+    if not live_by_job:
+        live_by_job = None
+
     rows_by_email = {}
     for doc in reviewer_docs:
         data = doc.get("data") or {}
@@ -1573,13 +1616,15 @@ def api_shifts_jobs():
         done_set = done_by_reviewer.get(email, set())
         jobs = []
         for r in rows:
-            completed = _row_job_key(r) in done_set
+            jid = str(r.get("jobId") or "")
+            live = live_by_job.get(jid, 0) if (live_by_job is not None and jid) else None
+            completed = _row_job_key(r) in done_set or live == 0
             jobs.append({
                 "id": r.get("id", ""),
                 "projectId": r.get("projectId", ""),
                 "jobId": r.get("jobId", ""),
                 "priority": r.get("priority"),
-                "unreviewedCount": r.get("unreviewedCount", 0),
+                "unreviewedCount": live if live is not None else r.get("unreviewedCount", 0),
                 "name": r.get("name", ""),
                 "completed": completed,
                 "oldestSubmission": r.get("oldestSubmission", ""),

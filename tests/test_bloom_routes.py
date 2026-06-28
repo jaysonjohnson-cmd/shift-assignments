@@ -1221,6 +1221,54 @@ def test_overview_requires_admin(client, monkeypatch):
     assert resp.status_code == 403
 
 
+def test_overview_counts_live_zero_as_done(client, monkeypatch):
+    """A job reviewed without a checkmark (0 live unreviewed) counts as done in
+    the overview, matching My Tasks — so the tracker doesn't undercount."""
+    c, token_file = client
+    _as_admin(token_file)
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(
+        roles, "list_reviewers",
+        lambda: [{"id": "r1", "name": "Sam", "email": "sam@storesight.com"}],
+    )
+    snapshot = {"id": "snap-1", "data": {"kind": "shift_snapshot",
+                "reviewer_emails": ["sam@storesight.com"]}}
+    reviewer_doc = {"id": "rs-1", "data": {"kind": "reviewer_shift",
+                    "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
+                    "rows": [
+                        {"jobId": "A", "projectId": "10", "priority": 1},  # explicit completion
+                        {"jobId": "B", "projectId": "20", "priority": 2},  # live 0 → done
+                        {"jobId": "C", "projectId": "30", "priority": 3},  # live 5 → pending
+                    ]}}
+    completion = {"id": "c1", "data": {"kind": "completion", "reviewer_email": "sam@storesight.com",
+                  "job_id": "A", "shift_snapshot_id": "snap-1", "completed_at": "x"}}
+
+    def fake_list(kind, force=False):
+        if kind == "shift_snapshot":
+            return [snapshot]
+        if kind == "reviewer_shift":
+            return [reviewer_doc]
+        if kind == "completion":
+            return [completion]
+        return []
+
+    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
+    monkeypatch.setattr(
+        main.bloom, "fetch_prioritized_jobs",
+        lambda status=None, use_cache=True: [
+            {"jobId": "C", "unreviewedCount": 5},  # only C still has work; B absent → 0
+        ],
+    )
+
+    resp = c.get("/api/shifts/overview")
+    assert resp.status_code == 200, resp.get_json()
+    sam = resp.get_json()["data"]["reviewers"][0]
+    # A (completed) + B (live 0) = 2 done; C still pending.
+    assert sam["total"] == 3
+    assert sam["completed"] == 2
+    assert sam["pending"] == 1
+
+
 # /api/shifts/leaderboard — weekly standings
 
 
