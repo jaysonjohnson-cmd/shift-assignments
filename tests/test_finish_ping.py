@@ -46,7 +46,7 @@ def _setup_endpoint(monkeypatch, posted, existing_completions, refill_calls, ref
     monkeypatch.setattr(
         main,
         "_rows_for_reviewer",
-        lambda snap, email: [{"jobId": "A"}, {"jobId": "B"}],
+        lambda snap, email, force=False: [{"jobId": "A"}, {"jobId": "B"}],
     )
     monkeypatch.setattr(
         main,
@@ -158,7 +158,7 @@ def test_auto_refill_excludes_already_assigned(monkeypatch):
                                "reviewer_email": "kim@storesight.com",
                                "rows": [{"jobId": "J3"}], "part": 0}},
     ]
-    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind: shift_docs)
+    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind, force=False: shift_docs)
     feed = [
         {"id": j, "jobId": j, "projectId": f"p{j}", "priority": 1, "name": j,
          "unreviewedCount": 3, "oldestSubmission": ""}
@@ -195,7 +195,7 @@ def test_auto_refill_uses_stored_batch_size_not_grown_queue(monkeypatch):
                               "rows": [{"jobId": "J3"}, {"jobId": "J4"}],
                               "part": 1, "batch_size": 2}},
     ]
-    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind: shift_docs)
+    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind, force=False: shift_docs)
     feed = [
         {"id": j, "jobId": j, "projectId": f"p{j}", "priority": 1, "name": j,
          "unreviewedCount": 3, "oldestSubmission": ""}
@@ -220,7 +220,7 @@ def test_auto_refill_returns_empty_when_feed_exhausted(monkeypatch):
                               "reviewer_email": "sam@storesight.com",
                               "rows": [{"jobId": "J1"}], "part": 0}},
     ]
-    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind: shift_docs)
+    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind, force=False: shift_docs)
     monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs",
                         lambda: [{"id": "J1", "jobId": "J1"}])  # only the taken job
     posted = []

@@ -841,16 +841,18 @@ def _latest_snapshot(reviewer_shift_docs=None):
     return None, None
 
 
-def _rows_for_reviewer(snapshot_id, email):
+def _rows_for_reviewer(snapshot_id, email, force=False):
     """Return the per-reviewer rows stored under the given snapshot.
 
     Assembles all chunk docs (see `_chunk_rows_for_storage`) for this
     reviewer in `part` order. Docs written before chunking (no `part`
-    field) are treated as a single chunk at position 0.
+    field) are treated as a single chunk at position 0. Pass force=True on
+    the refill finish-check so a just-written refill part is seen — otherwise
+    a stale warm-cache read can let a second completion refill again.
     """
     norm = (email or "").strip().lower()
     matches = []
-    for doc in roles.list_docs_by_kind("reviewer_shift"):
+    for doc in roles.list_docs_by_kind("reviewer_shift", force=force):
         data = doc.get("data") or {}
         if data.get("shift_snapshot_id") != snapshot_id:
             continue
@@ -998,7 +1000,10 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
     max_part = -1
     batch_size = None
     try:
-        docs = roles.list_docs_by_kind("reviewer_shift")
+        # Authoritative read: compute assigned_keys and next_part from current
+        # storage so a concurrent refill's just-written part is seen — otherwise
+        # two refills pick the same next_part and the same jobs (duplicate batch).
+        docs = roles.list_docs_by_kind("reviewer_shift", force=True)
     except Exception as exc:  # noqa: BLE001 — refill is best-effort
         logging.warning("auto-refill: failed to list shifts for %s: %s", email, exc)
         return []
@@ -1321,9 +1326,13 @@ def api_shifts_my_complete():
         done_keys = {_completion_job_key(c) for c in done}
         done_keys.add(job_id)
         if assigned_keys and assigned_keys <= done_keys:
-            # Looks finished — confirm with a single authoritative read before the
-            # ping (guards the rare cold-cache / multi-instance case). Bounded to
-            # finish events, so it never hammers the Storage rate limit.
+            # Looks finished — confirm with authoritative reads before refilling.
+            # Re-read ASSIGNED with force too: if a near-simultaneous completion
+            # already triggered a refill, the fresh read includes that new batch
+            # (not yet done) so assigned_keys is no longer a subset of done — and
+            # we skip a second refill. That's what prevents duplicate batches.
+            assigned = _rows_for_reviewer(snap_id, email, force=True) or assigned
+            assigned_keys = {_row_job_key(r) for r in assigned}
             confirmed = _list_completions_for_snapshot(
                 snap_id, reviewer_email=email, force=True
             )

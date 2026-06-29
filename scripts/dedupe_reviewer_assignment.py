@@ -20,7 +20,7 @@ import main
 import roles
 
 
-def main_cleanup(email, apply):
+def main_cleanup(email, apply, batch_size_override=None):
     email = email.strip().lower()
     snap_id, _ = main._latest_snapshot()
     if not snap_id:
@@ -38,8 +38,20 @@ def main_cleanup(email, apply):
         return
 
     rows = []
+    # Preserve the reviewer's original batch_size (the refill allotment). Dropping
+    # it would make auto-refill fall back to the current queue length and double
+    # the batch each cycle. Use the smallest stamped value (the original).
+    batch_size = None
     for d in docs:
-        rows.extend((d.get("data") or {}).get("rows") or [])
+        data = d.get("data") or {}
+        rows.extend(data.get("rows") or [])
+        bs = data.get("batch_size")
+        if bs:
+            batch_size = bs if batch_size is None else min(batch_size, bs)
+    # Explicit override (e.g. --batch-size 20) wins — used to repair a queue whose
+    # stored batch_size got corrupted by an earlier dedup-then-refill cycle.
+    if batch_size_override:
+        batch_size = batch_size_override
 
     seen, deduped, dropped = set(), [], 0
     for r in rows:
@@ -79,6 +91,8 @@ def main_cleanup(email, apply):
             "part": i,
             "part_count": len(chunks),
         }
+        if batch_size:
+            data["batch_size"] = batch_size
         if i < len(docs):
             internal_api.put(f"{main._STORAGE_PATH}/{docs[i]['id']}", json={"data": data})
         else:
@@ -94,6 +108,13 @@ def main_cleanup(email, apply):
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if not args:
-        print("usage: dedupe_reviewer_assignment.py <email> [--apply]")
+        print("usage: dedupe_reviewer_assignment.py <email> [--apply] [--batch-size N]")
         sys.exit(1)
-    main_cleanup(args[0], apply="--apply" in sys.argv)
+    bs_override = None
+    for a in sys.argv[1:]:
+        if a.startswith("--batch-size="):
+            bs_override = int(a.split("=", 1)[1])
+        elif a == "--batch-size":
+            idx = sys.argv.index(a)
+            bs_override = int(sys.argv[idx + 1])
+    main_cleanup(args[0], apply="--apply" in sys.argv, batch_size_override=bs_override)
