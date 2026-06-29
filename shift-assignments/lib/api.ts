@@ -261,6 +261,10 @@ export type LeaderboardReviewer = {
   total: number;
   /** Mon–Sun jobs-completed counts. */
   days: number[];
+  /** Responses cleared this week (volume). */
+  responses: number;
+  /** Mon–Sun responses-cleared counts. */
+  resp_days: number[];
 };
 
 export type Leaderboard = {
@@ -269,6 +273,7 @@ export type Leaderboard = {
   day_labels: string[];
   reviewers: LeaderboardReviewer[];
   team_total: number;
+  team_responses: number;
   totals_by_day: number[];
   best_day: number | null;
 };

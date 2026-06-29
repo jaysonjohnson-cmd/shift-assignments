@@ -1438,12 +1438,15 @@ def test_record_review_event_creates_then_increments(monkeypatch):
     monkeypatch.setattr(main.internal_api, "put", fake_put)
 
     iso = "2026-06-25T12:00:00+00:00"
-    main._record_review_event("sam@storesight.com", iso)
+    main._record_review_event("sam@storesight.com", iso, responses=7)
     assert len(store) == 1 and store[0]["data"]["total"] == 1
+    assert store[0]["data"]["resp_total"] == 7  # responses tracked too
 
-    main._record_review_event("sam@storesight.com", iso)
+    main._record_review_event("sam@storesight.com", iso, responses=3)
     assert puts and puts[-1]["total"] == 2
     assert puts[-1]["days"]["2026-06-25"] == 2
+    assert puts[-1]["resp_total"] == 10  # 7 + 3 responses
+    assert puts[-1]["resp_days"]["2026-06-25"] == 10
 
 
 def _setup_clear_scenario(monkeypatch):

@@ -78,6 +78,9 @@ export default function LeaderboardPage() {
   // Metric for the active view: whole-week total, or a single day's count.
   const metric = (r: LeaderboardReviewer) =>
     view === "week" ? r.total : r.days[view] ?? 0;
+  // Responses (volume) for the active view, shown alongside the job count.
+  const respMetric = (r: LeaderboardReviewer) =>
+    view === "week" ? r.responses : r.resp_days?.[view] ?? 0;
   const scopeLabel = view === "week" ? "this week" : (data?.day_labels[view] ?? "");
   // Re-rank by the active metric. In day view, hide reviewers with nothing that day.
   const reviewers = [...allReviewers]
@@ -90,6 +93,10 @@ export default function LeaderboardPage() {
     view === "week"
       ? data?.team_total ?? 0
       : reviewers.reduce((s, r) => s + metric(r), 0);
+  const teamResponses =
+    view === "week"
+      ? data?.team_responses ?? 0
+      : reviewers.reduce((s, r) => s + respMetric(r), 0);
   const leader = reviewers[0];
   // Day highlighted in the daily chart: the selected day, else the best day.
   const highlightDay = view === "week" ? data?.best_day ?? -1 : view;
@@ -154,8 +161,9 @@ export default function LeaderboardPage() {
             </div>
           ) : (
           <>
-          <div className="mb-5 grid grid-cols-3 gap-3">
-            <StatCard label={`Reviewed ${scopeLabel}`} value={teamTotal} />
+          <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <StatCard label={`Jobs ${scopeLabel}`} value={teamTotal} />
+            <StatCard label={`Responses ${scopeLabel}`} value={teamResponses} />
             <StatCard
               label="Top reviewer"
               value={leader ? metric(leader) : 0}
@@ -185,8 +193,11 @@ export default function LeaderboardPage() {
                       <div className="text-center text-xs leading-tight text-storesight-ink dark:text-storesight-ink-dark">
                         {r.name.split(" ")[0]}
                       </div>
-                      <div className="text-lg font-semibold text-storesight-ink dark:text-storesight-ink-dark">
+                      <div className="text-lg font-semibold leading-tight text-storesight-ink dark:text-storesight-ink-dark">
                         {metric(r)}
+                      </div>
+                      <div className="text-[11px] leading-tight text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                        {respMetric(r).toLocaleString()} resp
                       </div>
                       <div
                         className="w-full rounded-t-lg"
@@ -260,8 +271,12 @@ export default function LeaderboardPage() {
                         style={{ width: `${Math.round((metric(r) / max) * 100)}%`, backgroundColor: c }}
                       />
                     </div>
-                    <div className="w-9 text-right text-sm font-semibold tabular-nums text-storesight-ink dark:text-storesight-ink-dark">
-                      {metric(r)}
+                    <div className="w-24 text-right text-sm tabular-nums text-storesight-ink dark:text-storesight-ink-dark">
+                      <span className="font-semibold">{metric(r)}</span>
+                      <span className="text-storesight-ink-muted dark:text-storesight-ink-muted-dark"> jobs</span>
+                      <span className="ml-1.5 text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                        {respMetric(r).toLocaleString()} resp
+                      </span>
                     </div>
                   </div>
                 );
@@ -355,7 +370,7 @@ function StatCard({ label, value, sub }: { label: string; value: number; sub?: s
     <div className="rounded-2xl border border-storesight-border bg-white p-4 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark">
       <div className="text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">{label}</div>
       <div className="mt-0.5 text-2xl font-semibold text-storesight-ink dark:text-storesight-ink-dark">
-        {value}
+        {value.toLocaleString()}
         {sub && <span className="ml-1.5 text-xs font-normal text-storesight-ink-muted dark:text-storesight-ink-muted-dark">{sub}</span>}
       </div>
     </div>

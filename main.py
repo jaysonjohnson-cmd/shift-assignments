@@ -1175,11 +1175,13 @@ def _week_start_utc(dt):
     return datetime.datetime(monday.year, monday.month, monday.day, tzinfo=datetime.timezone.utc)
 
 
-def _record_review_event(email, completed_at_iso):
+def _record_review_event(email, completed_at_iso, responses=0):
     """Increment the reviewer's per-week leaderboard tally (one doc per
-    reviewer+ISO-week). Bounded growth (reviewers × weeks) keeps us well under
-    the namespace cap, and it survives shift clears because it isn't a
-    completion doc."""
+    reviewer+ISO-week). Tracks both jobs completed (`days`/`total`) and the
+    number of responses cleared (`resp_days`/`resp_total`) so the leaderboard
+    can show response volume, not just job count. Bounded growth (reviewers ×
+    weeks) keeps us well under the namespace cap, and it survives shift clears
+    because it isn't a completion doc."""
     try:
         dt = datetime.datetime.fromisoformat(completed_at_iso)
     except (ValueError, TypeError):
@@ -1187,6 +1189,7 @@ def _record_review_event(email, completed_at_iso):
     week = _iso_week_key(dt)
     day = dt.date().isoformat()
     norm = (email or "").strip().lower()
+    responses = max(0, int(responses or 0))
 
     existing = None
     for d in roles.list_docs_by_kind("review_tally"):
@@ -1199,8 +1202,12 @@ def _record_review_event(email, completed_at_iso):
         data = {**(existing.get("data") or {})}
         days = {**(data.get("days") or {})}
         days[day] = int(days.get(day, 0)) + 1
+        resp_days = {**(data.get("resp_days") or {})}
+        resp_days[day] = int(resp_days.get(day, 0)) + responses
         data["days"] = days
         data["total"] = int(data.get("total", 0)) + 1
+        data["resp_days"] = resp_days
+        data["resp_total"] = int(data.get("resp_total", 0)) + responses
         internal_api.put(f"{_STORAGE_PATH}/{existing['id']}", json={"data": data})
         roles.cache_upsert_doc("review_tally", {"id": existing["id"], "data": data})
     else:
@@ -1210,6 +1217,8 @@ def _record_review_event(email, completed_at_iso):
             "week": week,
             "days": {day: 1},
             "total": 1,
+            "resp_days": {day: responses},
+            "resp_total": responses,
         }
         resp = internal_api.post(_STORAGE_PATH, json={"data": data})
         new_id = (resp.get("data") or {}).get("id")
@@ -1251,6 +1260,7 @@ def api_shifts_leaderboard():
         data = d.get("data") or {}
         email = (data.get("reviewer_email") or "").lower()
         days = data.get("days") or {}
+        resp_days = data.get("resp_days") or {}
         info = roster.get(email) or {}
         reviewers.append({
             "email": email,
@@ -1258,6 +1268,9 @@ def api_shifts_leaderboard():
             "color": info.get("color"),
             "total": int(data.get("total", 0)),
             "days": [int(days.get(k, 0)) for k in day_keys],
+            # Responses cleared (volume), per day + week total.
+            "responses": int(data.get("resp_total", 0)),
+            "resp_days": [int(resp_days.get(k, 0)) for k in day_keys],
         })
     reviewers.sort(key=lambda r: (-r["total"], r["name"]))
 
@@ -1268,6 +1281,7 @@ def api_shifts_leaderboard():
         "day_labels": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
         "reviewers": reviewers,
         "team_total": sum(r["total"] for r in reviewers),
+        "team_responses": sum(r["responses"] for r in reviewers),
         "totals_by_day": totals_by_day,
         "best_day": max(range(7), key=lambda i: totals_by_day[i]) if any(totals_by_day) else None,
     }})
@@ -1336,9 +1350,16 @@ def api_shifts_my_complete():
     roles.cache_upsert_doc("completion", {"id": doc_id, "data": doc})
     # Tally this review into the reviewer's weekly leaderboard total. Stored
     # separately from completions (kind "review_tally") so clearing/republishing
-    # a shift never erases the week's standings. Best-effort.
+    # a shift never erases the week's standings. Best-effort. `responses` is the
+    # job's assigned response count (stored on the row) so the board can show
+    # response volume, not just job count.
     try:
-        _record_review_event(email, completed_at)
+        responses = 0
+        for r in (_rows_for_reviewer(snap_id, email) or []):
+            if _row_job_key(r) == job_id:
+                responses = int(r.get("unreviewedCount") or 0)
+                break
+        _record_review_event(email, completed_at, responses)
     except Exception as exc:  # noqa: BLE001 — leaderboard must not break completion
         logging.warning("review tally failed for %s: %s", email, exc)
     logging.info(
