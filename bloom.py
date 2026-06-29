@@ -24,6 +24,16 @@ import internal_api
 # No status filtering needed — /api/prioritized-jobs only returns jobs with
 # new submissions. Kept for backward compatibility.
 DEFAULT_STATUS = None
+
+# Clients whose jobs must NEVER be assigned to the QC team — they're handled by
+# a third party (Cloud Factory) first and can't be approved here until they come
+# back. Compared case-insensitively against a job's `client` email.
+EXCLUDED_CLIENTS = {"joanna.riney@menasha.com"}
+
+
+def is_excluded_client(client):
+    """True when this job's client is handled by a third party (see above)."""
+    return str(client or "").strip().lower() in EXCLUDED_CLIENTS
 _CACHE = {"fetched_at": 0.0, "rows": []}
 _CACHE_TTL_SECONDS = 60
 # Project-name cache: {project_id: name}. Shares the 60s TTL pattern.

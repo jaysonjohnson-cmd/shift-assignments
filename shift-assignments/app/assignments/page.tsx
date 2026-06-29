@@ -16,6 +16,7 @@ import { getBloomJobs, getBloomProjects, publishShift, clearShift, getShiftJobs,
 import { assignShift, plannedTotal } from "@/lib/assign";
 import {
   emptyShiftDraft,
+  EXCLUDED_CLIENTS,
   type ProjectSummary,
   type Reviewer,
   type Row,
@@ -160,8 +161,13 @@ export default function AssignmentsPage() {
   const priorityPool = useMemo<Row[]>(() => {
     // Only pull ACTIVE work into the shift — never assign a job that has no
     // unreviewed responses left. Empty jobs in the feed would otherwise land in
-    // reviewers' queues as "old" JIDs with nothing to review.
-    let filtered = (rows as Row[]).filter((r) => (r.unreviewedCount || 0) > 0);
+    // reviewers' queues as "old" JIDs with nothing to review. Also exclude
+    // third-party (Cloud Factory) clients — those can't be approved here.
+    let filtered = (rows as Row[]).filter(
+      (r) =>
+        (r.unreviewedCount || 0) > 0 &&
+        !EXCLUDED_CLIENTS.has(String(r.extras?.client ?? "").trim().toLowerCase()),
+    );
     if (prioritizeAged) {
       filtered = filtered.filter((r) => Number(r.extras?.old_sub ?? 0) > 0);
     }

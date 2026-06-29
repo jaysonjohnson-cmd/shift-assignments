@@ -69,6 +69,13 @@ export type ShiftDraft = {
   projectPins: Record<string, string[]>;
 };
 
+/**
+ * Clients whose jobs must never be assigned to the QC team — handled by a
+ * third party (Cloud Factory) first and not approvable here until they return.
+ * Lowercase emails; keep in sync with bloom.EXCLUDED_CLIENTS on the backend.
+ */
+export const EXCLUDED_CLIENTS = new Set<string>(["joanna.riney@menasha.com"]);
+
 export const MAX_SLOTS_PER_SHIFT = 100;
 
 export const SHIFT_ACCENTS = [

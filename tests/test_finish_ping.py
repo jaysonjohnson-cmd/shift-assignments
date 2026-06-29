@@ -148,6 +148,23 @@ def test_finish_check_reads_completions_authoritatively(client, monkeypatch):
 # ---------- the refill logic itself ----------
 
 
+def test_auto_refill_skips_excluded_client(monkeypatch):
+    """Refill never hands out a third-party (Cloud Factory) client's jobs."""
+    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind, force=False: [])
+    feed = [
+        {"id": "J1", "jobId": "J1", "priority": 1, "name": "Menasha job", "unreviewedCount": 5,
+         "extras": {"client": "joanna.riney@menasha.com"}},
+        {"id": "J2", "jobId": "J2", "priority": 1, "name": "Normal job", "unreviewedCount": 5,
+         "extras": {"client": "someone@acme.com"}},
+    ]
+    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda: feed)
+    stored = []
+    monkeypatch.setattr(internal_api, "post", lambda path, json=None: stored.append(json) or {"data": {"id": "new"}})
+
+    added = main._auto_refill_reviewer("snap1", "sam@storesight.com", 5)
+    assert [r["jobId"] for r in added] == ["J2"]  # Menasha (J1) excluded
+
+
 def test_auto_refill_excludes_already_assigned(monkeypatch):
     """Refill skips jobs already on anyone's queue and stores the next N."""
     shift_docs = [

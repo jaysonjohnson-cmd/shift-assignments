@@ -1055,6 +1055,10 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         k = _job_key(r)
         if not k or k in assigned_keys:
             continue
+        # Skip jobs handled by a third party (Cloud Factory) — they can't be
+        # approved here until they come back, so never refill them.
+        if bloom.is_excluded_client((r.get("extras") or {}).get("client")):
+            continue
         # Skip jobs with no unreviewed work left — assigning one would just
         # auto-clear on the reviewer's screen and immediately re-trigger refill.
         if int(r.get("unreviewedCount") or 0) <= 0:
