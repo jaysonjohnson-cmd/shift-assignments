@@ -90,6 +90,7 @@ function groupByProject(rows: Row[]): Row[] {
       priority,
       name: named?.name || "",
       unreviewedCount,
+      autoRejected: list.reduce((s, r) => s + (r.autoRejected || 0), 0),
       oldestSubmission,
       extras: { jobCount: list.length },
       completedAt,
@@ -593,6 +594,17 @@ function TaskCard({
             {row.unreviewedCount}
             {grouped && jobCount > 1 ? ` · ${jobCount}j` : ""}
           </span>
+          {(row.autoRejected || 0) > 0 && (
+            <a
+              href={buildResponseSearchUrl(row)}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Auto-rejected (e.g. distance) — clear on the Responses page, then check off."
+              className="inline-flex items-center gap-1 rounded border border-[#FFA500]/40 bg-[#FFA500]/10 px-1.5 py-0.5 font-medium text-[#B26A00] hover:bg-[#FFA500]/20 dark:text-[#FFA500]"
+            >
+              {row.autoRejected} AR
+            </a>
+          )}
           {row.jobId && (
             <>
               <a
@@ -686,11 +698,25 @@ function TaskCard({
             </>
           )}
         </div>
-        <div className="mt-1.5 flex items-center gap-2 text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+        <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
           <span>
             {row.unreviewedCount} unreviewed
             {grouped && jobCount > 1 ? ` · ${jobCount} jobs` : ""}
           </span>
+          {(row.autoRejected || 0) > 0 && (
+            <a
+              href={buildResponseSearchUrl(row)}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="These can't be reviewed here (auto-rejected, e.g. distance) — clear them on the Responses page, then check the job off."
+              className="inline-flex items-center gap-1 rounded border border-[#FFA500]/40 bg-[#FFA500]/10 px-1.5 py-0.5 font-medium text-[#B26A00] hover:bg-[#FFA500]/20 dark:text-[#FFA500]"
+            >
+              {row.autoRejected} to auto-reject
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path d="M14 3h7v7M10 14 21 3M19 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </a>
+          )}
         </div>
       </div>
       <div className="flex flex-col items-end gap-1.5">

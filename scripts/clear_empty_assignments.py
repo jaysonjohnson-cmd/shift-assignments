@@ -1,14 +1,15 @@
-"""Remove empty jobs (0 live unreviewed, not checked off) from the active shift.
+"""Remove truly-empty jobs (no unreviewed responses at all, not checked off).
 
-Only ACTIVE work belongs in the workflow. Jobs whose unreviewed count has
-dropped to 0 but were never checked off linger in reviewers' queues as "old"
-JIDs with nothing to review. This rewrites each reviewer's reviewer_shift docs
-for the current snapshot, dropping rows that are both:
-  * absent from the live prioritized feed OR at 0 live unreviewed, AND
-  * not marked complete (a completed row is kept — it's done, not empty).
+A job that has dropped out of the prioritized feed has zero unreviewed
+responses left — nothing to review and nothing to auto-reject — so if it was
+never checked off it's just dead weight in the queue. This rewrites each
+reviewer's reviewer_shift docs for the current snapshot, dropping rows that are:
+  * absent from the live prioritized feed (no unreviewed of any kind), AND
+  * not marked complete.
 
-Completed jobs and active jobs (unreviewed > 0) are preserved. Completion docs
-are never touched.
+Kept: completed jobs, jobs with reviewable work, AND jobs whose only leftover
+responses are auto-rejected (still in the feed) — the reviewer clears those on
+the Responses page. Completion docs are never touched.
 
 Usage (from repo root):
     LOCAL_DEV=1 TOOL_SLUG=qc-shift-assignments \\
@@ -31,9 +32,13 @@ def run(apply):
         print("No active shift snapshot — nothing to do.")
         return
 
-    feed = bloom.fetch_prioritized_jobs(use_cache=False)
-    live = {str(j.get("jobId")): int(j.get("unreviewedCount") or 0)
-            for j in feed if j.get("jobId")}
+    # A job present in the feed still has unreviewed responses of SOME kind —
+    # reviewable OR auto-rejected (which the reviewer still has to clear on the
+    # Responses page). Only a job that has dropped out of the feed entirely is
+    # truly empty and safe to remove. (We intentionally do NOT key off the
+    # reviewable/massReview count here, or we'd delete auto-reject-only jobs.)
+    feed_ids = {str(j.get("jobId")) for j in bloom.fetch_prioritized_jobs(use_cache=False)
+                if j.get("jobId")}
 
     docs = [
         d for d in roles.list_docs_by_kind("reviewer_shift", force=True)
@@ -59,7 +64,7 @@ def run(apply):
             for r in (d.get("data") or {}).get("rows") or []:
                 k = main._job_key(r)
                 is_done = k in done
-                is_empty = live.get(k, 0) <= 0
+                is_empty = k not in feed_ids  # gone from feed = no unreviewed at all
                 if is_empty and not is_done:
                     removed += 1
                 else:

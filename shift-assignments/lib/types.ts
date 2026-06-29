@@ -7,6 +7,9 @@ export type Row = {
   priority: number;
   name: string;
   unreviewedCount: number;
+  /** Responses that can't be reviewed here (auto-rejected for distance, etc.) —
+   *  cleared on the Responses page. unreviewedCount counts only reviewable work. */
+  autoRejected?: number;
   oldestSubmission: string;
   extras: Record<string, unknown>;
   completedAt?: string | null;

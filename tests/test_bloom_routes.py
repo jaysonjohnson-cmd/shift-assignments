@@ -706,6 +706,50 @@ def test_shifts_my_overlays_live_unreviewed_counts(client, monkeypatch):
     assert rows["B"]["unreviewedCount"] == 0   # absent from feed → fully reviewed
 
 
+def test_shifts_my_reports_auto_rejected_count(client, monkeypatch):
+    """autoRejected = raw New minus reviewable (massReview) — the responses that
+    can't be reviewed here. The job stays in the list with that count."""
+    c, token_file = client
+    _as_reviewer(token_file, "sam@storesight.com")
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(
+        roles, "list_reviewers",
+        lambda: [{"id": "r", "name": "Sam", "email": "sam@storesight.com"}],
+    )
+    snapshot = {"id": "snap-1", "data": {"kind": "shift_snapshot",
+                "reviewer_emails": ["sam@storesight.com"]}}
+    reviewer_shift = {"id": "rs-1", "data": {"kind": "reviewer_shift",
+                      "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
+                      "rows": [
+                          {"jobId": "A", "projectId": "10", "unreviewedCount": 9},  # 2 review + 3 AR
+                          {"jobId": "B", "projectId": "20", "unreviewedCount": 9},  # only auto-rejects
+                      ]}}
+
+    def fake_list(kind, force=False):
+        if kind == "shift_snapshot":
+            return [snapshot]
+        if kind == "reviewer_shift":
+            return [reviewer_shift]
+        return []
+
+    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
+    # bloom rows carry reviewable (unreviewedCount) + raw new (extras.newCount).
+    monkeypatch.setattr(
+        main.bloom, "fetch_prioritized_jobs",
+        lambda status=None, use_cache=True: [
+            {"jobId": "A", "unreviewedCount": 2, "extras": {"newCount": 5}},
+            {"jobId": "B", "unreviewedCount": 0, "extras": {"newCount": 1}},
+        ],
+    )
+
+    resp = c.get("/api/shifts/my")
+    assert resp.status_code == 200
+    rows = {r["jobId"]: r for r in resp.get_json()["data"]["rows"]}
+    assert rows["A"]["unreviewedCount"] == 2 and rows["A"]["autoRejected"] == 3
+    # Auto-reject-only job stays, with 0 reviewable and 1 to clear.
+    assert rows["B"]["unreviewedCount"] == 0 and rows["B"]["autoRejected"] == 1
+
+
 def test_shifts_my_keeps_stored_count_when_feed_unavailable(client, monkeypatch):
     """If the live feed errors, fall back to the stored count rather than
     blanking every job to 0 (which would wrongly mark all work done)."""

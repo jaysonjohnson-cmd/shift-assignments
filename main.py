@@ -915,8 +915,13 @@ def api_shifts_my():
     # the stored counts rather than blanking the page.
     try:
         feed = bloom.fetch_prioritized_jobs()
+        # Per job: reviewable count (massReview) and the raw New count, so we can
+        # show both "what's left to review" and "what's stuck as auto-rejected".
         live_by_job = {
-            str(j.get("jobId")): j.get("unreviewedCount", 0)
+            str(j.get("jobId")): {
+                "reviewable": int(j.get("unreviewedCount") or 0),
+                "new": int((j.get("extras") or {}).get("newCount") or 0),
+            }
             for j in feed
             if j.get("jobId")
         }
@@ -937,7 +942,13 @@ def api_shifts_my():
         # without a jobId (legacy) keep their stored count untouched.
         jid = str(row.get("jobId") or "")
         if live_by_job is not None and jid:
-            item["unreviewedCount"] = live_by_job.get(jid, 0)
+            live = live_by_job.get(jid)
+            reviewable = live["reviewable"] if live else 0
+            new = live["new"] if live else 0
+            item["unreviewedCount"] = reviewable
+            # Responses left that aren't reviewable (auto-rejected for distance,
+            # etc.) — the reviewer clears these on the Responses page, not here.
+            item["autoRejected"] = max(0, new - reviewable)
         enriched.append(item)
 
     # NOTE: refilling happens ONLY on the completion POST finish-check, not here.
