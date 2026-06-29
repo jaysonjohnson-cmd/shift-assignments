@@ -158,9 +158,13 @@ export default function AssignmentsPage() {
   }, [liveJobs, mode, reviewerEmailById]);
 
   const priorityPool = useMemo<Row[]>(() => {
-    let filtered = prioritizeAged
-      ? rows.filter((r) => Number(r.extras?.old_sub ?? 0) > 0)
-      : rows;
+    // Only pull ACTIVE work into the shift — never assign a job that has no
+    // unreviewed responses left. Empty jobs in the feed would otherwise land in
+    // reviewers' queues as "old" JIDs with nothing to review.
+    let filtered = (rows as Row[]).filter((r) => (r.unreviewedCount || 0) > 0);
+    if (prioritizeAged) {
+      filtered = filtered.filter((r) => Number(r.extras?.old_sub ?? 0) > 0);
+    }
     if (retailPipelineOnly) {
       filtered = filtered.filter(
         (r) =>
