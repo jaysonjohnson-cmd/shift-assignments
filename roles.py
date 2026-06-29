@@ -252,6 +252,16 @@ def list_leads():
     return _list_by_kind("lead")
 
 
+def _role_from_roster(normalized, admins, leads, reviewers):
+    if any(a["email"] == normalized for a in admins):
+        return "admin"
+    if any(l["email"] == normalized for l in leads):
+        return "lead"
+    if any(r["email"] == normalized for r in reviewers):
+        return "reviewer"
+    return "viewer"
+
+
 def get_role(email):
     """Return "admin" | "lead" | "reviewer" | "viewer" for the given email."""
     normalized = _normalize_email(email)
@@ -263,16 +273,22 @@ def get_role(email):
     # degrade to viewer (least privilege). The root admin is handled above so
     # the system is never locked out even when the roster is unreadable.
     try:
-        if any(a["email"] == normalized for a in list_admins()):
-            return "admin"
-        if any(l["email"] == normalized for l in list_leads()):
-            return "lead"
-        if any(r["email"] == normalized for r in list_reviewers()):
-            return "reviewer"
+        admins, leads, reviewers = list_admins(), list_leads(), list_reviewers()
+        role = _role_from_roster(normalized, admins, leads, reviewers)
+        # A completely empty roster is never real — there's always at least one
+        # reviewer/admin. It means the warm cache was cold and a scan got rate-
+        # limited, returning []. Downgrading a real admin/lead to viewer here is
+        # what caused spurious 403s on Clear. Force one authoritative reload
+        # before trusting an empty roster.
+        if role == "viewer" and not (admins or leads or reviewers):
+            list_docs_by_kind("admin", force=True)  # one full scan repopulates all kinds
+            role = _role_from_roster(
+                normalized, list_admins(), list_leads(), list_reviewers()
+            )
+        return role
     except Exception:  # noqa: BLE001 — any roster read failure degrades to viewer
         logging.warning("role lookup failed for %s; defaulting to viewer", normalized)
         return "viewer"
-    return "viewer"
 
 
 def is_admin(email):

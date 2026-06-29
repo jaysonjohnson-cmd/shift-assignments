@@ -241,3 +241,46 @@ def test_admins_list_always_includes_root(client, monkeypatch):
     data = resp.get_json()["data"]
     emails = [a["email"] for a in data]
     assert roles.ROOT_ADMIN_EMAIL.lower() in emails
+
+
+def test_empty_roster_forces_reload_before_downgrading(monkeypatch):
+    """A cold/rate-limited roster read returns []. A real lead must NOT be
+    downgraded to viewer because of it — get_role forces one authoritative
+    reload (which repopulates the cache) and re-checks before trusting empty."""
+    state = {"warm": False}
+    lead = {"id": "l1", "name": "Amber", "email": "amber.ross@storesight.com"}
+
+    def fake_list_docs(kind, force=False):
+        # The forced reload "warms" the cache; after that, leads are visible.
+        if force:
+            state["warm"] = True
+        return []
+
+    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list_docs)
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(roles, "list_leads", lambda: [lead] if state["warm"] else [])
+    monkeypatch.setattr(roles, "list_reviewers", lambda: [])
+
+    # Cold first read → empty → forces reload → lead now resolves correctly.
+    assert roles.get_role("amber.ross@storesight.com") == "lead"
+
+
+def test_genuine_viewer_still_viewer_when_roster_present(monkeypatch):
+    """When the roster is populated (non-empty), an unknown email stays viewer
+    and no extra forced reload happens."""
+    forced = {"n": 0}
+
+    def fake_list_docs(kind, force=False):
+        if force:
+            forced["n"] += 1
+        return []
+
+    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list_docs)
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(roles, "list_leads", lambda: [])
+    monkeypatch.setattr(
+        roles, "list_reviewers",
+        lambda: [{"id": "r", "name": "Sam", "email": "sam@storesight.com"}],
+    )
+    assert roles.get_role("stranger@storesight.com") == "viewer"
+    assert forced["n"] == 0  # roster non-empty → no forced reload
