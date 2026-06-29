@@ -1276,6 +1276,39 @@ def test_overview_requires_admin(client, monkeypatch):
     assert resp.status_code == 403
 
 
+def test_overview_dedupes_duplicate_rows(client, monkeypatch):
+    """Belt-and-suspenders: if a refill race ever writes the same job twice,
+    the overview still counts it once (read-side dedupe), so totals never
+    inflate the way they did before."""
+    c, token_file = client
+    _as_admin(token_file)
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(
+        roles, "list_reviewers",
+        lambda: [{"id": "r1", "name": "Sam", "email": "sam@storesight.com"}],
+    )
+    snapshot = {"id": "snap-1", "data": {"kind": "shift_snapshot",
+                "reviewer_emails": ["sam@storesight.com"]}}
+    # Two docs (a duplicate "part 1") carrying the SAME two jobs.
+    dup = lambda part: {"id": f"rs-{part}", "data": {"kind": "reviewer_shift",
+        "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
+        "part": part, "rows": [{"jobId": "A", "projectId": "10"},
+                               {"jobId": "B", "projectId": "20"}]}}
+
+    def fake_list(kind, force=False):
+        if kind == "shift_snapshot":
+            return [snapshot]
+        if kind == "reviewer_shift":
+            return [dup(0), dup(1)]  # 4 rows total, but only 2 unique jobs
+        return []
+
+    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
+    resp = c.get("/api/shifts/overview")
+    assert resp.status_code == 200, resp.get_json()
+    sam = resp.get_json()["data"]["reviewers"][0]
+    assert sam["total"] == 2  # deduped — not 4
+
+
 def test_overview_counts_only_checkmarked_as_done(client, monkeypatch):
     """The checkmark is the single source of truth: a job reviewed but NOT
     checked off (0 live unreviewed) still counts as pending in the overview —

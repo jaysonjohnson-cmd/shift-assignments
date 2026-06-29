@@ -865,6 +865,24 @@ def _rows_for_reviewer(snapshot_id, email, force=False):
     out = []
     for data in matches:
         out.extend(data.get("rows") or [])
+    return _dedup_rows(out)
+
+
+def _dedup_rows(rows):
+    """Drop rows that repeat a job key (first occurrence wins, order preserved).
+
+    Belt-and-suspenders against a refill race writing the same batch twice: even
+    if a duplicate part lands in storage, no reviewer or count ever sees a dupe
+    because every read path runs the rows through here. The dedupe script still
+    cleans the stored bloat, but correctness never depends on it."""
+    seen, out = set(), []
+    for r in rows or []:
+        k = _job_key(r)
+        if k and k in seen:
+            continue
+        if k:
+            seen.add(k)
+        out.append(r)
     return out
 
 
@@ -1498,6 +1516,7 @@ def api_shifts_overview():
 
     reviewers_out = []
     for email, rows in rows_by_email.items():
+        rows = _dedup_rows(rows)  # never count a duplicated row (refill-race guard)
         total = len(rows)
         if total == 0:
             continue
@@ -1593,6 +1612,7 @@ def api_shifts_jobs():
 
     jobs_by_reviewer = []
     for email, rows in rows_by_email.items():
+        rows = _dedup_rows(rows)  # never list a duplicated row (refill-race guard)
         done_set = done_by_reviewer.get(email, set())
         jobs = []
         for r in rows:
