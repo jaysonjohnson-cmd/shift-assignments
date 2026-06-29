@@ -44,10 +44,30 @@ def test_fetch_prioritized_jobs_maps_api_rows(monkeypatch):
     # Order is preserved from the already-prioritized API.
     assert [r["id"] for r in rows] == ["10", "20"]
     assert [r["priority"] for r in rows] == [1, 2]
-    assert rows[0]["unreviewedCount"] == 3
+    assert rows[0]["unreviewedCount"] == 3  # no massReview → falls back to "new"
     assert rows[0]["name"] == "Chair"  # name comes straight from the API
     assert rows[0]["projectId"] == "110"
     assert rows[0]["jobId"] == "10"
+
+
+def test_unreviewed_count_uses_mass_review_not_new(monkeypatch):
+    """unreviewedCount tracks the REVIEWABLE count ("massReview"), not raw "New"
+    — so auto-rejected responses (new > massReview) don't count as actionable."""
+    bloom.clear_cache()
+    jobs = [
+        # 5 new, but only 2 reviewable — the other 3 are auto-rejected/un-actionable.
+        {"id": 10, "project_id": 110, "priority": 1, "name": "A", "new": 5, "massReview": 2},
+        # All new are reviewable.
+        {"id": 20, "project_id": 120, "priority": 2, "name": "B", "new": 4, "massReview": 4},
+        # Everything left is auto-rejected → nothing actionable.
+        {"id": 30, "project_id": 130, "priority": 3, "name": "C", "new": 3, "massReview": 0},
+    ]
+    monkeypatch.setattr(internal_api, "get", _prioritized_jobs(jobs))
+    rows = {r["id"]: r for r in bloom.fetch_prioritized_jobs(use_cache=False)}
+    assert rows["10"]["unreviewedCount"] == 2
+    assert rows["10"]["extras"]["newCount"] == 5
+    assert rows["20"]["unreviewedCount"] == 4
+    assert rows["30"]["unreviewedCount"] == 0  # only auto-rejected left → not actionable
 
 
 def test_fetch_prioritized_jobs_uses_cache(monkeypatch):

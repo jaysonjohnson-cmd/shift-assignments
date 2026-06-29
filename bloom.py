@@ -51,6 +51,15 @@ def _fetch_prioritized_jobs_raw():
     return resp.get("data", []) if isinstance(resp, dict) else []
 
 
+def _safe_int(value):
+    """Coerce a feed value to int, or None when it's missing/blank/non-numeric.
+    The feed sends some counts as "" (empty string), which int() chokes on."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _row_from_api(job):
     """Map a job from /api/prioritized-jobs to the Row shape the UI expects.
 
@@ -69,7 +78,16 @@ def _row_from_api(job):
         "groupIds": [],  # Not provided by this API; can be fetched separately if needed
         "priority": int(job.get("priority") or 0),
         "name": str(job.get("name") or ""),
-        "unreviewedCount": int(job.get("new") or 0),
+        # Use the REVIEWABLE count ("Mass Review"), not raw "New". "New" includes
+        # responses the reviewer can't act on — e.g. auto-rejected for distance —
+        # which would otherwise block completion and the finish ping forever. The
+        # gap (new - massReview) is exactly those un-reviewable responses. Fall
+        # back to "new" when massReview is missing/blank (some feed rows send "").
+        "unreviewedCount": (
+            _safe_int(job.get("massReview"))
+            if _safe_int(job.get("massReview")) is not None
+            else (_safe_int(job.get("new")) or 0)
+        ),
         "oldestSubmission": "",
         "extras": {
             "old_sub": int((job.get("priority_details") or {}).get("old_sub") or 0),
@@ -78,6 +96,8 @@ def _row_from_api(job):
             "endDate": str(job.get("endDate") or ""),
             "pendingRatio": float((job.get("priority_details") or {}).get("pending_ratio") or 0),
             "numSubs": float((job.get("priority_details") or {}).get("num_subs") or 0),
+            # Raw "New" count (incl. un-reviewable/auto-rejected) for reference.
+            "newCount": _safe_int(job.get("new")) or 0,
             # Client owner email — used to scope to Storesight / Retail Pipeline jobs.
             "client": str(job.get("client") or ""),
         },
