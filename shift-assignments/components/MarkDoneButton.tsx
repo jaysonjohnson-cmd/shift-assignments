@@ -71,10 +71,14 @@ export function MarkDoneButton({
   };
 
   const blockedConfirm = blocked !== null && (
-    <div className="max-w-[210px] rounded-md border border-[#FFA500]/40 bg-[#FFA500]/10 px-2 py-1.5 text-[11px] text-[#B26A00] dark:text-[#FFA500]">
+    <div className="max-w-[230px] rounded-md border border-[#FFA500]/40 bg-[#FFA500]/10 px-2 py-1.5 text-[11px] text-[#B26A00] dark:text-[#FFA500]">
       <div>
         {blocked} unreviewed response{blocked === 1 ? "" : "s"} still showing on this
         job.
+      </div>
+      <div className="mt-1 text-[10px] leading-snug opacity-90">
+        If you can&apos;t see them in Review, they were likely auto-rejected (e.g.
+        distance) — clear the auto-rejects in FieldAgent, then mark done.
       </div>
       <div className="mt-1 flex gap-2">
         <button
