@@ -68,3 +68,12 @@ class TestLocalDevAuth:
         self.token_file.write_text(_make_dev_token())
         resp = client.get("/logout")
         assert resp.status_code == 302
+
+    def test_version_is_public_and_reports_sha(self, client, monkeypatch):
+        # No dev token written — /version must be reachable without auth.
+        monkeypatch.setenv("GIT_SHA", "deadbeefcafe1234")
+        resp = client.get("/version")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["sha"] == "deadbeefcafe1234"
+        assert body["short"] == "deadbee"

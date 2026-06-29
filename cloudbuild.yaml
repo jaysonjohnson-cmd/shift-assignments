@@ -25,7 +25,7 @@ steps:
           - --network=default
           - --subnet=default
           - --set-secrets=JWT_SIGNING_SECRET=JWT_SIGNING_SECRET:latest
-          - --set-env-vars=INTERNAL_API_BASE=https://internal-tool-api.storesight.org,TOOL_SLUG=$_SERVICE_NAME,SLACK_NOTIFY_CHANNEL=$_SLACK_NOTIFY_CHANNEL
+          - --set-env-vars=INTERNAL_API_BASE=https://internal-tool-api.storesight.org,TOOL_SLUG=$_SERVICE_NAME,SLACK_NOTIFY_CHANNEL=$_SLACK_NOTIFY_CHANNEL,GIT_SHA=$COMMIT_SHA
 options:
     logging: CLOUD_LOGGING_ONLY
     machineType: E2_HIGHCPU_8

@@ -34,7 +34,7 @@ def _dev_token_path():
 
 @app.before_request
 def require_auth():
-    if request.path == "/health":
+    if request.path in ("/health", "/version"):
         return
 
     if LOCAL_DEV:
@@ -87,6 +87,16 @@ def require_auth():
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"})
+
+
+@app.route("/version")
+def version():
+    """Public — returns the git SHA the running instance was built from, so a
+    deploy can be confirmed in one check (curl /version) instead of inferring it
+    from behavior. Baked in at build time via GIT_SHA (cloudbuild.yaml); falls
+    back to 'dev' locally."""
+    sha = os.environ.get("GIT_SHA", "") or "dev"
+    return jsonify({"sha": sha, "short": sha[:7] if sha != "dev" else "dev"})
 
 
 @app.route("/logout")
