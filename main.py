@@ -1191,12 +1191,18 @@ def _record_review_event(email, completed_at_iso, responses=0):
     norm = (email or "").strip().lower()
     responses = max(0, int(responses or 0))
 
-    existing = None
-    for d in roles.list_docs_by_kind("review_tally"):
-        data = d.get("data") or {}
-        if data.get("week") == week and (data.get("reviewer_email") or "").lower() == norm:
-            existing = d
-            break
+    def _find(force=False):
+        for d in roles.list_docs_by_kind("review_tally", force=force):
+            data = d.get("data") or {}
+            if data.get("week") == week and (data.get("reviewer_email") or "").lower() == norm:
+                return d
+        return None
+
+    existing = _find()
+    # Before creating a fresh doc, confirm one didn't just get written by a
+    # concurrent completion (stale warm cache) — avoids duplicate tally docs.
+    if not existing:
+        existing = _find(force=True)
 
     if existing:
         data = {**(existing.get("data") or {})}
@@ -1255,22 +1261,36 @@ def api_shifts_leaderboard():
     except Exception:  # noqa: BLE001 — name/color lookup is best-effort
         roster = {}
 
-    reviewers = []
+    # Merge by reviewer: a race can leave more than one tally doc for the same
+    # reviewer+week. Summing them on read means a reviewer always appears ONCE
+    # with combined numbers, regardless of duplicate docs in storage.
+    merged = {}
     for d in tallies:
         data = d.get("data") or {}
         email = (data.get("reviewer_email") or "").lower()
+        if not email:
+            continue
         days = data.get("days") or {}
         resp_days = data.get("resp_days") or {}
+        m = merged.setdefault(email, {"total": 0, "responses": 0,
+                                      "days": [0] * 7, "resp_days": [0] * 7})
+        m["total"] += int(data.get("total", 0))
+        m["responses"] += int(data.get("resp_total", 0))
+        for i, k in enumerate(day_keys):
+            m["days"][i] += int(days.get(k, 0))
+            m["resp_days"][i] += int(resp_days.get(k, 0))
+
+    reviewers = []
+    for email, m in merged.items():
         info = roster.get(email) or {}
         reviewers.append({
             "email": email,
             "name": info.get("name") or email.split("@")[0],
             "color": info.get("color"),
-            "total": int(data.get("total", 0)),
-            "days": [int(days.get(k, 0)) for k in day_keys],
-            # Responses cleared (volume), per day + week total.
-            "responses": int(data.get("resp_total", 0)),
-            "resp_days": [int(resp_days.get(k, 0)) for k in day_keys],
+            "total": m["total"],
+            "days": m["days"],
+            "responses": m["responses"],
+            "resp_days": m["resp_days"],
         })
     reviewers.sort(key=lambda r: (-r["total"], r["name"]))
 

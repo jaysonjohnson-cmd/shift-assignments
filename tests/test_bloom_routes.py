@@ -1359,6 +1359,36 @@ def test_overview_counts_only_checkmarked_as_done(client, monkeypatch):
 # /api/shifts/leaderboard — weekly standings
 
 
+def test_leaderboard_merges_duplicate_tally_docs(client, monkeypatch):
+    """A reviewer with two tally docs for the same week (race) appears ONCE,
+    with jobs and responses summed."""
+    c, token_file = client
+    _as_admin(token_file)
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(
+        roles, "list_reviewers",
+        lambda: [{"id": "r1", "name": "Eli", "email": "eli@storesight.com"}],
+    )
+    import datetime as _dt
+    wk = main._iso_week_key(_dt.datetime.now(_dt.timezone.utc))
+    day = _dt.datetime.now(_dt.timezone.utc).date().isoformat()
+    tallies = [
+        {"id": "t1", "data": {"kind": "review_tally", "reviewer_email": "eli@storesight.com",
+                              "week": wk, "total": 142, "days": {day: 142},
+                              "resp_total": 0, "resp_days": {}}},
+        {"id": "t2", "data": {"kind": "review_tally", "reviewer_email": "eli@storesight.com",
+                              "week": wk, "total": 46, "days": {day: 46},
+                              "resp_total": 42, "resp_days": {day: 42}}},
+    ]
+    monkeypatch.setattr(roles, "list_docs_by_kind",
+                        lambda kind, force=False: tallies if kind == "review_tally" else [])
+    resp = c.get("/api/shifts/leaderboard")
+    assert resp.status_code == 200, resp.get_json()
+    revs = resp.get_json()["data"]["reviewers"]
+    assert len(revs) == 1  # merged, not two Elijah rows
+    assert revs[0]["total"] == 188 and revs[0]["responses"] == 42
+
+
 def test_leaderboard_aggregates_current_week(client, monkeypatch):
     c, token_file = client
     _as_admin(token_file)
