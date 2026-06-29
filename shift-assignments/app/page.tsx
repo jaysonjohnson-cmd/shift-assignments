@@ -65,7 +65,7 @@ const tiles: Tile[] = [
     description:
       "Manage the roster of reviewers and admins who can sign in and be assigned shifts.",
     accent: "from-storesight-lilac/15 to-storesight-violet/15",
-    enabledFor: ["admin", "reviewer", "viewer"],
+    enabledFor: ["admin", "lead", "reviewer", "viewer"],
     icon: (
       <svg viewBox="0 0 24 24" fill="none" className={ICON_CLASS} aria-hidden>
         <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.6" />
@@ -84,7 +84,7 @@ const tiles: Tile[] = [
     description:
       "Browse all projects sorted by how long their oldest unreviewed submission has been waiting.",
     accent: "from-orange-400/10 to-[#FF4D4D]/10",
-    enabledFor: ["admin", "reviewer", "viewer"],
+    enabledFor: ["admin", "lead", "reviewer", "viewer"],
     icon: (
       <svg viewBox="0 0 24 24" fill="none" className={ICON_CLASS} aria-hidden>
         <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.6" />
@@ -117,7 +117,7 @@ const tiles: Tile[] = [
     description:
       "See the rows assigned to you in the latest published shift.",
     accent: "from-emerald-400/15 to-storesight-mint/20",
-    enabledFor: ["reviewer", "admin"],
+    enabledFor: ["reviewer", "admin", "lead"],
     icon: (
       <svg viewBox="0 0 24 24" fill="none" className={ICON_CLASS} aria-hidden>
         <path
