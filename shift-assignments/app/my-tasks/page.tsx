@@ -180,9 +180,6 @@ export default function MyTasksPage() {
   const [density, setDensity] = useState<Density>("comfortable");
   const [viewByPid, setViewByPid] = useState(false);
   const [emptyMsgIdx, setEmptyMsgIdx] = useState(() => pickRandomMessageIndex());
-  // Bumps each time the reviewer clears their whole queue and gets a fresh
-  // batch — drives a celebratory confetti burst every cycle.
-  const [burst, setBurst] = useState(0);
 
   useEffect(() => {
     try {
@@ -220,8 +217,6 @@ export default function MyTasksPage() {
     setEmptyMsgIdx(pickRandomMessageIndex());
     try {
       const data = await getMyTasks();
-      // Just cleared the queue and got a fresh batch → celebrate.
-      if (data.refilled && data.refilled > 0) setBurst((b) => b + 1);
       setState({
         loading: false,
         error: null,
@@ -282,9 +277,6 @@ export default function MyTasksPage() {
 
   return (
     <div className="mx-auto w-full max-w-4xl flex-1 px-6 py-8">
-      {/* Confetti burst each time a fresh batch is handed out (keyed so every
-          cycle re-fires). */}
-      {burst > 0 && <Confetti key={`burst-${burst}`} />}
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
           <h1 className="text-2xl font-semibold tracking-tight text-storesight-ink dark:text-storesight-ink-dark">

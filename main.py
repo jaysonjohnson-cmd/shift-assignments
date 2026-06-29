@@ -940,31 +940,11 @@ def api_shifts_my():
             item["unreviewedCount"] = live_by_job.get(jid, 0)
         enriched.append(item)
 
-    # Self-healing refill: if the reviewer has work assigned but nothing left to
-    # do (every row completed or down to 0 live unreviewed), top the queue up
-    # here — not just on the completion POST. With live-count auto-done a queue
-    # can empty without a final completion event, so the POST trigger alone
-    # missed cases (a finished reviewer stuck with no new jobs). Best-effort and
-    # idempotent: it only fires when there's genuinely nothing pending, so once
-    # fresh work lands it won't fire again until that's worked down too.
-    # Pending = not yet checked off. A job the reviewer has finished reviewing
-    # (0 live unreviewed) still counts as pending until they click the checkmark,
-    # so the queue only refills once everything is actually marked done.
-    pending = [r for r in enriched if not r.get("completedAt")]
-    refilled = 0
-    if rows and not pending:
-        try:
-            added = _auto_refill_reviewer(snap_id, email, len(rows))
-            refilled = len(added)
-            for r in added:
-                a_jid = str(r.get("jobId") or "")
-                a_item = {**r, "completedAt": None}
-                if live_by_job is not None and a_jid and a_jid in live_by_job:
-                    a_item["unreviewedCount"] = live_by_job[a_jid]
-                enriched.append(a_item)
-        except Exception as exc:  # noqa: BLE001 — refill must not break the list
-            logging.warning("my-tasks refill failed for %s: %s", email, exc)
-
+    # NOTE: refilling happens ONLY on the completion POST finish-check, not here.
+    # A GET-time self-heal used to also refill, but with two triggers a finished
+    # reviewer got two batches at once (each missing the other's write → 40 rows,
+    # 20 duplicated). One trigger = no race. With checkmark-only the POST trigger
+    # is reliable, so this read stays a pure read.
     try:
         color = next(
             (r.get("color") for r in roles.list_reviewers() if r["email"] == email),
@@ -978,9 +958,6 @@ def api_shifts_my():
             "published_at": snap_data.get("published_at"),
             "color": color,
             "rows": enriched,
-            # >0 means the reviewer just cleared their whole queue and a fresh
-            # batch was handed out — the client fires a confetti burst on this.
-            "refilled": refilled,
         }
     })
 

@@ -721,10 +721,10 @@ def test_shifts_my_keeps_stored_count_when_feed_unavailable(client, monkeypatch)
     assert rows[0]["unreviewedCount"] == 18  # stored count preserved
 
 
-def test_shifts_my_refills_when_queue_is_finished(client, monkeypatch):
-    """Self-healing: if every assigned row is done (or down to 0 live unreviewed)
-    and the shift is live, loading My Tasks tops the queue up with fresh work —
-    not only the completion POST does. New jobs appear in the response."""
+def test_shifts_my_does_not_refill_on_load(client, monkeypatch):
+    """Loading My Tasks is a pure read — it must NOT refill. Refilling happens
+    only on the completion POST. Two triggers (POST + a GET self-heal) caused a
+    finished reviewer to get two batches at once, half of them duplicates."""
     c, token_file = client
     _as_reviewer(token_file, "sam@storesight.com")
     monkeypatch.setattr(roles, "list_admins", lambda: [])
@@ -734,6 +734,7 @@ def test_shifts_my_refills_when_queue_is_finished(client, monkeypatch):
     )
     snapshot = {"id": "snap-1", "data": {"kind": "shift_snapshot",
                 "reviewer_emails": ["sam@storesight.com"]}}
+    # Whole queue checked off — the old self-heal would have refilled here.
     reviewer_shift = {"id": "rs-1", "data": {"kind": "reviewer_shift",
                       "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
                       "rows": [{"jobId": "A", "projectId": "10"}], "part": 0, "batch_size": 1}}
@@ -749,34 +750,22 @@ def test_shifts_my_refills_when_queue_is_finished(client, monkeypatch):
             return [completion]
         return []
 
-    # Feed: A is done (0 left), B is fresh unassigned work, Z has nothing to review.
     monkeypatch.setattr(
         main.bloom, "fetch_prioritized_jobs",
         lambda status=None, use_cache=True: [
-            {"jobId": "A", "projectId": "10", "unreviewedCount": 0},
             {"jobId": "B", "projectId": "20", "unreviewedCount": 5, "priority": 1, "name": "B"},
-            {"jobId": "Z", "projectId": "30", "unreviewedCount": 0},
         ],
     )
     stored = []
     monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
     monkeypatch.setattr(internal_api, "post",
-                        lambda path, json=None: stored.append(json) or {"data": {"id": "rs-2"}})
+                        lambda path, json=None: stored.append(json) or {"data": {"id": "x"}})
 
     resp = c.get("/api/shifts/my")
     assert resp.status_code == 200
-    body = resp.get_json()["data"]
-    jobs = {r["jobId"]: r for r in body["rows"]}
-    # The finished job stays (it's completed) and the fresh job B was added;
-    # the already-reviewed Z was skipped.
-    assert "B" in jobs
-    assert "Z" not in jobs
-    assert body["refilled"] == 1  # signals the client to fire confetti
-    assert jobs["B"]["completedAt"] is None
-    # A fresh reviewer_shift chunk was actually persisted.
-    assert any((s.get("data") or {}).get("reviewer_email") == "sam@storesight.com"
-               and [r.get("jobId") for r in (s.get("data") or {}).get("rows", [])] == ["B"]
-               for s in stored)
+    jobs = {r["jobId"] for r in resp.get_json()["data"]["rows"]}
+    assert jobs == {"A"}   # only the existing row — no fresh B handed out on a GET
+    assert stored == []    # a GET writes nothing
 
 
 def test_shifts_my_returns_empty_when_no_snapshot(client, monkeypatch):
