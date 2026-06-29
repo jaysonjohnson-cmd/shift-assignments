@@ -122,7 +122,11 @@ function buildResponseSearchUrl(jobId: string): string {
 }
 
 function buildCollectionReviewUrl(jobId: string, projectId: string): string {
-  const params = new URLSearchParams({ job: jobId, project: projectId });
+  // Scope to the exact job only — including the project param makes Collection
+  // Review pull the whole project (every JID), causing reviewer overlap.
+  const params = jobId
+    ? new URLSearchParams({ job: jobId })
+    : new URLSearchParams({ project: projectId });
   return `https://prod.fieldagent.net/admin/fieldagent/collection-review/?${params.toString()}#/`;
 }
 

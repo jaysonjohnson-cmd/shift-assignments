@@ -20,13 +20,17 @@ function buildClipboardPayload(row: Row): string {
 }
 
 function buildUrl(row: Row): string {
-  // Open the exact job when we have one; otherwise (a multi-job "By PID" group)
-  // fall back to the project so Collection Review still lands on the right work
-  // instead of a blank page.
-  const pid = row.projectId || row.id;
+  // Scope to the EXACT job when we have one — passing the project param too
+  // makes Collection Review pull the whole project (every JID), which had
+  // reviewers overlapping on the same project's responses. Only fall back to
+  // the project for a multi-job "By PID" group that has no single jobId.
   const params = new URLSearchParams();
-  if (row.jobId) params.set("job", row.jobId);
-  if (pid) params.set("project", pid);
+  if (row.jobId) {
+    params.set("job", row.jobId);
+  } else {
+    const pid = row.projectId || row.id;
+    if (pid) params.set("project", pid);
+  }
   const qs = params.toString();
   return qs ? `${COLLECTION_REVIEW_URL}?${qs}#/` : COLLECTION_REVIEW_URL;
 }

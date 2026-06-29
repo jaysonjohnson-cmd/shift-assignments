@@ -136,11 +136,15 @@ function truncate(value: string | null | undefined, max: number): string {
 function buildJobUrl(row: Row): string {
   const COLLECTION_REVIEW_URL =
     "https://prod.fieldagent.net/admin/fieldagent/collection-review/";
-  if (!row.jobId) return COLLECTION_REVIEW_URL;
-  const params = new URLSearchParams({ job: row.jobId });
+  // Scope to the exact job. Passing the project param too makes Collection
+  // Review open the whole project (every JID) and reviewers overlap. Only a
+  // multi-job "By PID" group (no jobId) falls back to the project.
+  if (row.jobId) {
+    return `${COLLECTION_REVIEW_URL}?${new URLSearchParams({ job: row.jobId }).toString()}#/`;
+  }
   const pid = row.projectId || row.id;
-  if (pid) params.set("project", pid);
-  return `${COLLECTION_REVIEW_URL}?${params.toString()}#/`;
+  if (!pid) return COLLECTION_REVIEW_URL;
+  return `${COLLECTION_REVIEW_URL}?${new URLSearchParams({ project: pid }).toString()}#/`;
 }
 
 function buildResponseSearchUrl(row: Row): string {
