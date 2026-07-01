@@ -264,7 +264,7 @@ export default function MyTasksPage() {
 
   // When the queue empties, poll once after 8 seconds in case the backend
   // auto-refilled the reviewer's queue with new jobs.
-  const queueEmpty = !state.loading && state.snapshotId !== null && todo.length === 0 && state.rows.length > 0;
+  const queueEmpty = !state.loading && state.snapshotId !== null && todo.length === 0;
   useEffect(() => {
     if (!queueEmpty) return;
     const t = window.setTimeout(() => load(), 8000);
@@ -346,7 +346,24 @@ export default function MyTasksPage() {
       )}
 
       {state.snapshotId && state.rows.length === 0 && !state.loading && (
-        <EmptyQueue message={EMPTY_QUEUE_MESSAGES[emptyMsgIdx]} />
+        <div className="mt-8 flex min-h-[50vh] items-center justify-center px-4 text-center">
+          <div>
+            <h2 className="max-w-3xl bg-gradient-to-r from-storesight-primary via-storesight-accent to-storesight-accent-light bg-clip-text text-lg font-black leading-snug tracking-tight text-transparent sm:text-xl md:text-2xl">
+              {EMPTY_QUEUE_MESSAGES[emptyMsgIdx]}
+            </h2>
+            <p className="mt-4 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+              Auto-refreshing every 8 seconds. New assignments will appear here when available.
+            </p>
+            <button
+              type="button"
+              onClick={load}
+              disabled={state.loading}
+              className="mt-4 rounded-lg border border-storesight-border px-3 py-1.5 text-xs font-medium text-storesight-primary-dark transition hover:border-storesight-accent hover:text-storesight-primary disabled:opacity-50 dark:border-storesight-border-dark dark:text-storesight-ink-dark dark:hover:border-storesight-accent-light dark:hover:text-storesight-accent-light"
+            >
+              {state.loading ? "Refreshing…" : "Refresh now"}
+            </button>
+          </div>
+        </div>
       )}
 
       {total > 0 && todo.length === 0 && (
