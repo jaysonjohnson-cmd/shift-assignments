@@ -262,12 +262,12 @@ export default function MyTasksPage() {
   const pendingRows = state.rows.filter((r) => !isDone(r));
   const todo = (viewByPid ? groupByProject(pendingRows) : pendingRows).sort(byResponses);
 
-  // When the queue empties, poll once after 8 seconds in case the backend
+  // When the queue empties, poll once after 4 seconds in case the backend
   // auto-refilled the reviewer's queue with new jobs.
   const queueEmpty = !state.loading && state.snapshotId !== null && todo.length === 0;
   useEffect(() => {
     if (!queueEmpty) return;
-    const t = window.setTimeout(() => load(), 8000);
+    const t = window.setTimeout(() => load(), 4000);
     return () => window.clearTimeout(t);
   }, [queueEmpty, load]);
   // Progress is measured in jobs (not groups) so the bar reads the same whether
@@ -352,7 +352,7 @@ export default function MyTasksPage() {
               {EMPTY_QUEUE_MESSAGES[emptyMsgIdx]}
             </h2>
             <p className="mt-4 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-              Auto-refreshing every 8 seconds. New assignments will appear here when available.
+              Auto-refreshing every 4 seconds. New assignments will appear here when available.
             </p>
             <button
               type="button"
