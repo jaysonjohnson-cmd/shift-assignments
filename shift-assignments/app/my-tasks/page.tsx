@@ -261,6 +261,11 @@ export default function MyTasksPage() {
   // job (which would inflate its "N jobs" count and the Open-in-Review target).
   const pendingRows = state.rows.filter((r) => !isDone(r));
   const todo = (viewByPid ? groupByProject(pendingRows) : pendingRows).sort(byResponses);
+  // Progress is measured in jobs (not groups) so the bar reads the same whether
+  // or not "By PID" is on.
+  const doneCount = state.rows.length - pendingRows.length;
+  const total = state.rows.length;
+  const pct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
 
   // Check if we're celebrating (all tasks done). If so, use a longer delay to let
   // the confetti show. Otherwise use a faster poll for new assignments.
@@ -275,11 +280,6 @@ export default function MyTasksPage() {
     const t = window.setTimeout(() => load(), pollDelay);
     return () => window.clearTimeout(t);
   }, [queueEmpty, pollDelay, load]);
-  // Progress is measured in jobs (not groups) so the bar reads the same whether
-  // or not "By PID" is on.
-  const doneCount = state.rows.length - pendingRows.length;
-  const total = state.rows.length;
-  const pct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
 
   return (
     <div className="mx-auto w-full max-w-4xl flex-1 px-6 py-8">
