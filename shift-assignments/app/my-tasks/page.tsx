@@ -262,14 +262,19 @@ export default function MyTasksPage() {
   const pendingRows = state.rows.filter((r) => !isDone(r));
   const todo = (viewByPid ? groupByProject(pendingRows) : pendingRows).sort(byResponses);
 
-  // When the queue empties, poll once after 4 seconds in case the backend
+  // Check if we're celebrating (all tasks done). If so, use a longer delay to let
+  // the confetti show. Otherwise use a faster poll for new assignments.
+  const isCelebrating = total > 0 && todo.length === 0;
+  const pollDelay = isCelebrating ? 8000 : 4000;
+
+  // When the queue empties, poll once after a delay in case the backend
   // auto-refilled the reviewer's queue with new jobs.
   const queueEmpty = !state.loading && state.snapshotId !== null && todo.length === 0;
   useEffect(() => {
     if (!queueEmpty) return;
-    const t = window.setTimeout(() => load(), 4000);
+    const t = window.setTimeout(() => load(), pollDelay);
     return () => window.clearTimeout(t);
-  }, [queueEmpty, load]);
+  }, [queueEmpty, pollDelay, load]);
   // Progress is measured in jobs (not groups) so the bar reads the same whether
   // or not "By PID" is on.
   const doneCount = state.rows.length - pendingRows.length;
