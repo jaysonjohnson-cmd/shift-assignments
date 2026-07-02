@@ -26,6 +26,11 @@ JWT_SECRET = os.environ.get("JWT_SIGNING_SECRET", "")
 AUTH_SERVICE_URL = "https://auth-service.storesight.org"
 LOCAL_DEV = os.environ.get("LOCAL_DEV") == "1"
 
+# Job IDs to exclude from assignment (do not assign to reviewers)
+EXCLUDED_JOB_IDS = {
+    "1966569",  # Bayer CVS Audit - Cadillac Program (July 2026)
+}
+
 
 def _dev_token_path():
     """Return the path to the dev token file."""
@@ -668,7 +673,13 @@ def api_shifts_publish():
             continue
         if not isinstance(rows, list):
             continue
-        normalized[key] = [_compact_row(r) for r in rows]
+        # Filter out excluded jobs (don't assign to reviewers)
+        valid_rows = [
+            _compact_row(r) for r in rows
+            if str(r.get("jobId") or r.get("id") or "") not in EXCLUDED_JOB_IDS
+        ]
+        if valid_rows:
+            normalized[key] = valid_rows
 
     if not normalized:
         return jsonify({"error": "assignments cannot be empty — assign at least one reviewer before publishing"}), 400
@@ -1065,8 +1076,10 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         k = _job_key(r)
         if not k or k in assigned_keys:
             continue
-        # Skip jobs handled by a third party (Cloud Factory) — they can't be
-        # approved here until they come back, so never refill them.
+        # Skip excluded jobs and jobs handled by a third party (Cloud Factory).
+        # These can't be approved here until they come back, so never refill them.
+        if str(r.get("jobId") or "") in EXCLUDED_JOB_IDS:
+            continue
         if bloom.is_excluded_client((r.get("extras") or {}).get("client")):
             continue
         # Skip jobs with no unreviewed work left — assigning one would just
