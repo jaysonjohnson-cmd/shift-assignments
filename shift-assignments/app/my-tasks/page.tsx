@@ -377,7 +377,12 @@ export default function MyTasksPage() {
       )}
 
       {total > 0 && todo.length === 0 && (
-        <EmptyQueue message={EMPTY_QUEUE_MESSAGES[emptyMsgIdx]} celebrate />
+        <EmptyQueue
+          message={EMPTY_QUEUE_MESSAGES[emptyMsgIdx]}
+          celebrate
+          onRefresh={load}
+          isLoading={state.loading}
+        />
       )}
 
       <div
@@ -441,19 +446,40 @@ function Section({
 function EmptyQueue({
   message,
   celebrate = false,
+  onRefresh,
+  isLoading = false,
 }: {
   message: string;
   celebrate?: boolean;
+  onRefresh?: () => void;
+  isLoading?: boolean;
 }) {
   return (
     <div
       key={message}
       className="mt-8 flex min-h-[50vh] items-center justify-center px-4 text-center animate-[tasklist-fade_320ms_ease-out]"
     >
-      {celebrate && <Confetti />}
-      <h2 className="max-w-3xl bg-gradient-to-r from-storesight-primary via-storesight-accent to-storesight-accent-light bg-clip-text text-lg font-black leading-snug tracking-tight text-transparent sm:text-xl md:text-2xl">
-        {message}
-      </h2>
+      <div>
+        {celebrate && <Confetti />}
+        <h2 className="max-w-3xl bg-gradient-to-r from-storesight-primary via-storesight-accent to-storesight-accent-light bg-clip-text text-lg font-black leading-snug tracking-tight text-transparent sm:text-xl md:text-2xl">
+          {message}
+        </h2>
+        {celebrate && onRefresh && (
+          <div className="mt-6 flex flex-col items-center gap-3">
+            <p className="text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+              Looking for more work...
+            </p>
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={isLoading}
+              className="rounded-lg border border-storesight-accent px-4 py-2 text-sm font-medium text-storesight-accent transition hover:bg-storesight-accent/10 disabled:opacity-50 dark:border-storesight-accent-light dark:text-storesight-accent-light"
+            >
+              {isLoading ? "Checking…" : "Check now"}
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
