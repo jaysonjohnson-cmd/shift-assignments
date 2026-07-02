@@ -260,7 +260,12 @@ export default function MyTasksPage() {
   // Drop done jobs BEFORE grouping so a By-PID group never folds in a checked-off
   // job (which would inflate its "N jobs" count and the Open-in-Review target).
   const pendingRows = state.rows.filter((r) => !isDone(r));
-  const todo = (viewByPid ? groupByProject(pendingRows) : pendingRows).sort(byResponses);
+  // Hide jobs with nothing to review (auto-approved with no auto-rejects). They'll
+  // reappear if they get auto-rejected or unreviewed responses come back.
+  const needsReview = pendingRows.filter(
+    (r) => (r.unreviewedCount || 0) > 0 || (r.autoRejected || 0) > 0,
+  );
+  const todo = (viewByPid ? groupByProject(needsReview) : needsReview).sort(byResponses);
   // Progress is measured in jobs (not groups) so the bar reads the same whether
   // or not "By PID" is on.
   const doneCount = state.rows.length - pendingRows.length;
