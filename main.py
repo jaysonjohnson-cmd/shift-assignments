@@ -668,7 +668,13 @@ def api_shifts_publish():
             continue
         if not isinstance(rows, list):
             continue
-        normalized[key] = [_compact_row(r) for r in rows]
+        # Filter out rows with no responses (unreviewed + auto-rejected == 0)
+        valid_rows = [
+            _compact_row(r) for r in rows
+            if (int(r.get("unreviewedCount") or 0) + int(r.get("autoRejected") or 0)) > 0
+        ]
+        if valid_rows:
+            normalized[key] = valid_rows
 
     if not normalized:
         return jsonify({"error": "assignments cannot be empty — assign at least one reviewer before publishing"}), 400
