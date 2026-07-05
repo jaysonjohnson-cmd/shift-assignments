@@ -1083,9 +1083,11 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             continue
         if bloom.is_excluded_client((r.get("extras") or {}).get("client")):
             continue
-        # Skip jobs with no unreviewed work left — assigning one would just
-        # auto-clear on the reviewer's screen and immediately re-trigger refill.
-        if int(r.get("unreviewedCount") or 0) <= 0:
+        # Skip jobs with no work left (no unreviewed AND no auto-rejected).
+        # Assigning a truly empty job would just auto-clear on the reviewer's screen.
+        # But jobs with auto-rejected responses still need manual handling.
+        total_responses = int(r.get("unreviewedCount") or 0) + int(r.get("autoRejected") or 0)
+        if total_responses <= 0:
             continue
         fresh.append(_compact_row(r))
         assigned_keys.add(k)  # guard against dupes within the same feed
