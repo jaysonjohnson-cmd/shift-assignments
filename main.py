@@ -673,10 +673,11 @@ def api_shifts_publish():
             continue
         if not isinstance(rows, list):
             continue
-        # Filter out excluded jobs (don't assign to reviewers)
+        # Filter out excluded jobs and empty jobs (no responses to review)
         valid_rows = [
             _compact_row(r) for r in rows
             if str(r.get("jobId") or r.get("id") or "") not in EXCLUDED_JOB_IDS
+            and (int(r.get("unreviewedCount") or 0) + int(r.get("autoRejected") or 0)) > 0
         ]
         if valid_rows:
             normalized[key] = valid_rows
