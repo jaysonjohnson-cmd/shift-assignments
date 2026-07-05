@@ -746,6 +746,20 @@ def api_shifts_publish():
 
         # Write new reviewer_shift docs under the existing snapshot.
         snapshot_id = existing_snap_id
+        # Clear old completions for reviewers being republished (so they start fresh)
+        for email in reviewer_emails:
+            try:
+                existing_completions = _list_completions_for_snapshot(
+                    snapshot_id, reviewer_email=email
+                )
+                for c in existing_completions:
+                    try:
+                        internal_api.delete(f"{_STORAGE_PATH}/{c['id']}")
+                    except requests.exceptions.HTTPError:
+                        pass  # Best-effort cleanup
+                    roles.cache_remove_doc("completion", c.get("id"))
+            except requests.exceptions.HTTPError:
+                pass  # Best-effort cleanup — don't block publish on completion deletion
         written = []
         for email in reviewer_emails:
             chunks = _chunk_rows_for_storage(normalized[email])
