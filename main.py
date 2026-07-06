@@ -809,6 +809,23 @@ def api_shifts_publish():
         return jsonify({"data": {"id": snapshot_id, "published_at": published_at}}), 201
 
     # No active snapshot — create a fresh one.
+    # Clear any old completions for all reviewers so they start with a clean slate.
+    # (This prevents completions from the previous shift from applying to new job IDs.)
+    for email in reviewer_emails:
+        try:
+            # Get completions from ANY snapshot (not limited to existing_snap_id).
+            all_completions = roles.list_docs_by_kind("completion")
+            for c in all_completions:
+                c_data = c.get("data") or {}
+                if (c_data.get("reviewer_email") or "").strip().lower() == email.strip().lower():
+                    try:
+                        internal_api.delete(f"{_STORAGE_PATH}/{c.get('id')}")
+                    except requests.exceptions.HTTPError:
+                        pass
+                    roles.cache_remove_doc("completion", c.get("id"))
+        except Exception:
+            pass  # Best-effort cleanup — don't block publish on completion deletion
+
     index_doc = {
         "kind": "shift_snapshot",
         "published_at": published_at,
