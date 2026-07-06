@@ -673,14 +673,13 @@ def api_shifts_publish():
             continue
         if not isinstance(rows, list):
             continue
-        # Filter out excluded jobs, CF jobs, and empty jobs (no responses to review)
+        # Filter out excluded jobs and empty jobs (no responses to review).
+        # Note: CF (Cloud Factory) jobs are NOT excluded — they may come back from CF
+        # with responses that need review.
         valid_rows = []
         for r in rows:
             job_id = str(r.get("jobId") or r.get("id") or "")
             if job_id in EXCLUDED_JOB_IDS:
-                continue
-            # Skip jobs handled by Cloud Factory (third-party handler).
-            if bloom.is_excluded_client((r.get("extras") or {}).get("client")):
                 continue
             unreviewable = int(r.get("unreviewedCount") or 0)
             total_new = int((r.get("extras") or {}).get("newCount") or 0)
