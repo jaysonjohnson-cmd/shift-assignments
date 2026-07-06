@@ -272,8 +272,18 @@ export default function MyTasksPage() {
   const total = state.rows.length;
   const pct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
 
-  // Check if we're celebrating (all tasks done).
+  // Check if we're celebrating (all tasks done). If so, use a longer delay to let
+  // the confetti show. Otherwise use a faster poll for new assignments.
   const isCelebrating = total > 0 && todo.length === 0;
+  const pollDelay = isCelebrating ? 8000 : 4000;
+
+  // When the queue empties, poll to get auto-refilled assignments.
+  const queueEmpty = !state.loading && state.snapshotId !== null && todo.length === 0;
+  useEffect(() => {
+    if (!queueEmpty) return;
+    const t = window.setTimeout(() => load(), pollDelay);
+    return () => window.clearTimeout(t);
+  }, [queueEmpty, pollDelay, load]);
 
   return (
     <div className="mx-auto w-full max-w-4xl flex-1 px-6 py-8">
@@ -351,7 +361,7 @@ export default function MyTasksPage() {
               {EMPTY_QUEUE_MESSAGES[emptyMsgIdx]}
             </h2>
             <p className="mt-4 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-              Click "Refresh now" or use the Refresh button to check for new assignments.
+              Auto-refreshing every 4 seconds. Reviewed jobs will disappear and new assignments will appear here.
             </p>
             <button
               type="button"
