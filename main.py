@@ -674,11 +674,17 @@ def api_shifts_publish():
         if not isinstance(rows, list):
             continue
         # Filter out excluded jobs and empty jobs (no responses to review)
-        valid_rows = [
-            _compact_row(r) for r in rows
-            if str(r.get("jobId") or r.get("id") or "") not in EXCLUDED_JOB_IDS
-            and (int(r.get("unreviewedCount") or 0) + int(r.get("autoRejected") or 0)) > 0
-        ]
+        valid_rows = []
+        for r in rows:
+            job_id = str(r.get("jobId") or r.get("id") or "")
+            if job_id in EXCLUDED_JOB_IDS:
+                continue
+            unreviewable = int(r.get("unreviewedCount") or 0)
+            total_new = int((r.get("extras") or {}).get("newCount") or 0)
+            auto_rejected = max(0, total_new - unreviewable)
+            total_responses = unreviewable + auto_rejected
+            if total_responses > 0:
+                valid_rows.append(_compact_row(r))
         if valid_rows:
             normalized[key] = valid_rows
 
@@ -1100,7 +1106,10 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         # Skip jobs with no work left (no unreviewed AND no auto-rejected).
         # Assigning a truly empty job would just auto-clear on the reviewer's screen.
         # But jobs with auto-rejected responses still need manual handling.
-        total_responses = int(r.get("unreviewedCount") or 0) + int(r.get("autoRejected") or 0)
+        unreviewable = int(r.get("unreviewedCount") or 0)
+        total_new = int((r.get("extras") or {}).get("newCount") or 0)
+        auto_rejected = max(0, total_new - unreviewable)
+        total_responses = unreviewable + auto_rejected
         if total_responses <= 0:
             continue
         fresh.append(_compact_row(r))
