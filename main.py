@@ -674,8 +674,7 @@ def api_shifts_publish():
         if not isinstance(rows, list):
             continue
         # Filter out excluded jobs and empty jobs (no responses to review).
-        # Note: CF (Cloud Factory) jobs are NOT excluded — they may come back from CF
-        # with responses that need review.
+        # Jobs with responses stuck in CF (0 new, > 0 massReview) are already filtered at the Bloom level.
         valid_rows = []
         for r in rows:
             job_id = str(r.get("jobId") or r.get("id") or "")
@@ -1116,9 +1115,11 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         k = _job_key(r)
         if not k or k in assigned_keys:
             continue
-        # Skip excluded jobs and jobs handled by a third party (Cloud Factory).
-        # These can't be approved here until they come back, so never refill them.
+        # Skip excluded jobs (jobs with responses stuck in CF are already filtered at the Bloom level).
         if str(r.get("jobId") or "") in EXCLUDED_JOB_IDS:
+            continue
+        # Skip jobs from excluded clients (e.g., Menasha handled by Cloud Factory).
+        if bloom.is_excluded_client((r.get("extras") or {}).get("client")):
             continue
         # Skip jobs with no work left (no unreviewed AND no auto-rejected).
         # Assigning a truly empty job would just auto-clear on the reviewer's screen.

@@ -128,7 +128,29 @@
       "Bash(curl -s -w '\\\\n\\(status %{http_code}\\)\\\\n' -H 'Authorization: Bearer __TRACKED_VAR__' http://localhost:8080/api/me)",
       "Bash(git revert *)",
       "Bash(rm -rf frontend)",
-      "Bash(cp -R shift-assignments/out frontend)"
+      "Bash(cp -R shift-assignments/out frontend)",
+      "Bash(command -v node)",
+      "Bash(node --check /tmp/cf_app.js)",
+      "Bash(python3 -m pytest tests/ -q)",
+      "Bash(python3 -c \"import jwt,time;p=jwt.decode\\(open\\('/Users/jaysonjohnson/.storesight/dev-token'\\).read\\(\\).strip\\(\\),options={'verify_signature':False,'verify_aud':False,'verify_exp':False}\\);exp=int\\(p.get\\('exp',0\\)-time.time\\(\\)\\);print\\('token','valid '+str\\(exp//60\\)+'m' if exp>0 else 'EXPIRED'\\)\")",
+      "Bash(python3 -c \"import jwt,time;p=jwt.decode\\(open\\('/Users/jaysonjohnson/.storesight/dev-token'\\).read\\(\\).strip\\(\\),options={'verify_signature':False,'verify_aud':False,'verify_exp':False}\\);exp=int\\(p.get\\('exp',0\\)-time.time\\(\\)\\);print\\('token:', 'valid '+str\\(exp//3600\\)+'h '+str\\(\\(exp%3600\\)//60\\)+'m' if exp>0 else 'EXPIRED'\\)\")",
+      "Bash(xargs kill -9)",
+      "Bash(TOOL_SLUG=cloud-factory-quick-view LOCAL_DEV=1 PORT=8092 python3 main.py)",
+      "Bash(curl -s -m 120 -o /tmp/den.json -w \" time: %{time_total}s\\\\n\" \"http://localhost:8092/api/cf/denials?refresh=1\")",
+      "Bash(TOOL_SLUG=qc-shift-assignments LOCAL_DEV=1 FLASK_DEBUG=1 python3 main.py)",
+      "Bash(curl -s http://localhost:8080/health)",
+      "Bash(pkill -f \"python3 main.py\")",
+      "Bash(curl -s http://localhost:8080/api/me -H \"Authorization: Bearer $\\(cat ~/.storesight/dev-token\\)\")",
+      "Bash(curl -v http://localhost:8080/health)",
+      "Bash(curl -s http://localhost:3000/)",
+      "Bash(python3 -m py_compile main.py)",
+      "Bash(curl -s http://localhost:3000)",
+      "Bash(cat)",
+      "Bash(bash /tmp/test_grayson.sh)",
+      "Bash(JWT_SIGNING_SECRET=test-secret python3 -m pytest tests/ -v)",
+      "Bash(JWT_SIGNING_SECRET=test-secret python3 -m pytest tests/test_finish_ping.py::test_auto_refill_skips_excluded_client -v)",
+      "Bash(JWT_SIGNING_SECRET=test-secret python3 -m pytest tests/test_bloom_routes.py::test_publish_then_latest_round_trip -v)",
+      "Bash(JWT_SIGNING_SECRET=test-secret python3 -m pytest tests/test_finish_ping.py -v)"
     ]
   }
 }

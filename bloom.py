@@ -212,6 +212,8 @@ def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True):
     A 60-second in-process cache keeps the Internal-API rate limit headroom
     comfortable. The `status` parameter is kept for backward compatibility but
     unused (the API only returns jobs with new submissions).
+
+    Excludes jobs from clients handled by a third party (Cloud Factory).
     """
     now = time.time()
     if use_cache and _CACHE["rows"] and (now - _CACHE["fetched_at"]) < _CACHE_TTL_SECONDS:
@@ -220,10 +222,13 @@ def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True):
     jobs = _fetch_prioritized_jobs_raw()
     # Defensive: skip malformed records with no job id — they can't be assigned
     # or completed, and would render as blank rows in the UI.
+    # Skip jobs with 0 "new" but > 0 "massReview" — these responses are pending in CF
+    # and we can't work on them until CF sends them back.
     rows = [
         _row_from_api(job)
         for job in jobs
         if isinstance(job, dict) and job.get("id") not in (None, "")
+        and not (int(job.get("new") or 0) == 0 and int(job.get("massReview") or 0) > 0)
     ]
 
     # Skip project name fetching on cache misses to reduce rate limit pressure.
