@@ -1120,8 +1120,6 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         # These can't be approved here until they come back, so never refill them.
         if str(r.get("jobId") or "") in EXCLUDED_JOB_IDS:
             continue
-        if bloom.is_excluded_client((r.get("extras") or {}).get("client")):
-            continue
         # Skip jobs with no work left (no unreviewed AND no auto-rejected).
         # Assigning a truly empty job would just auto-clear on the reviewer's screen.
         # But jobs with auto-rejected responses still need manual handling.
