@@ -222,10 +222,13 @@ def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True):
     jobs = _fetch_prioritized_jobs_raw()
     # Defensive: skip malformed records with no job id — they can't be assigned
     # or completed, and would render as blank rows in the UI.
+    # Skip jobs with no responses anywhere (new=0 AND massReview=0) — these are
+    # waiting for CF to send responses back and have nothing to review yet.
     rows = [
         _row_from_api(job)
         for job in jobs
         if isinstance(job, dict) and job.get("id") not in (None, "")
+        and not (int(job.get("new") or 0) == 0 and int(job.get("massReview") or 0) == 0)
     ]
 
     # Skip project name fetching on cache misses to reduce rate limit pressure.
