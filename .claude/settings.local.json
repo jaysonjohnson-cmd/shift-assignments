@@ -150,7 +150,11 @@
       "Bash(JWT_SIGNING_SECRET=test-secret python3 -m pytest tests/ -v)",
       "Bash(JWT_SIGNING_SECRET=test-secret python3 -m pytest tests/test_finish_ping.py::test_auto_refill_skips_excluded_client -v)",
       "Bash(JWT_SIGNING_SECRET=test-secret python3 -m pytest tests/test_bloom_routes.py::test_publish_then_latest_round_trip -v)",
-      "Bash(JWT_SIGNING_SECRET=test-secret python3 -m pytest tests/test_finish_ping.py -v)"
+      "Bash(JWT_SIGNING_SECRET=test-secret python3 -m pytest tests/test_finish_ping.py -v)",
+      "Bash(npx tsx -e ' *)",
+      "Bash(rm -f /tmp/test_assign.mjs)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('main.py'\\).read\\(\\)\\)\")",
+      "Bash(node -e ' *)"
     ]
   }
 }

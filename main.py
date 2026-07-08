@@ -580,9 +580,15 @@ def _refresh_sub_ages_bg():
                 if rg_rows:
                     sub_date = rg_rows[0].get("submission_date", "")
                     if sub_date:
-                        parsed = datetime.datetime.strptime(sub_date, "%a, %d %b %Y %H:%M:%S %Z")
+                        # Bloom returns GMT (UTC) timestamps. Keep the full instant —
+                        # truncating to a bare date here and re-anchoring it to
+                        # midnight on the frontend was making "days old" drift by
+                        # up to a day depending on what time it is when you look.
+                        parsed = datetime.datetime.strptime(
+                            sub_date, "%a, %d %b %Y %H:%M:%S %Z"
+                        ).replace(tzinfo=datetime.timezone.utc)
                         with _SUB_AGES_LOCK:
-                            _SUB_AGES_CACHE["data"][str(job_id)] = parsed.strftime("%Y-%m-%d")
+                            _SUB_AGES_CACHE["data"][str(job_id)] = parsed.isoformat()
             except Exception as exc:
                 logging.debug("submission-ages: job %s failed: %s", job_id, exc)
             time.sleep(1.1)  # ~54 calls/min — safely under 60 req/min limit

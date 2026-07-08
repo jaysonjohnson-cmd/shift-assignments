@@ -175,18 +175,6 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
         sortedJobs.sort((a, b) => (b.unreviewedCount ?? 0) - (a.unreviewedCount ?? 0));
       }
 
-      // Group jobs by priority (higher number = higher priority, but we sort ascending)
-      const jobsByPriority: Record<number, Row[]> = {};
-      for (const row of sortedJobs) {
-        const priority = row.priority ?? 999;
-        (jobsByPriority[priority] ??= []).push(row);
-      }
-
-      // Process each priority level, distributing with weighted balancing
-      const priorityLevels = Object.keys(jobsByPriority)
-        .map(Number)
-        .sort((a, b) => a - b);
-
       // Track total response count assigned to each reviewer (for response-aware distribution)
       const responseCountByReviewer = new Map<string, number>();
       for (const slot of activeSlots) {
@@ -197,54 +185,83 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
         responseCountByReviewer.set(slot.reviewerId, pinnedCount);
       }
 
-      for (const priority of priorityLevels) {
-        const jobsAtPriority = jobsByPriority[priority];
+      const placeRow = (row: Row) => {
+        let bestReviewer: string | null = null;
+        // balanceByResponses picks the lowest metric (start high); the
+        // default path picks the highest remaining/capacity ratio (start
+        // low). A single Infinity init left the default path dead — no
+        // ratio is > Infinity — so it never assigned unpinned jobs.
+        let bestMetric = balanceByResponses ? Infinity : -Infinity;
 
-        for (const row of jobsAtPriority) {
-          let bestReviewer: string | null = null;
-          // balanceByResponses picks the lowest metric (start high); the
-          // default path picks the highest remaining/capacity ratio (start
-          // low). A single Infinity init left the default path dead — no
-          // ratio is > Infinity — so it never assigned unpinned jobs.
-          let bestMetric = balanceByResponses ? Infinity : -Infinity;
+        for (const slot of activeSlots) {
+          const remaining = unpinnedNeeded[slot.reviewerId] ?? 0;
+          if (remaining <= 0) continue;
 
-          for (const slot of activeSlots) {
-            const remaining = unpinnedNeeded[slot.reviewerId] ?? 0;
-            if (remaining <= 0) continue;
+          const capacity = capacityWeights.get(slot.reviewerId) ?? 1;
 
-            const capacity = capacityWeights.get(slot.reviewerId) ?? 1;
+          if (balanceByResponses) {
+            // Response-aware: balance by total unreviewedCount, not just job count
+            // Assign to reviewer with lowest current response load relative to capacity
+            const currentResponseCount = responseCountByReviewer.get(slot.reviewerId) ?? 0;
+            const metric = currentResponseCount / capacity;
 
-            if (balanceByResponses) {
-              // Response-aware: balance by total unreviewedCount, not just job count
-              // Assign to reviewer with lowest current response load relative to capacity
-              const currentResponseCount = responseCountByReviewer.get(slot.reviewerId) ?? 0;
-              const avgResponsesPerJob = currentResponseCount / Math.max(1, (assignments[slot.reviewerId]?.length ?? 0));
-              const metric = currentResponseCount / capacity;
-
-              if (metric < bestMetric) {
-                bestMetric = metric;
-                bestReviewer = slot.reviewerId;
-              }
-            } else {
-              // Original: balance by job count and capacity ratio
-              const capacityRatio = remaining / capacity;
-              if (capacityRatio > bestMetric) {
-                bestMetric = capacityRatio;
-                bestReviewer = slot.reviewerId;
-              }
+            if (metric < bestMetric) {
+              bestMetric = metric;
+              bestReviewer = slot.reviewerId;
+            }
+          } else {
+            // Original: balance by job count and capacity ratio
+            const capacityRatio = remaining / capacity;
+            if (capacityRatio > bestMetric) {
+              bestMetric = capacityRatio;
+              bestReviewer = slot.reviewerId;
             }
           }
+        }
 
-          if (bestReviewer) {
-            assignments[bestReviewer].push(row);
-            unpinnedNeeded[bestReviewer]--;
+        if (bestReviewer) {
+          assignments[bestReviewer].push(row);
+          unpinnedNeeded[bestReviewer]--;
 
-            // Update response count tracker if balancing by responses
-            if (balanceByResponses) {
-              const currentCount = responseCountByReviewer.get(bestReviewer) ?? 0;
-              responseCountByReviewer.set(bestReviewer, currentCount + (row.unreviewedCount ?? 0));
-            }
+          // Update response count tracker if balancing by responses
+          if (balanceByResponses) {
+            const currentCount = responseCountByReviewer.get(bestReviewer) ?? 0;
+            responseCountByReviewer.set(bestReviewer, currentCount + (row.unreviewedCount ?? 0));
           }
+        }
+      };
+
+      if (balanceByResponses) {
+        // Priority still decides which jobs make the cut when this tier has
+        // more jobs than remaining capacity — the top-priority ones by
+        // priority order are the ones guaranteed a slot, same as the
+        // job-count path below. But WHO gets each of those jobs is decided in
+        // one flat pass over the whole tier, heaviest job first. Segmenting
+        // that decision by priority (as the job-count path does) let a
+        // reviewer's quota fill up entirely during an early, often
+        // low-response priority group — locking them out before the
+        // high-response jobs in a later group were even considered, so every
+        // one of those dumped onto whoever still had open slots.
+        const totalCapacity = Object.values(unpinnedNeeded).reduce((a, b) => a + b, 0);
+        const byPriority = [...sortedJobs].sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999));
+        const toPlace = new Set(byPriority.slice(0, totalCapacity));
+        for (const row of sortedJobs) {
+          if (toPlace.has(row)) placeRow(row);
+        }
+      } else {
+        // Group jobs by priority (lower number = more urgent) and process
+        // each level in order, so higher-priority jobs are the last to be
+        // left over when this tier doesn't fully fit.
+        const jobsByPriority: Record<number, Row[]> = {};
+        for (const row of sortedJobs) {
+          const priority = row.priority ?? 999;
+          (jobsByPriority[priority] ??= []).push(row);
+        }
+        const priorityLevels = Object.keys(jobsByPriority)
+          .map(Number)
+          .sort((a, b) => a - b);
+        for (const priority of priorityLevels) {
+          for (const row of jobsByPriority[priority]) placeRow(row);
         }
       }
     };
