@@ -136,6 +136,14 @@ export async function deleteLead(id: string): Promise<void> {
   await call<{ data: { id: string } }>("DELETE", `/api/leads/${id}`);
 }
 
+export async function syncTeamScheduler(): Promise<{ synced: number; total: number }> {
+  const resp = await call<{ synced: number; total: number }>(
+    "POST",
+    "/api/sync/team-scheduler",
+  );
+  return resp;
+}
+
 // ---------- Bloom feed + shift snapshots + My Tasks ----------
 
 export async function getSubmissionAges(): Promise<{ data: Record<string, string>; loading: boolean }> {

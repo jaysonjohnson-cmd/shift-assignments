@@ -11,6 +11,7 @@ import {
   listAdmins,
   listLeads,
   listReviewers,
+  syncTeamScheduler,
   updateReviewer,
   type Admin,
   type Lead,
@@ -155,6 +156,9 @@ export default function SettingsPage() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<{ synced: number; total: number } | null>(null);
+  const [syncErr, setSyncErr] = useState<string | null>(null);
 
   const isAdmin = role === "admin";
 
@@ -216,6 +220,21 @@ export default function SettingsPage() {
     setLeads(leads.filter((l) => l.id !== id));
   };
 
+  const handleSync = async () => {
+    setSyncing(true);
+    setSyncErr(null);
+    setSyncResult(null);
+    try {
+      const result = await syncTeamScheduler();
+      setSyncResult(result);
+      await refresh();
+    } catch (e) {
+      setSyncErr(e instanceof Error ? e.message : "Sync failed");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   return (
     <div className="mx-auto w-full max-w-4xl flex-1 px-6 py-10">
       <div className="mb-6">
@@ -236,6 +255,38 @@ export default function SettingsPage() {
           </p>
         )}
       </div>
+
+      {/* ---------------- Sync Team Scheduler ---------------- */}
+      {isAdmin && (
+        <section className="mb-8 overflow-hidden rounded-2xl border border-storesight-border bg-storesight-surface shadow-sm dark:border-storesight-border-dark dark:bg-storesight-surface-dark">
+          <div className="h-1 w-full bg-storesight-primary/70 dark:bg-storesight-primary" />
+          <div className="p-5">
+            <h2 className="mb-1 text-base font-semibold text-storesight-ink dark:text-storesight-ink-dark">
+              Sync Team Scheduler
+            </h2>
+            <p className="mb-4 text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+              Import your Team Scheduler roster as reviewers in this tool. Only new members will be added.
+            </p>
+            <button
+              onClick={handleSync}
+              disabled={!isAdmin || syncing}
+              className="rounded-lg border border-storesight-accent bg-storesight-accent px-4 py-2 text-sm font-medium text-white transition hover:bg-storesight-primary disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {syncing ? "Syncing…" : "Sync Team Scheduler"}
+            </button>
+            {syncResult && (
+              <p className="mt-3 rounded-lg border border-storesight-mint/40 bg-storesight-mint/10 px-3 py-2 text-xs text-emerald-700 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-300">
+                ✓ Synced {syncResult.synced} new reviewer{syncResult.synced !== 1 ? "s" : ""} from {syncResult.total} total members
+              </p>
+            )}
+            {syncErr && (
+              <p className="mt-3 rounded-lg border border-storesight-hot-pink/40 bg-storesight-hot-pink/10 px-3 py-2 text-xs text-storesight-hot-pink">
+                {syncErr}
+              </p>
+            )}
+          </div>
+        </section>
+      )}
 
       {/* ---------------- Reviewers ---------------- */}
       <section className="mb-8 overflow-hidden rounded-2xl border border-storesight-border bg-storesight-surface shadow-sm dark:border-storesight-border-dark dark:bg-storesight-surface-dark">

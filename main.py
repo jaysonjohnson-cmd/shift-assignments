@@ -19,6 +19,8 @@ import roles
 
 logging.basicConfig(level=logging.INFO)
 
+TEAM_SCHEDULER_URL = os.environ.get("TEAM_SCHEDULER_URL", "")
+
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
@@ -397,6 +399,42 @@ def api_leads_delete(doc_id):
     return jsonify({"data": {"id": doc_id}})
 
 
+# ---------- API: Sync Team Scheduler ----------
+
+@app.route("/api/sync/team-scheduler", methods=["POST"])
+def api_sync_team_scheduler():
+    denied = _require_admin()
+    if denied is not None:
+        return denied
+    try:
+        if not TEAM_SCHEDULER_URL:
+            return jsonify({"error": "Team Scheduler URL not configured (set TEAM_SCHEDULER_URL env var)"}), 503
+
+        url = f"{TEAM_SCHEDULER_URL}/api/members/export?team=default"
+        token = request.cookies.get("storesight_session")
+        headers = {"Cookie": f"storesight_session={token}"} if token else {}
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+
+        members = resp.json().get("members", [])
+        existing = {r["email"] for r in roles.list_reviewers()}
+        synced = 0
+        for member in members:
+            email = (member.get("email") or "").strip().lower()
+            name = member.get("name", "").strip()
+            if email and email not in existing:
+                roles.create_record("reviewer", name, email)
+                synced += 1
+        logging.info("POST /api/sync/team-scheduler by=%s synced=%d", g.user.get("email"), synced)
+        return jsonify({"synced": synced, "total": len(members)})
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 500
+        return jsonify({"error": f"team scheduler api returned {status}"}), status
+    except Exception as e:
+        logging.error("Sync failed: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 # ---------- API: Bloom feed + published shift snapshots ----------
 
 
@@ -651,6 +689,18 @@ def _try_delete(doc_id):
         logging.warning("rollback delete failed for doc_id=%s", doc_id)
 
 
+def _delete_docs_bg(doc_ids):
+    """Delete a batch of Storage docs off the request path.
+
+    Used for cleanup that's already reflected in the warm cache (so reads are
+    correct immediately) and only needs to happen in Storage eventually —
+    e.g. stale completions cleared on republish. Runs sequentially so it
+    shares the 60 req/min Storage limit gracefully instead of bursting it.
+    """
+    for doc_id in doc_ids:
+        _try_delete(doc_id)
+
+
 @app.route("/api/shifts/publish", methods=["POST"])
 def api_shifts_publish():
     """Admin publishes a shift.
@@ -759,20 +809,30 @@ def api_shifts_publish():
 
         # Write new reviewer_shift docs under the existing snapshot.
         snapshot_id = existing_snap_id
-        # Clear old completions for reviewers being republished (so they start fresh)
+        # Clear old completions for reviewers being republished (so they start
+        # fresh). Drop them from the warm cache immediately (in-memory, no
+        # network call) so every read reflects the reset right away, then
+        # delete the actual Storage docs in the background — this can be
+        # dozens of individual DELETE calls sharing the 60 req/min Storage
+        # limit, and doing that synchronously here was what made publish take
+        # minutes when a reviewer had a long completion history.
+        stale_completion_ids = []
         for email in reviewer_emails:
             try:
                 existing_completions = _list_completions_for_snapshot(
                     snapshot_id, reviewer_email=email
                 )
                 for c in existing_completions:
-                    try:
-                        internal_api.delete(f"{_STORAGE_PATH}/{c['id']}")
-                    except requests.exceptions.HTTPError:
-                        pass  # Best-effort cleanup
                     roles.cache_remove_doc("completion", c.get("id"))
+                    if c.get("id"):
+                        stale_completion_ids.append(c["id"])
             except requests.exceptions.HTTPError:
-                pass  # Best-effort cleanup — don't block publish on completion deletion
+                pass  # Best-effort cleanup — don't block publish on completion lookup
+        if stale_completion_ids:
+            threading.Thread(
+                target=_delete_docs_bg, args=(stale_completion_ids,),
+                daemon=True, name="publish-completion-cleanup",
+            ).start()
         written = []
         for email in reviewer_emails:
             chunks = _chunk_rows_for_storage(normalized[email])
