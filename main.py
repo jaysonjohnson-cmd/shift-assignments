@@ -402,6 +402,170 @@ def api_leads_delete(doc_id):
     return jsonify({"data": {"id": doc_id}})
 
 
+# ---------- API: Auto-publish shifts ----------
+
+def _distribute_evenly(rows, reviewers):
+    """Distribute rows evenly across reviewers.
+
+    Returns {reviewer_email: [rows]} with jobs split as evenly as possible.
+    Jobs are distributed round-robin to spread load fairly.
+    """
+    if not reviewers or not rows:
+        return {r: [] for r in reviewers}
+
+    assignments = {r: [] for r in reviewers}
+    for i, row in enumerate(rows):
+        reviewer = reviewers[i % len(reviewers)]
+        assignments[reviewer].append(row)
+
+    return assignments
+
+
+@app.route("/api/shifts/auto-publish", methods=["POST"])
+def api_shifts_auto_publish():
+    """Automatically create and publish a shift.
+
+    Fetches jobs from Bloom, distributes evenly to all active reviewers,
+    and publishes the shift. Can be called on a schedule via Cloud Scheduler.
+
+    Requires a bearer token or dev auth (anyone can trigger, but it's safe
+    to make public since it just publishes to existing reviewers).
+    """
+    # Auth is required by the @app.before_request middleware
+    try:
+        # Fetch jobs from Bloom
+        rows = bloom.fetch_prioritized_jobs(status=bloom.DEFAULT_STATUS)
+        if not rows:
+            return jsonify({"error": "no jobs available to publish"}), 400
+
+        # Get active reviewers
+        active_reviewers = [r["email"] for r in roles.list_reviewers()]
+        if not active_reviewers:
+            return jsonify({"error": "no reviewers configured"}), 400
+
+        # Distribute evenly
+        assignments = _distribute_evenly(rows, active_reviewers)
+
+        # Publish using the existing publish logic
+        # Simulate the request body
+        normalized = {}
+        for email, job_rows in assignments.items():
+            key = (email or "").strip().lower()
+            if not key:
+                continue
+            valid_rows = []
+            for r in job_rows:
+                job_id = str(r.get("jobId") or r.get("id") or "")
+                if job_id in EXCLUDED_JOB_IDS:
+                    continue
+                unreviewable = int(r.get("unreviewedCount") or 0)
+                total_new = int((r.get("extras") or {}).get("newCount") or 0)
+                auto_rejected = max(0, total_new - unreviewable)
+                total_responses = unreviewable + auto_rejected
+                if total_responses > 0:
+                    valid_rows.append(_compact_row(r))
+            if valid_rows:
+                normalized[key] = valid_rows
+
+        if not normalized:
+            return jsonify({"error": "no valid jobs to assign"}), 400
+
+        # Dedup across reviewers
+        seen_job_keys = set()
+        reviewer_emails = sorted(normalized.keys())
+        for email in reviewer_emails:
+            deduped = []
+            for r in normalized[email]:
+                jk = str(r.get("jobId") or r.get("id") or "")
+                if not jk or jk not in seen_job_keys:
+                    deduped.append(r)
+                    if jk:
+                        seen_job_keys.add(jk)
+            normalized[email] = deduped
+
+        published_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        published_by = "auto-scheduler"
+
+        try:
+            existing_snap_id, existing_snap_data = _latest_snapshot()
+        except requests.exceptions.HTTPError:
+            existing_snap_id, existing_snap_data = None, None
+
+        if existing_snap_id:
+            try:
+                all_shift_docs = roles.list_docs_by_kind("reviewer_shift")
+            except requests.exceptions.HTTPError:
+                all_shift_docs = []
+
+            retained_keys = set()
+            for doc in all_shift_docs:
+                doc_data = doc.get("data") or {}
+                if doc_data.get("shift_snapshot_id") != existing_snap_id:
+                    continue
+                if (doc_data.get("reviewer_email") or "").strip().lower() in normalized:
+                    _try_delete(doc.get("id"))
+                else:
+                    for r in doc_data.get("rows") or []:
+                        jk = str(r.get("jobId") or r.get("id") or "")
+                        if jk:
+                            retained_keys.add(jk)
+
+            if retained_keys:
+                for email in reviewer_emails:
+                    normalized[email] = [
+                        r for r in normalized[email]
+                        if str(r.get("jobId") or r.get("id") or "") not in retained_keys
+                    ]
+
+        snapshot_data = {
+            "kind": "shift_snapshot",
+            "published_at": published_at,
+            "published_by": published_by,
+            "reviewer_emails": list(normalized.keys()),
+        }
+
+        snap_resp = internal_api.post(_STORAGE_PATH, json={"data": snapshot_data})
+        snapshot_id = snap_resp["data"]["id"]
+
+        # Write reviewer_shift docs
+        for email, rows in normalized.items():
+            chunks = _chunk_rows_for_storage(rows)
+            for part_num, chunk in enumerate(chunks):
+                doc = {
+                    "kind": "reviewer_shift",
+                    "shift_snapshot_id": snapshot_id,
+                    "reviewer_email": email,
+                    "part": part_num,
+                    "total_parts": len(chunks),
+                    "rows": chunk,
+                }
+                try:
+                    internal_api.post(_STORAGE_PATH, json={"data": doc})
+                except requests.exceptions.HTTPError as e:
+                    roles.invalidate_doc_cache()
+                    return _http_error_response(e)
+
+        roles.invalidate_doc_cache()
+
+        synced_count = sum(len(rows) for rows in normalized.values())
+        logging.info(
+            "POST /api/shifts/auto-publish published=%s assigned=%d",
+            snapshot_id, synced_count,
+        )
+        return jsonify({
+            "snapshot_id": snapshot_id,
+            "published_at": published_at,
+            "assigned_jobs": synced_count,
+            "reviewer_count": len(normalized),
+        })
+
+    except requests.exceptions.HTTPError as e:
+        return _http_error_response(e)
+    except Exception as e:
+        logging.error("Auto-publish failed: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 # ---------- API: Sync Team Scheduler ----------
 
 @app.route("/api/sync/team-scheduler", methods=["POST"])
