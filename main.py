@@ -19,14 +19,17 @@ import roles
 
 logging.basicConfig(level=logging.INFO)
 
-TEAM_SCHEDULER_URL = os.environ.get("TEAM_SCHEDULER_URL", "")
-
-app = Flask(__name__)
-app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
-
 JWT_SECRET = os.environ.get("JWT_SIGNING_SECRET", "")
 AUTH_SERVICE_URL = "https://auth-service.storesight.org"
 LOCAL_DEV = os.environ.get("LOCAL_DEV") == "1"
+
+TEAM_SCHEDULER_URL = (
+    "http://localhost:8081" if LOCAL_DEV
+    else "https://team-scheduler.storesight.org"
+)
+
+app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
 # Job IDs to exclude from assignment (do not assign to reviewers)
 EXCLUDED_JOB_IDS = {
@@ -407,9 +410,6 @@ def api_sync_team_scheduler():
     if denied is not None:
         return denied
     try:
-        if not TEAM_SCHEDULER_URL:
-            return jsonify({"error": "Team Scheduler URL not configured (set TEAM_SCHEDULER_URL env var)"}), 503
-
         url = f"{TEAM_SCHEDULER_URL}/api/members/export?team=default"
         token = request.cookies.get("storesight_session")
         headers = {"Cookie": f"storesight_session={token}"} if token else {}
