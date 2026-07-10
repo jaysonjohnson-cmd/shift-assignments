@@ -219,12 +219,23 @@ export function AssignMenu({
               disabled={busy}
             />
             <Tile
+              title={busy ? "Publishing…" : "Auto-publish Now"}
+              description="Fetch jobs and distribute to scheduled reviewers automatically."
+              icon={SunIcon}
+              accent="from-storesight-accent/10 to-storesight-primary/10"
+              onClick={handleAutoPublish}
+              disabled={busy}
+            />
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <Tile
               title="View Current Assignments"
               description="Live check-in — who's on shift and how far they've gotten."
               icon={ChartIcon}
               accent="from-storesight-sky/40 to-storesight-sky/15"
               onClick={() => onStart({ kind: "overview" })}
             />
+            <ProgressTrackerTile onClick={handleProgressClick} disabled={busy} />
             <Tile
               title="Clear tasks"
               description="Wipe active, completed, or both across every reviewer's queue."
@@ -234,17 +245,6 @@ export function AssignMenu({
               disabled={busy}
               danger
             />
-          </div>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <Tile
-              title={busy ? "Publishing…" : "Auto-publish Now"}
-              description="Fetch jobs and distribute evenly to all reviewers in one click."
-              icon={SunIcon}
-              accent="from-storesight-accent/10 to-storesight-primary/10"
-              onClick={handleAutoPublish}
-              disabled={busy}
-            />
-            <ProgressTrackerTile onClick={handleProgressClick} disabled={busy} />
           </div>
         </div>
       ) : (
