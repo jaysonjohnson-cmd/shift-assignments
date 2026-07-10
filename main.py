@@ -404,11 +404,15 @@ def api_leads_delete(doc_id):
 
 # ---------- API: Auto-publish shifts ----------
 
-def _get_todays_scheduled_reviewers():
+def _get_todays_scheduled_reviewers(shift_time=None):
     """Fetch reviewers scheduled to work today from Team Scheduler.
 
-    Returns a list of reviewer emails who have shifts today.
-    Falls back to all active reviewers if Team Scheduler is unavailable.
+    Args:
+        shift_time: Optional shift time filter (e.g., "8:30 AM", "1:00 PM").
+                   If provided, only returns reviewers with shifts matching that time.
+
+    Returns a list of reviewer emails who have shifts today (optionally filtered by time).
+    Falls back to all active reviewers if Team Scheduler is unavailable or time doesn't match.
     """
     try:
         import datetime as dt
@@ -428,8 +432,9 @@ def _get_todays_scheduled_reviewers():
         week_data = resp.json()
         members = week_data.get("members", [])
         schedule = week_data.get("schedule", {})
+        shift_types = week_data.get("shiftTypes", [])
 
-        # Find which members have shifts today
+        # Find which members have shifts today (optionally filtered by shift time)
         day_of_week = today.weekday()  # 0=Mon, 6=Sun
         day_key = f"day{day_of_week}"
 
@@ -439,6 +444,23 @@ def _get_todays_scheduled_reviewers():
             if member_id in schedule:
                 shifts = schedule[member_id].get(day_key, [])
                 if shifts:  # Has a shift today
+                    # If shift_time filter provided, check if any shift matches
+                    if shift_time:
+                        matched = False
+                        for shift in shifts:
+                            shift_id = shift.get("shift")
+                            if shift_id:
+                                # Find shift type and check its label
+                                shift_type = next(
+                                    (st for st in shift_types if st.get("id") == shift_id),
+                                    None
+                                )
+                                if shift_type and shift_type.get("label") == shift_time:
+                                    matched = True
+                                    break
+                        if not matched:
+                            continue
+
                     email = member.get("email", "").strip().lower()
                     if email:
                         scheduled_emails.append(email)
@@ -475,25 +497,34 @@ def api_shifts_auto_publish():
     Team Scheduler, and publishes the shift. Can be called on a schedule via
     Cloud Scheduler.
 
+    Query parameters:
+        shift_time: Optional shift time filter (e.g., "8:30 AM", "1:00 PM").
+                   Only assigns to reviewers with shifts at that time.
+
     Requires a bearer token or dev auth (anyone can trigger, but it's safe
     to make public since it just publishes to existing reviewers).
     """
     # Auth is required by the @app.before_request middleware
     try:
+        # Get shift_time filter from query params
+        shift_time = request.args.get("shift_time") or None
+
         # Fetch jobs from Bloom
         rows = bloom.fetch_prioritized_jobs(status=bloom.DEFAULT_STATUS)
         if not rows:
             return jsonify({"error": "no jobs available to publish"}), 400
 
-        # Get today's scheduled reviewers from Team Scheduler
-        scheduled = _get_todays_scheduled_reviewers()
+        # Get today's scheduled reviewers from Team Scheduler (optionally filtered by shift time)
+        scheduled = _get_todays_scheduled_reviewers(shift_time=shift_time)
         if scheduled:
             assigned_reviewers = scheduled
-            logging.info("Auto-publish: using %d reviewers scheduled today", len(assigned_reviewers))
+            time_label = f" at {shift_time}" if shift_time else ""
+            logging.info("Auto-publish: using %d reviewers scheduled today%s", len(assigned_reviewers), time_label)
         else:
             # Fallback: use all active reviewers if Team Scheduler unavailable
             assigned_reviewers = [r["email"] for r in roles.list_reviewers()]
-            logging.info("Auto-publish: Team Scheduler unavailable, using all %d active reviewers", len(assigned_reviewers))
+            time_label = f" at {shift_time}" if shift_time else ""
+            logging.info("Auto-publish: Team Scheduler unavailable, using all %d active reviewers%s", len(assigned_reviewers), time_label)
 
         if not assigned_reviewers:
             return jsonify({"error": "no reviewers scheduled today"}), 400
