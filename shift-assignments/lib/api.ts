@@ -181,6 +181,14 @@ export async function publishShift(
   return resp.data;
 }
 
+export async function autoPublishShift(): Promise<{ snapshot_id: string; assigned_jobs: number; reviewer_count: number; published_at: string }> {
+  const resp = await call<{ snapshot_id: string; assigned_jobs: number; reviewer_count: number; published_at: string }>(
+    "POST",
+    "/api/shifts/auto-publish",
+  );
+  return resp;
+}
+
 export async function getLatestShift(): Promise<ShiftSnapshot | null> {
   const resp = await call<{ data: ShiftSnapshot | null }>(
     "GET",

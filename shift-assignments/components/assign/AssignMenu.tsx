@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useStore } from "@/lib/store";
-import { clearShift, getBloomJobs, type ClearMode } from "@/lib/api";
+import { clearShift, getBloomJobs, autoPublishShift, type ClearMode } from "@/lib/api";
 import { formatRelative } from "@/lib/relativeTime";
 import { TeamProgressDashboard } from "./TeamProgressDashboard";
 import { ProgressTrackerTile } from "./ProgressTrackerTile";
@@ -141,6 +141,20 @@ export function AssignMenu({
     dashboardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
+  const handleAutoPublish = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await autoPublishShift();
+      setToast(`Published ${result.assigned_jobs} jobs to ${result.reviewer_count} reviewers`);
+      setTimeout(() => setToast(null), 4000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Auto-publish failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="mx-auto w-full max-w-6xl flex-1 px-6 py-10">
       <header className="mb-8">
@@ -222,6 +236,14 @@ export function AssignMenu({
             />
           </div>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <Tile
+              title={busy ? "Publishing…" : "Auto-publish Now"}
+              description="Fetch jobs and distribute evenly to all reviewers in one click."
+              icon={SunIcon}
+              accent="from-storesight-accent/10 to-storesight-primary/10"
+              onClick={handleAutoPublish}
+              disabled={busy}
+            />
             <ProgressTrackerTile onClick={handleProgressClick} disabled={busy} />
           </div>
         </div>
