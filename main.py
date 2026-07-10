@@ -404,6 +404,52 @@ def api_leads_delete(doc_id):
 
 # ---------- API: Auto-publish shifts ----------
 
+def _get_todays_scheduled_reviewers():
+    """Fetch reviewers scheduled to work today from Team Scheduler.
+
+    Returns a list of reviewer emails who have shifts today.
+    Falls back to all active reviewers if Team Scheduler is unavailable.
+    """
+    try:
+        import datetime as dt
+
+        # Get today's date in YYYY-MM-DD format (Monday of the week)
+        today = dt.date.today()
+        monday = today - dt.timedelta(days=today.weekday())
+        week_key = monday.isoformat()
+
+        # Fetch this week's schedule from Team Scheduler
+        url = f"{TEAM_SCHEDULER_URL}/api/week/{week_key}?team=default"
+        token = request.cookies.get("storesight_session")
+        headers = {"Cookie": f"storesight_session={token}"} if token else {}
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+
+        week_data = resp.json()
+        members = week_data.get("members", [])
+        schedule = week_data.get("schedule", {})
+
+        # Find which members have shifts today
+        day_of_week = today.weekday()  # 0=Mon, 6=Sun
+        day_key = f"day{day_of_week}"
+
+        scheduled_emails = []
+        for member in members:
+            member_id = member.get("id")
+            if member_id in schedule:
+                shifts = schedule[member_id].get(day_key, [])
+                if shifts:  # Has a shift today
+                    email = member.get("email", "").strip().lower()
+                    if email:
+                        scheduled_emails.append(email)
+
+        return scheduled_emails if scheduled_emails else None
+
+    except Exception as e:
+        logging.warning("Failed to get today's scheduled reviewers: %s", e)
+        return None
+
+
 def _distribute_evenly(rows, reviewers):
     """Distribute rows evenly across reviewers.
 
@@ -425,8 +471,9 @@ def _distribute_evenly(rows, reviewers):
 def api_shifts_auto_publish():
     """Automatically create and publish a shift.
 
-    Fetches jobs from Bloom, distributes evenly to all active reviewers,
-    and publishes the shift. Can be called on a schedule via Cloud Scheduler.
+    Fetches jobs from Bloom, distributes to today's scheduled reviewers from
+    Team Scheduler, and publishes the shift. Can be called on a schedule via
+    Cloud Scheduler.
 
     Requires a bearer token or dev auth (anyone can trigger, but it's safe
     to make public since it just publishes to existing reviewers).
@@ -438,13 +485,21 @@ def api_shifts_auto_publish():
         if not rows:
             return jsonify({"error": "no jobs available to publish"}), 400
 
-        # Get active reviewers
-        active_reviewers = [r["email"] for r in roles.list_reviewers()]
-        if not active_reviewers:
-            return jsonify({"error": "no reviewers configured"}), 400
+        # Get today's scheduled reviewers from Team Scheduler
+        scheduled = _get_todays_scheduled_reviewers()
+        if scheduled:
+            assigned_reviewers = scheduled
+            logging.info("Auto-publish: using %d reviewers scheduled today", len(assigned_reviewers))
+        else:
+            # Fallback: use all active reviewers if Team Scheduler unavailable
+            assigned_reviewers = [r["email"] for r in roles.list_reviewers()]
+            logging.info("Auto-publish: Team Scheduler unavailable, using all %d active reviewers", len(assigned_reviewers))
 
-        # Distribute evenly
-        assignments = _distribute_evenly(rows, active_reviewers)
+        if not assigned_reviewers:
+            return jsonify({"error": "no reviewers scheduled today"}), 400
+
+        # Distribute evenly to scheduled reviewers
+        assignments = _distribute_evenly(rows, assigned_reviewers)
 
         # Publish using the existing publish logic
         # Simulate the request body
