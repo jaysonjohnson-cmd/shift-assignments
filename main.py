@@ -29,31 +29,13 @@ TEAM_SCHEDULER_URL = (
 )
 
 
-def _get_slack_channel():
-    """Get the Slack channel ID from Team Scheduler config."""
-    try:
-        url = f"{TEAM_SCHEDULER_URL}/api/config?team=default"
-        token = request.cookies.get("storesight_session")
-        headers = {"Cookie": f"storesight_session={token}"} if token else {}
-        resp = requests.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()
-        config = resp.json()
-        return config.get("slackChannel")
-    except Exception as e:
-        logging.warning("Failed to get Slack channel: %s", e)
-        return None
-
-
 def _send_slack_notification(text):
-    """Send a message to the configured Slack channel."""
-    channel = _get_slack_channel()
-    if not channel:
-        logging.info("Slack channel not configured, skipping notification")
-        return
+    """Send a message to #todayistheday Slack channel."""
+    channel = "GKVDB7HNG"  # #todayistheday
 
     try:
         internal_api.post("/api/slack/post", json={"channel": channel, "text": text})
-        logging.info("Slack notification sent")
+        logging.info("Slack notification sent to #todayistheday")
     except Exception as e:
         logging.warning("Failed to send Slack notification: %s", e)
 
