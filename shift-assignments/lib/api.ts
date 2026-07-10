@@ -351,3 +351,14 @@ export async function clearShift(
   }>("POST", "/api/shifts/clear", body);
   return resp.data;
 }
+
+export async function removeJobFromReviewer(
+  reviewerEmail: string,
+  jobId: string,
+): Promise<void> {
+  await call<{ data: unknown }>(
+    "POST",
+    "/api/shifts/remove-job",
+    { reviewer_email: reviewerEmail, job_id: jobId },
+  );
+}

@@ -2,10 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { getShiftOverview, type ShiftOverview, getShiftJobs, type ShiftJobs, type ShiftJob, clearShift, type ClearMode } from "@/lib/api";
+import { getShiftOverview, type ShiftOverview, getShiftJobs, type ShiftJobs, type ShiftJob, clearShift, type ClearMode, removeJobFromReviewer } from "@/lib/api";
 import { formatRelative } from "@/lib/relativeTime";
+import { useUser } from "@/lib/useUser";
 
 export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
+  const { role } = useUser();
+  const isAdmin = role === "admin";
   const [data, setData] = useState<ShiftOverview | null>(null);
   const [jobs, setJobs] = useState<ShiftJobs | null>(null);
   const [loading, setLoading] = useState(true);
@@ -15,6 +18,7 @@ export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
   const [showCloseModal, setShowCloseModal] = useState(false);
   const [clearTarget, setClearTarget] = useState<{ email: string; name: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [removingJob, setRemovingJob] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -83,6 +87,19 @@ export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
       setError(e instanceof Error ? e.message : "Failed to clear reviewer");
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleRemoveJob = async (reviewerEmail: string, jobId: string) => {
+    setRemovingJob(jobId);
+    setError(null);
+    try {
+      await removeJobFromReviewer(reviewerEmail, jobId);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to remove job");
+    } finally {
+      setRemovingJob(null);
     }
   };
 
@@ -260,6 +277,20 @@ export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
                                   <span className="inline-flex items-center rounded-full bg-storesight-bg-tint px-2 py-0.5 text-[10px] font-semibold text-storesight-primary dark:bg-storesight-accent/25 dark:text-storesight-accent-light">
                                     Pending
                                   </span>
+                                )}
+                                {isAdmin && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveJob(r.email, job.id)}
+                                    disabled={busy || removingJob === job.id}
+                                    title="Remove this job from the assignment"
+                                    aria-label="Remove job"
+                                    className="shrink-0 rounded p-1 text-storesight-ink-muted transition hover:bg-storesight-hot-pink/10 hover:text-storesight-hot-pink disabled:opacity-40 dark:text-storesight-ink-muted-dark dark:hover:bg-storesight-hot-pink/10"
+                                  >
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+                                      <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                                    </svg>
+                                  </button>
                                 )}
                               </div>
                             </div>

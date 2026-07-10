@@ -2052,6 +2052,59 @@ def api_shifts_jobs():
     })
 
 
+@app.route("/api/shifts/remove-job", methods=["POST"])
+def api_remove_job():
+    """Remove a specific job from a reviewer's assignment. Admin only."""
+    denied = _require_admin()
+    if denied is not None:
+        return denied
+    body = request.get_json(silent=True) or {}
+    reviewer_email = (body.get("reviewer_email") or "").strip().lower()
+    job_id = str(body.get("job_id") or "").strip()
+
+    if not reviewer_email or not job_id:
+        return jsonify({"error": "reviewer_email and job_id are required"}), 400
+
+    try:
+        all_shift_docs = roles.list_docs_by_kind("reviewer_shift")
+        removed = False
+
+        for doc in all_shift_docs:
+            doc_data = doc.get("data") or {}
+            if (doc_data.get("reviewer_email") or "").strip().lower() != reviewer_email:
+                continue
+
+            rows = doc_data.get("rows") or []
+            new_rows = [r for r in rows if str(r.get("jobId") or r.get("id") or "") != job_id]
+
+            if len(new_rows) < len(rows):
+                # Job was removed
+                doc_data["rows"] = new_rows
+                doc_id = doc.get("id")
+                try:
+                    internal_api.put(f"{_STORAGE_PATH}/{doc_id}", json={"data": doc_data})
+                    removed = True
+                except requests.exceptions.HTTPError as e:
+                    return _http_error_response(e)
+
+        roles.invalidate_doc_cache()
+
+        if removed:
+            logging.info(
+                "POST /api/shifts/remove-job by=%s job=%s reviewer=%s",
+                g.user.get("email"), job_id, reviewer_email,
+            )
+            return jsonify({"ok": True})
+        else:
+            return jsonify({"error": "job not found for this reviewer"}), 404
+
+    except requests.exceptions.HTTPError as e:
+        return _http_error_response(e)
+    except Exception as e:
+        logging.error("Remove job failed: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/shifts/clear", methods=["POST"])
 def api_shifts_clear():
     """Admin: mass-clear tasks and/or completion marks on the current shift.
