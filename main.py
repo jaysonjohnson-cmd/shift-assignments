@@ -28,6 +28,36 @@ TEAM_SCHEDULER_URL = (
     else "https://team-scheduler.storesight.org"
 )
 
+
+def _get_slack_channel():
+    """Get the Slack channel ID from Team Scheduler config."""
+    try:
+        url = f"{TEAM_SCHEDULER_URL}/api/config?team=default"
+        token = request.cookies.get("storesight_session")
+        headers = {"Cookie": f"storesight_session={token}"} if token else {}
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        config = resp.json()
+        return config.get("slackChannel")
+    except Exception as e:
+        logging.warning("Failed to get Slack channel: %s", e)
+        return None
+
+
+def _send_slack_notification(text):
+    """Send a message to the configured Slack channel."""
+    channel = _get_slack_channel()
+    if not channel:
+        logging.info("Slack channel not configured, skipping notification")
+        return
+
+    try:
+        internal_api.post("/api/slack/post", json={"channel": channel, "text": text})
+        logging.info("Slack notification sent")
+    except Exception as e:
+        logging.warning("Failed to send Slack notification: %s", e)
+
+
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
@@ -638,6 +668,12 @@ def api_shifts_auto_publish():
             "POST /api/shifts/auto-publish published=%s assigned=%d",
             snapshot_id, synced_count,
         )
+
+        # Send Slack notification
+        shift_time_label = f" at {request.args.get('shift_time')}" if request.args.get("shift_time") else ""
+        slack_msg = f"📋 *Auto-published shift{shift_time_label}* — {synced_count} job{'' if synced_count == 1 else 's'} assigned to {len(normalized)} reviewer{'' if len(normalized) == 1 else 's'}"
+        _send_slack_notification(slack_msg)
+
         return jsonify({
             "snapshot_id": snapshot_id,
             "published_at": published_at,
@@ -1123,6 +1159,12 @@ def api_shifts_publish():
             "POST /api/shifts/publish (merge) by=%s snapshot_id=%s reviewers=%d",
             published_by, snapshot_id, len(reviewer_emails),
         )
+        # Send Slack notification
+        job_count = sum(len(rows) for rows in normalized.values())
+        reviewer_count = len(normalized)
+        slack_msg = f"📋 *Shift assignments published* — {job_count} job{'' if job_count == 1 else 's'} assigned to {reviewer_count} reviewer{'' if reviewer_count == 1 else 's'}"
+        _send_slack_notification(slack_msg)
+
         return jsonify({"data": {"id": snapshot_id, "published_at": published_at}}), 201
 
     # No active snapshot — create a fresh one.
