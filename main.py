@@ -1427,7 +1427,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
     feed has nothing new left.
     """
     norm = (email or "").strip().lower()
-    assigned_keys = set()
+    touched_keys = set()
     max_part = -1
     batch_size = None
     try:
@@ -1445,12 +1445,27 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         for r in data.get("rows") or []:
             k = _job_key(r)
             if k:
-                assigned_keys.add(k)
+                touched_keys.add(k)
         if (data.get("reviewer_email") or "").strip().lower() == norm:
             max_part = max(max_part, int(data.get("part") or 0))
             bs = data.get("batch_size")
             if bs:
                 batch_size = bs if batch_size is None else min(batch_size, bs)
+
+    # A job is only off-limits while it's actively sitting in someone's queue —
+    # once completed, drop it from the exclusion set so fresh unreviewed
+    # responses that land on it later (this feed gets continuous new
+    # submissions all day) are reachable again. Without this, every job ever
+    # touched during the shift was excluded forever, so the "fresh" pool only
+    # ever shrank — completed jobs that later racked up brand-new unreviewed
+    # responses became permanently unassignable to anyone.
+    try:
+        completions = _list_completions_for_snapshot(snap_id, force=True)
+    except Exception as exc:  # noqa: BLE001 — refill is best-effort
+        logging.warning("auto-refill: failed to list completions for %s: %s", email, exc)
+        completions = []
+    completed_keys = {_completion_job_key(c) for c in completions if _completion_job_key(c)}
+    assigned_keys = touched_keys - completed_keys
 
     # Refill the original allotment, not the (possibly grown) current queue.
     count = batch_size if batch_size else fallback_count
