@@ -122,7 +122,7 @@ export function AssignMenu({
           `${result.cleared_completions} completion${result.cleared_completions === 1 ? "" : "s"}`,
         );
       setClearCount((n) => n + 1);
-      setBreakdownDismissed(false);
+      setBreakdownDismissed(true);
       const summary = parts.length ? `Cleared ${parts.join(" + ")}` : "Cleared";
       // Best-effort Bloom refresh — never block the clear confirmation
       getBloomJobs(true, "N").then((fetched) => {
