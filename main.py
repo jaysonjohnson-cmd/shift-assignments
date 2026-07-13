@@ -48,10 +48,16 @@ EXCLUDED_JOB_IDS = {
     "1966569",  # Bayer CVS Audit - Cadillac Program (July 2026)
 }
 
+EXCLUDED_JOB_NAMES = {
+    "Photos of House from Street",  # OSI
+}
+
 
 def _is_excluded_job(row):
     """True if this job should never be assignable or visible in the composer."""
-    return str(row.get("jobId") or "") in EXCLUDED_JOB_IDS
+    if str(row.get("jobId") or "") in EXCLUDED_JOB_IDS:
+        return True
+    return str(row.get("name") or "") in EXCLUDED_JOB_NAMES
 
 
 def _dev_token_path():
