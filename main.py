@@ -49,6 +49,11 @@ EXCLUDED_JOB_IDS = {
 }
 
 
+def _is_excluded_job(row):
+    """True if this job should never be assignable or visible in the composer."""
+    return str(row.get("jobId") or "") in EXCLUDED_JOB_IDS
+
+
 def _dev_token_path():
     """Return the path to the dev token file."""
     return pathlib.Path.home() / ".storesight" / "dev-token"
@@ -818,6 +823,7 @@ def api_bloom_jobs():
         rows = bloom.fetch_prioritized_jobs(status=status)
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e, source="bloom api")
+    rows = [r for r in rows if not _is_excluded_job(r)]
     logging.info(
         "GET /api/bloom/jobs by=%s status=%s count=%d",
         g.user.get("email"), status, len(rows),
@@ -841,6 +847,7 @@ def api_bloom_projects():
         rows = bloom.fetch_prioritized_jobs(status=status)
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e, source="bloom api")
+    rows = [r for r in rows if not _is_excluded_job(r)]
     summaries = bloom.project_summaries(rows)
     logging.info(
         "GET /api/bloom/projects by=%s status=%s count=%d",
