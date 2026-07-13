@@ -190,10 +190,14 @@ export default function SettingsPage() {
     setReviewersStore(next);
   };
   const removeReviewer = async (id: string) => {
-    await deleteReviewer(id);
-    const next = reviewers.filter((r) => r.id !== id);
-    setReviewers(next);
-    setReviewersStore(next);
+    try {
+      await deleteReviewer(id);
+      const next = reviewers.filter((r) => r.id !== id);
+      setReviewers(next);
+      setReviewersStore(next);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to remove reviewer");
+    }
   };
   const changeReviewerColor = async (r: Reviewer, color: string) => {
     const updated = await updateReviewer(r.id, r.name, r.email, color);
@@ -207,8 +211,12 @@ export default function SettingsPage() {
     setAdmins([...admins, created]);
   };
   const removeAdmin = async (id: string) => {
-    await deleteAdmin(id);
-    setAdmins(admins.filter((a) => a.id !== id));
+    try {
+      await deleteAdmin(id);
+      setAdmins(admins.filter((a) => a.id !== id));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to remove admin");
+    }
   };
 
   const addLead = async (name: string, email: string) => {
@@ -216,8 +224,12 @@ export default function SettingsPage() {
     setLeads([...leads, created]);
   };
   const removeLead = async (id: string) => {
-    await deleteLead(id);
-    setLeads(leads.filter((l) => l.id !== id));
+    try {
+      await deleteLead(id);
+      setLeads(leads.filter((l) => l.id !== id));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to remove lead");
+    }
   };
 
   const handleSync = async () => {
