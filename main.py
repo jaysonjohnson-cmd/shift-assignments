@@ -1219,6 +1219,12 @@ def api_shifts_publish():
         "POST /api/shifts/publish by=%s snapshot_id=%s reviewers=%d",
         published_by, snapshot_id, len(reviewer_emails),
     )
+    # Send Slack notification (the merge-publish branch above sends its own).
+    job_count = sum(len(rows) for rows in normalized.values())
+    reviewer_count = len(normalized)
+    slack_msg = f"📋 *Shift assignments published* — {job_count} job{'' if job_count == 1 else 's'} assigned to {reviewer_count} reviewer{'' if reviewer_count == 1 else 's'}"
+    _send_slack_notification(slack_msg)
+
     return jsonify({"data": {"id": snapshot_id, "published_at": published_at}}), 201
 
 
