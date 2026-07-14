@@ -42,6 +42,19 @@ _PROJECT_NAME_CACHE = {"fetched_at": 0.0, "names": {}}
 # Constants for project name pagination
 PAGE_SIZE = 100
 MAX_RG_PAGES = 50
+# CF-denied-count cache: independent of the main 60s job cache and of any
+# force-refresh on it. "Refresh" force-bypasses _CACHE on every click, and
+# without its own cache this query would re-hit /api/responsegroups on every
+# one of those clicks — on top of the main /api/prioritized-jobs call, all
+# competing for the same 60 req/min budget. A few extra requests per refresh
+# is fine; the same few requests repeated by every impatient re-click is what
+# tips it into 429s, and internal_api's backoff on a 429 is up to 127s per
+# request — which is exactly what "a refresh that never finishes" looks like.
+# CF-denial data doesn't change fast enough to need finer granularity than a
+# few minutes, so this cache is deliberately longer-lived than _CACHE.
+_CF_DENIED_CACHE = {"fetched_at": 0.0, "min_date": None, "counts": {}}
+_CF_DENIED_CACHE_TTL_SECONDS = 300
+MAX_CF_DENIED_PAGES = 10
 
 
 def _g(d, *keys):
@@ -249,11 +262,21 @@ def _fetch_cf_denied_counts(min_submission_date):
     keeping it to a couple of paginated calls instead of scanning all
     history (unscoped, this endpoint has 48k+ matching rows going back
     years).
+
+    Cached independently of the caller's own cache/force flag — see
+    `_CF_DENIED_CACHE` — so repeated force-refreshes of the main job list
+    don't repeatedly re-hit this endpoint too.
     """
+    now = time.time()
+    cache = _CF_DENIED_CACHE
+    fresh = (now - cache["fetched_at"]) < _CF_DENIED_CACHE_TTL_SECONDS
+    if fresh and cache["min_date"] == min_submission_date:
+        return cache["counts"]
+
     counts = {}
     page = 1
     try:
-        while page <= MAX_RG_PAGES:
+        while page <= MAX_CF_DENIED_PAGES:
             resp = internal_api.get(
                 "/api/responsegroups",
                 params={
@@ -276,6 +299,15 @@ def _fetch_cf_denied_counts(min_submission_date):
             page += 1
     except Exception as exc:  # noqa: BLE001 — best-effort, never block the feed
         logging.warning("CF-denied count fetch failed: %s", exc)
+        # Serve stale counts rather than none if we have them — a request
+        # spike/429 shouldn't make previously-visible CF-denied jobs vanish.
+        if cache["counts"]:
+            return cache["counts"]
+        return counts
+
+    cache["fetched_at"] = now
+    cache["min_date"] = min_submission_date
+    cache["counts"] = counts
     return counts
 
 
