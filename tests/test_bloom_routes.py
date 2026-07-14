@@ -299,8 +299,8 @@ def test_publish_then_latest_round_trip(client, monkeypatch):
     monkeypatch.setattr(roles, "list_docs_by_kind", fake_list_docs_by_kind)
 
     assignments = {
-        "sam@storesight.com": [{"id": "1", "projectId": "10", "name": "Job A"}],
-        "alex@storesight.com": [{"id": "2", "projectId": "20", "name": "Job B"}],
+        "sam@storesight.com": [{"id": "1", "projectId": "10", "name": "Job A", "unreviewedCount": 3}],
+        "alex@storesight.com": [{"id": "2", "projectId": "20", "name": "Job B", "unreviewedCount": 2}],
     }
     resp = c.post("/api/shifts/publish", json={"assignments": assignments})
     assert resp.status_code == 201, resp.get_json()
@@ -352,15 +352,15 @@ def test_merge_publish_drops_jobs_held_by_retained_reviewers(client, monkeypatch
 
     # First publish: Sam gets job J1.
     r1 = c.post("/api/shifts/publish", json={"assignments": {
-        "sam@storesight.com": [{"jobId": "J1", "projectId": "10", "name": "Job 1"}],
+        "sam@storesight.com": [{"jobId": "J1", "projectId": "10", "name": "Job 1", "unreviewedCount": 2}],
     }})
     assert r1.status_code == 201, r1.get_json()
 
     # Second publish adds Alex only, but the pool still contains J1 (already Sam's).
     r2 = c.post("/api/shifts/publish", json={"assignments": {
         "alex@storesight.com": [
-            {"jobId": "J1", "projectId": "10", "name": "Job 1"},
-            {"jobId": "J2", "projectId": "20", "name": "Job 2"},
+            {"jobId": "J1", "projectId": "10", "name": "Job 1", "unreviewedCount": 2},
+            {"jobId": "J2", "projectId": "20", "name": "Job 2", "unreviewedCount": 4},
         ],
     }})
     assert r2.status_code == 201, r2.get_json()
@@ -459,8 +459,8 @@ def test_publish_rolls_back_reviewer_docs_when_a_write_fails(client, monkeypatch
         "/api/shifts/publish",
         json={
             "assignments": {
-                "a@storesight.com": [{"id": "1", "projectId": "10"}],
-                "b@storesight.com": [{"id": "2", "projectId": "20"}],
+                "a@storesight.com": [{"id": "1", "projectId": "10", "unreviewedCount": 3}],
+                "b@storesight.com": [{"id": "2", "projectId": "20", "unreviewedCount": 5}],
             }
         },
     )
@@ -490,7 +490,7 @@ def test_publish_storage_error_surfaces_upstream_message(client, monkeypatch):
 
     resp = c.post(
         "/api/shifts/publish",
-        json={"assignments": {"sam@storesight.com": [{"id": "1"}]}},
+        json={"assignments": {"sam@storesight.com": [{"id": "1", "unreviewedCount": 3}]}},
     )
     assert resp.status_code == 400
     body = resp.get_json()
