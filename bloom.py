@@ -16,6 +16,7 @@ Response shape — one Row per job with unreviewed submissions:
     }
 """
 
+import datetime
 import logging
 import time
 
@@ -70,16 +71,38 @@ def _safe_int(value):
         return None
 
 
-def _row_from_api(job):
+def _row_from_api(job, cf_denied_count=0):
     """Map a job from /api/prioritized-jobs to the Row shape the UI expects.
 
     /api/prioritized-jobs already includes:
       - id (job_id), name, priority, project_id
       - new (unreviewed count)
       - All other metadata (activeReviewers, subsPerDay, etc.)
+
+    `cf_denied_count` is added separately (see `_fetch_cf_denied_counts`) — it
+    covers responses Cloud Factory denied that FieldAgent's own automation then
+    auto-approved (status "A") before anyone here looked at them. Those never
+    show up in "new", so without this a job full of CF-denied-but-auto-approved
+    work reports 0 unreviewed even though real correction work is waiting.
     """
     project_id = str(job.get("project_id") or "")
     project_name = ""  # Will be populated separately if needed
+    # Use the REVIEWABLE count ("Mass Review"), not raw "New". "New" includes
+    # responses the reviewer can't act on — e.g. auto-rejected for distance —
+    # which would otherwise block completion and the finish ping forever. The
+    # gap (new - massReview) is exactly those un-reviewable responses. Fall
+    # back to "new" when massReview is missing/blank (some feed rows send "").
+    #
+    # Capped at "new": massReview can be LARGER than "new" when most of a
+    # job's mass-review backlog is checked out to a third party (Cloud
+    # Factory) and hasn't been released back into FieldAgent's queue yet —
+    # e.g. massReview=100, new=1 means only 1 is actually sitting here
+    # ready to review, not 100. Reviewers can never act on more than "new".
+    base_unreviewed = (
+        min(_safe_int(job.get("massReview")), _safe_int(job.get("new")) or 0)
+        if _safe_int(job.get("massReview")) is not None
+        else (_safe_int(job.get("new")) or 0)
+    )
     return {
         "id": str(job.get("id") or ""),
         "projectId": project_id,
@@ -88,16 +111,7 @@ def _row_from_api(job):
         "groupIds": [],  # Not provided by this API; can be fetched separately if needed
         "priority": int(job.get("priority") or 0),
         "name": str(job.get("name") or ""),
-        # Use the REVIEWABLE count ("Mass Review"), not raw "New". "New" includes
-        # responses the reviewer can't act on — e.g. auto-rejected for distance —
-        # which would otherwise block completion and the finish ping forever. The
-        # gap (new - massReview) is exactly those un-reviewable responses. Fall
-        # back to "new" when massReview is missing/blank (some feed rows send "").
-        "unreviewedCount": (
-            _safe_int(job.get("massReview"))
-            if _safe_int(job.get("massReview")) is not None
-            else (_safe_int(job.get("new")) or 0)
-        ),
+        "unreviewedCount": base_unreviewed + cf_denied_count,
         "oldestSubmission": "",
         "extras": {
             "old_sub": int((job.get("priority_details") or {}).get("old_sub") or 0),
@@ -110,6 +124,8 @@ def _row_from_api(job):
             "newCount": _safe_int(job.get("new")) or 0,
             # Client owner email — used to scope to Storesight / Retail Pipeline jobs.
             "client": str(job.get("client") or ""),
+            # Cloud-Factory-denied responses auto-approved before human re-review.
+            "cfDeniedCount": cf_denied_count,
         },
     }
 
@@ -202,6 +218,67 @@ def project_summaries(rows=None):
     return sorted(by_pid.values(), key=lambda e: (-e["jidCount"], e["projectId"]))
 
 
+def _earliest_start_date_iso(jobs):
+    """Earliest job startDate (feed sends "MM/DD/YYYY") across `jobs`, as
+    "YYYY-MM-DD" — used to scope the CF-denied query (see below) to jobs
+    still active in the current feed instead of scanning all history.
+    Returns None if no job has a parseable startDate.
+    """
+    earliest = None
+    for job in jobs:
+        raw = str(job.get("startDate") or "")
+        try:
+            dt = datetime.datetime.strptime(raw, "%m/%d/%Y")
+        except ValueError:
+            continue
+        if earliest is None or dt < earliest:
+            earliest = dt
+    return earliest.strftime("%Y-%m-%d") if earliest else None
+
+
+def _fetch_cf_denied_counts(min_submission_date):
+    """Return {job_id_str: count} of responses Cloud Factory denied that
+    FieldAgent's own automation auto-approved anyway (status "A") before a
+    human ever re-reviewed them.
+
+    These never show up in a job's "new" count — as far as Bloom is
+    concerned the response is already approved — so a job can report 0
+    unreviewed while genuinely wrong, CF-flagged work sits unassigned and
+    invisible. Scoped to `min_submission_date` (the oldest still-active
+    job's start date) so this only ever covers jobs currently in the feed,
+    keeping it to a couple of paginated calls instead of scanning all
+    history (unscoped, this endpoint has 48k+ matching rows going back
+    years).
+    """
+    counts = {}
+    page = 1
+    try:
+        while page <= MAX_RG_PAGES:
+            resp = internal_api.get(
+                "/api/responsegroups",
+                params={
+                    "tp_review_status": "R",
+                    "status": "A",
+                    "submission_date_from": min_submission_date,
+                    "page": page,
+                    "per_page": PAGE_SIZE,
+                },
+            )
+            batch = resp.get("data", []) if isinstance(resp, dict) else []
+            if not batch:
+                break
+            for rg in batch:
+                jid = str(rg.get("job_id") or "")
+                if jid:
+                    counts[jid] = counts.get(jid, 0) + 1
+            if len(batch) < PAGE_SIZE:
+                break
+            page += 1
+    except Exception as exc:  # noqa: BLE001 — best-effort, never block the feed
+        logging.warning("CF-denied count fetch failed: %s", exc)
+    return counts
+
+
 def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True):
     """Return Rows for every job with unreviewed submissions, pre-prioritized by FA-web.
 
@@ -220,12 +297,27 @@ def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True):
         return _CACHE["rows"]
 
     jobs = _fetch_prioritized_jobs_raw()
+
+    min_date = _earliest_start_date_iso(jobs)
+    cf_denied_counts = _fetch_cf_denied_counts(min_date) if min_date else {}
+
     # Defensive: skip malformed records with no job id — they can't be assigned
     # or completed, and would render as blank rows in the UI.
+    # Skip jobs with no "new" responses AND no CF-denied-but-auto-approved
+    # responses — unreviewedCount is capped at "new" plus cf_denied_count (see
+    # _row_from_api), so a positive massReview alone can't make one of these
+    # actionable. These are jobs fully parked with a third party (e.g. Cloud
+    # Factory) with nothing released back into FieldAgent's queue yet. Uses
+    # _safe_int (not bare int()) since the feed sends "" for some counts,
+    # which int() would raise on.
     rows = [
-        _row_from_api(job)
+        _row_from_api(job, cf_denied_counts.get(str(job.get("id") or ""), 0))
         for job in jobs
         if isinstance(job, dict) and job.get("id") not in (None, "")
+        and (
+            (_safe_int(job.get("new")) or 0) > 0
+            or cf_denied_counts.get(str(job.get("id") or ""), 0) > 0
+        )
     ]
 
     # Skip project name fetching on cache misses to reduce rate limit pressure.

@@ -61,6 +61,10 @@ def test_unreviewed_count_uses_mass_review_not_new(monkeypatch):
         {"id": 20, "project_id": 120, "priority": 2, "name": "B", "new": 4, "massReview": 4},
         # Everything left is auto-rejected → nothing actionable.
         {"id": 30, "project_id": 130, "priority": 3, "name": "C", "new": 3, "massReview": 0},
+        # massReview (100) can OVERSTATE what's actionable when most of the
+        # backlog is checked out to Cloud Factory and hasn't been released
+        # back into FieldAgent's queue — only "new" (1) is actually here.
+        {"id": 40, "project_id": 140, "priority": 4, "name": "D", "new": 1, "massReview": 100},
     ]
     monkeypatch.setattr(internal_api, "get", _prioritized_jobs(jobs))
     rows = {r["id"]: r for r in bloom.fetch_prioritized_jobs(use_cache=False)}
@@ -68,6 +72,7 @@ def test_unreviewed_count_uses_mass_review_not_new(monkeypatch):
     assert rows["10"]["extras"]["newCount"] == 5
     assert rows["20"]["unreviewedCount"] == 4
     assert rows["30"]["unreviewedCount"] == 0  # only auto-rejected left → not actionable
+    assert rows["40"]["unreviewedCount"] == 1  # capped at "new" despite massReview=100
 
 
 def test_fetch_prioritized_jobs_uses_cache(monkeypatch):
@@ -176,6 +181,31 @@ def test_fetch_prioritized_jobs_skips_records_without_id(monkeypatch):
     rows = bloom.fetch_prioritized_jobs(use_cache=False)
     assert len(rows) == 1
     assert rows[0]["id"] == "10"
+
+
+def test_fetch_prioritized_jobs_skips_jobs_with_no_responses_anywhere(monkeypatch):
+    """new=0 means a job has nothing released back into FieldAgent's queue —
+    it's fully parked with a third party (e.g. Cloud Factory) — keep it out of
+    the feed so it's never assignable, without disturbing already-published
+    my-tasks rows (which only clear on checkmark, not on unreviewedCount).
+    A stale/nonzero massReview can't override this since unreviewedCount is
+    capped at "new" (see test_unreviewed_count_uses_mass_review_not_new)."""
+    bloom.clear_cache()
+    jobs = [
+        # Fully empty — parked, nothing to review anywhere.
+        {"id": 10, "project_id": 110, "priority": 1, "name": "Parked", "new": 0, "massReview": 0},
+        # Still has raw "new" responses (even if none are reviewable) — keep.
+        {"id": 20, "project_id": 120, "priority": 2, "name": "AutoRejected", "new": 3, "massReview": 0},
+        # "" is how the feed sends some missing counts — must not raise.
+        {"id": 30, "project_id": 130, "priority": 3, "name": "BlankCounts", "new": "", "massReview": ""},
+        {"id": 40, "project_id": 140, "priority": 4, "name": "Normal", "new": 2, "massReview": 2},
+        # new=0 but massReview=100 — a stale/large mass-review backlog stuck
+        # in a third party, nothing actually released back yet. Still empty.
+        {"id": 50, "project_id": 150, "priority": 5, "name": "CFBacklog", "new": 0, "massReview": 100},
+    ]
+    monkeypatch.setattr(internal_api, "get", _prioritized_jobs(jobs))
+    rows = bloom.fetch_prioritized_jobs(use_cache=False)
+    assert [r["id"] for r in rows] == ["20", "40"]
 
 
 
