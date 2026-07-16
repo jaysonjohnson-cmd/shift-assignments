@@ -8,6 +8,14 @@
       "env": {"NEXT_PUBLIC_API_ORIGIN": "http://localhost:8080"},
       "port": 3000,
       "autoPort": true
+    },
+    {
+      "name": "flask-backend",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["main.py"],
+      "env": {"TOOL_SLUG": "qc-shift-assignments", "LOCAL_DEV": "1", "FLASK_DEBUG": "1"},
+      "port": 8080,
+      "autoPort": false
     }
   ]
 }

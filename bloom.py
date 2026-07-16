@@ -92,11 +92,10 @@ def _row_from_api(job, cf_denied_count=0):
       - new (unreviewed count)
       - All other metadata (activeReviewers, subsPerDay, etc.)
 
-    `cf_denied_count` is added separately (see `_fetch_cf_denied_counts`) — it
-    covers responses Cloud Factory denied that FieldAgent's own automation then
-    auto-approved (status "A") before anyone here looked at them. Those never
-    show up in "new", so without this a job full of CF-denied-but-auto-approved
-    work reports 0 unreviewed even though real correction work is waiting.
+    `cf_denied_count` is fetched separately (see `_fetch_cf_denied_counts`) but
+    no longer surfaced in assignments — jobs with new==0 are filtered out
+    entirely, so cf_denied responses (already auto-approved by FieldAgent)
+    are not actionable work and don't reach the queue.
     """
     project_id = str(job.get("project_id") or "")
     project_name = ""  # Will be populated separately if needed
@@ -335,21 +334,16 @@ def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True):
 
     # Defensive: skip malformed records with no job id — they can't be assigned
     # or completed, and would render as blank rows in the UI.
-    # Skip jobs with no "new" responses AND no CF-denied-but-auto-approved
-    # responses — unreviewedCount is capped at "new" plus cf_denied_count (see
-    # _row_from_api), so a positive massReview alone can't make one of these
-    # actionable. These are jobs fully parked with a third party (e.g. Cloud
-    # Factory) with nothing released back into FieldAgent's queue yet. Uses
-    # _safe_int (not bare int()) since the feed sends "" for some counts,
-    # which int() would raise on.
+    # Skip jobs with no "new" responses in FieldAgent's queue. Even if CF-denied
+    # responses exist, they're either already auto-approved or parked at a third
+    # party (e.g. Cloud Factory) with nothing actionable here. Only include jobs
+    # where reviewers have actual queue entries to work on. Uses _safe_int (not
+    # bare int()) since the feed sends "" for some counts, which int() would raise on.
     rows = [
         _row_from_api(job, cf_denied_counts.get(str(job.get("id") or ""), 0))
         for job in jobs
         if isinstance(job, dict) and job.get("id") not in (None, "")
-        and (
-            (_safe_int(job.get("new")) or 0) > 0
-            or cf_denied_counts.get(str(job.get("id") or ""), 0) > 0
-        )
+        and (_safe_int(job.get("new")) or 0) > 0
     ]
 
     # Skip project name fetching on cache misses to reduce rate limit pressure.

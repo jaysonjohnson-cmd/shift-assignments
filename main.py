@@ -567,6 +567,9 @@ def api_shifts_auto_publish():
                 job_id = str(r.get("jobId") or r.get("id") or "")
                 if job_id in EXCLUDED_JOB_IDS:
                     continue
+                job_name = str(r.get("name") or "")
+                if job_name in EXCLUDED_JOB_NAMES:
+                    continue
                 unreviewable = int(r.get("unreviewedCount") or 0)
                 total_new = int((r.get("extras") or {}).get("newCount") or 0)
                 auto_rejected = max(0, total_new - unreviewable)
@@ -1016,6 +1019,9 @@ def api_shifts_publish():
         for r in rows:
             job_id = str(r.get("jobId") or r.get("id") or "")
             if job_id in EXCLUDED_JOB_IDS:
+                continue
+            job_name = str(r.get("name") or "")
+            if job_name in EXCLUDED_JOB_NAMES:
                 continue
             unreviewable = int(r.get("unreviewedCount") or 0)
             total_new = int((r.get("extras") or {}).get("newCount") or 0)
@@ -1491,6 +1497,8 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             continue
         # Skip excluded jobs (jobs with responses stuck in CF are already filtered at the Bloom level).
         if str(r.get("jobId") or "") in EXCLUDED_JOB_IDS:
+            continue
+        if str(r.get("name") or "") in EXCLUDED_JOB_NAMES:
             continue
         # Skip jobs from excluded clients (e.g., Menasha handled by Cloud Factory).
         if bloom.is_excluded_client((r.get("extras") or {}).get("client")):

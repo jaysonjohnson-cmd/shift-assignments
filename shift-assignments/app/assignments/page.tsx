@@ -54,6 +54,10 @@ export default function AssignmentsPage() {
   const [agedSubDates, setAgedSubDates] = useState<Record<string, string>>({});
   // "Only assign jobs older than N days" (0 = no threshold, just oldest-first).
   const [agedMinDays, setAgedMinDays] = useState(0);
+  // Ages load one job/sec in the background — while true, jobs with an
+  // unknown age are being excluded by an "older than N days" filter, not
+  // actually filtered out for good.
+  const [agedLoading, setAgedLoading] = useState(false);
   const [retailPipelineOnly, setRetailPipelineOnly] = useState(false);
   const [showCloseModal, setShowCloseModal] = useState(false);
   const [liveJobs, setLiveJobs] = useState<ShiftJobs | null>(null);
@@ -85,6 +89,7 @@ export default function AssignmentsPage() {
         const result = await getSubmissionAges();
         if (cancelled) return;
         setAgedSubDates(result.data);
+        setAgedLoading(result.loading);
         if (result.loading) timer = setTimeout(poll, 5000);
       } catch {
         // best-effort — fall back to priority order until ages load
@@ -407,6 +412,14 @@ export default function AssignmentsPage() {
                       />
                       days
                     </label>
+                  )}
+                  {prioritizeAged && agedMinDays > 0 && agedLoading && (
+                    <span
+                      title="Submission ages load one job/sec in the background. Until a job's age is known it's excluded from an 'older than' filter, so the count below may climb as more ages arrive."
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-storesight-border px-3 py-1.5 text-xs text-storesight-ink-muted dark:border-storesight-border-dark dark:text-storesight-ink-muted-dark"
+                    >
+                      Loading submission ages…
+                    </span>
                   )}
                   <button
                     type="button"
