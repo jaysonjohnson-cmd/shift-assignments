@@ -1819,35 +1819,27 @@ def api_shifts_my_complete():
     )
     # If this completion cleared the reviewer's whole queue, ping the admin so
     # they can hand out more work. Best-effort — never block the response.
+    #
+    # Always read authoritatively (force=True) here rather than trusting the
+    # warm cache. cache_upsert_doc only mutates an already-populated cache —
+    # a burst of reviewers finishing around the same time (many concurrent
+    # writes to the "completion" kind) is exactly when a stale warm-cache
+    # read is most likely, and this is the ONLY place a finished reviewer's
+    # queue gets topped up. A false "not finished yet" here means they
+    # silently sit idle for the rest of the shift with nothing to
+    # re-trigger the check — there's no job left for them to complete.
     try:
-        assigned = _rows_for_reviewer(snap_id, email) or []
+        assigned = _rows_for_reviewer(snap_id, email, force=True) or []
         assigned_keys = {_row_job_key(r) for r in assigned}
-        # Cheap pass against the warm cache. The completion we just wrote was
-        # upserted above, and every prior completion was upserted on its own
-        # request, so on a warm instance this already reflects the full set —
-        # which is what fixes the fast-finisher miss (no more wipe-on-write).
-        done = _list_completions_for_snapshot(snap_id, reviewer_email=email)
+        done = _list_completions_for_snapshot(snap_id, reviewer_email=email, force=True)
         done_keys = {_completion_job_key(c) for c in done}
         done_keys.add(job_id)
         if assigned_keys and assigned_keys <= done_keys:
-            # Looks finished — confirm with authoritative reads before refilling.
-            # Re-read ASSIGNED with force too: if a near-simultaneous completion
-            # already triggered a refill, the fresh read includes that new batch
-            # (not yet done) so assigned_keys is no longer a subset of done — and
-            # we skip a second refill. That's what prevents duplicate batches.
-            assigned = _rows_for_reviewer(snap_id, email, force=True) or assigned
-            assigned_keys = {_row_job_key(r) for r in assigned}
-            confirmed = _list_completions_for_snapshot(
-                snap_id, reviewer_email=email, force=True
-            )
-            confirmed_keys = {_completion_job_key(c) for c in confirmed}
-            confirmed_keys.add(job_id)
-            if assigned_keys <= confirmed_keys:
-                # Refill a fresh fixed-size batch (the original allotment), then
-                # ping the admin. len(assigned) is only a fallback for legacy
-                # snapshots that predate the stored batch_size.
-                added = _auto_refill_reviewer(snap_id, email, len(assigned))
-                _notify_reviewer_finished(email, len(assigned), len(added))
+            # Refill a fresh fixed-size batch (the original allotment), then
+            # ping the admin. len(assigned) is only a fallback for legacy
+            # snapshots that predate the stored batch_size.
+            added = _auto_refill_reviewer(snap_id, email, len(assigned))
+            _notify_reviewer_finished(email, len(assigned), len(added))
     except Exception as exc:  # noqa: BLE001 — refill/ping must not break completion
         logging.warning("finish-check failed for %s: %s", email, exc)
     return jsonify({"data": {"id": doc_id, **doc}}), 201
