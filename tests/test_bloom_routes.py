@@ -776,8 +776,9 @@ def test_shifts_my_reports_auto_rejected_count(client, monkeypatch):
     assert resp.status_code == 200
     rows = {r["jobId"]: r for r in resp.get_json()["data"]["rows"]}
     assert rows["A"]["unreviewedCount"] == 2 and rows["A"]["autoRejected"] == 3
-    # Auto-reject-only job stays, with 0 reviewable and 1 to clear.
-    assert rows["B"]["unreviewedCount"] == 0 and rows["B"]["autoRejected"] == 1
+    # Auto-reject-only job (B) is now hidden — zero reviewable responses means
+    # no actionable work, so it shouldn't appear on My Tasks.
+    assert "B" not in rows
 
 
 def test_shifts_my_keeps_stored_count_when_feed_unavailable(client, monkeypatch):

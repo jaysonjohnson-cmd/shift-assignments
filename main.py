@@ -1394,6 +1394,10 @@ def api_shifts_my():
             # Responses left that aren't reviewable (auto-rejected for distance,
             # etc.) — the reviewer clears these on the Responses page, not here.
             item["autoRejected"] = max(0, new - reviewable)
+            # Skip jobs with zero reviewable responses (all auto-rejected).
+            # These have no actionable work and shouldn't appear on My Tasks.
+            if reviewable == 0 and new > 0:
+                continue
         enriched.append(item)
 
     # NOTE: refilling happens ONLY on the completion POST finish-check, not here.
