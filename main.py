@@ -1507,10 +1507,16 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         # Skip jobs from excluded clients (e.g., Menasha handled by Cloud Factory).
         if bloom.is_excluded_client((r.get("extras") or {}).get("client")):
             continue
-        # Skip jobs with no work left (no unreviewed AND no auto-rejected).
-        # Assigning a truly empty job would just auto-clear on the reviewer's screen.
-        # But jobs with auto-rejected responses still need manual handling.
+        # Skip jobs with no reviewable work (unreviewedCount == 0). These have
+        # only auto-rejected responses, which must be cleared on the Responses page
+        # (not in My Tasks), so assigning them to a reviewer would show them as
+        # blocked when trying to mark done. Let the reviewer encounter them via the
+        # completion block, not via auto-refill. (Checked first so we skip even if
+        # auto-rejected > 0, preventing auto-refill from assigning jobs that will
+        # immediately be hidden from My Tasks.)
         unreviewable = int(r.get("unreviewedCount") or 0)
+        if unreviewable <= 0:
+            continue
         total_new = int((r.get("extras") or {}).get("newCount") or 0)
         auto_rejected = max(0, total_new - unreviewable)
         total_responses = unreviewable + auto_rejected
