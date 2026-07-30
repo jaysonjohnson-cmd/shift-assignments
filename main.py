@@ -1388,16 +1388,25 @@ def api_shifts_my():
         jid = str(row.get("jobId") or "")
         if live_by_job is not None and jid:
             live = live_by_job.get(jid)
-            reviewable = live["reviewable"] if live else 0
-            new = live["new"] if live else 0
-            item["unreviewedCount"] = reviewable
-            # Responses left that aren't reviewable (auto-rejected for distance,
-            # etc.) — the reviewer clears these on the Responses page, not here.
-            item["autoRejected"] = max(0, new - reviewable)
-            # Skip jobs with zero reviewable responses (all auto-rejected).
-            # These have no actionable work and shouldn't appear on My Tasks.
-            if reviewable == 0 and new > 0:
-                continue
+            if live is not None:
+                # Job is in the live feed — use current data.
+                reviewable = live["reviewable"]
+                new = live["new"]
+                item["unreviewedCount"] = reviewable
+                # Responses left that aren't reviewable (auto-rejected for distance,
+                # etc.) — the reviewer clears these on the Responses page, not here.
+                item["autoRejected"] = max(0, new - reviewable)
+                # Skip jobs with zero reviewable responses (all auto-rejected).
+                # These have no actionable work and shouldn't appear on My Tasks.
+                if reviewable == 0 and new > 0:
+                    continue
+            elif completion:
+                # Job is not in the live feed AND has been marked completed.
+                # Treat as fully reviewed (0). Don't modify item — let it show as done.
+                item["unreviewedCount"] = 0
+                item["autoRejected"] = 0
+            # else: Job is not in feed and not completed. Keep stored counts to
+            # preserve newly assigned jobs or jobs temporarily absent from the feed.
         enriched.append(item)
 
     # NOTE: refilling happens ONLY on the completion POST finish-check, not here.

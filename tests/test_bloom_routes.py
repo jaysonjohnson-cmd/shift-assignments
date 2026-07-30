@@ -712,18 +712,25 @@ def test_shifts_my_overlays_live_unreviewed_counts(client, monkeypatch):
                       "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
                       "rows": [
                           {"jobId": "A", "projectId": "10", "unreviewedCount": 18},  # live: 5
-                          {"jobId": "B", "projectId": "20", "unreviewedCount": 9},   # gone → 0
+                          {"jobId": "B", "projectId": "20", "unreviewedCount": 9},   # not in feed but not completed
+                          {"jobId": "C", "projectId": "30", "unreviewedCount": 7},   # not in feed AND completed
                       ]}}
+    completion_b = {"id": "c-3", "data": {"kind": "completion",
+                    "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
+                    "job_id": "C", "completed_at": "2026-07-30T12:00:00Z"}}
 
     def fake_list(kind, force=False):
         if kind == "shift_snapshot":
             return [snapshot]
         if kind == "reviewer_shift":
             return [reviewer_shift]
+        if kind == "completion":
+            return [completion_b]
         return []
 
     monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
-    # Live feed: job A still has 5 unreviewed; job B is absent (fully reviewed).
+    # Live feed: job A still has 5 unreviewed; jobs B and C are absent from feed.
+    # B is not completed (shows stored count), C is completed (shows 0).
     monkeypatch.setattr(
         main.bloom, "fetch_prioritized_jobs",
         lambda status=None, use_cache=True: [{"jobId": "A", "unreviewedCount": 5}],
@@ -733,7 +740,8 @@ def test_shifts_my_overlays_live_unreviewed_counts(client, monkeypatch):
     assert resp.status_code == 200
     rows = {r["jobId"]: r for r in resp.get_json()["data"]["rows"]}
     assert rows["A"]["unreviewedCount"] == 5   # overlaid from live feed
-    assert rows["B"]["unreviewedCount"] == 0   # absent from feed → fully reviewed
+    assert rows["B"]["unreviewedCount"] == 9   # not in feed, not completed → keep stored
+    assert rows["C"]["unreviewedCount"] == 0   # not in feed, completed → show 0
 
 
 def test_shifts_my_reports_auto_rejected_count(client, monkeypatch):

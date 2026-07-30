@@ -77,7 +77,8 @@
       "Bash(curl -s -m 30 -H 'Authorization: Bearer __CMDSUB_OUTPUT__' -H 'X-Tool-Slug: qc-shift-assignments' 'https://internal-tool-api.storesight.org/api/slack/messages?channel=GKVDB7HNG&limit=30' -o /tmp/slack_msgs2.json -w 'HTTP:%{http_code}\\\\n')",
       "Bash(JWT_SIGNING_SECRET=test-secret python3 -m pytest tests/test_bloom_routes.py tests/test_finish_ping.py -q)",
       "Bash(JWT_SIGNING_SECRET=test-secret python3 -m pytest tests/test_bloom_routes.py -k \"test_publish_then_latest_round_trip or test_merge_publish_drops_jobs_held_by_retained_reviewers or test_publish_rolls_back_reviewer_docs_when_a_write_fails or test_publish_storage_error_surfaces_upstream_message\" -v)",
-      "Bash(JWT_SIGNING_SECRET=test-secret python3 -m pytest tests/test_finish_ping.py tests/test_bloom_routes.py -v)"
+      "Bash(JWT_SIGNING_SECRET=test-secret python3 -m pytest tests/test_finish_ping.py tests/test_bloom_routes.py -v)",
+      "Bash(JWT_SIGNING_SECRET=test-secret python3 -m pytest tests/test_bloom_routes.py::test_shifts_my_overlays_live_unreviewed_counts -xvs)"
     ]
   }
 }
