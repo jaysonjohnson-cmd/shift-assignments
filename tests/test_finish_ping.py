@@ -39,7 +39,7 @@ def client(tmp_path, monkeypatch):
         yield c, token_file
 
 
-def _setup_endpoint(monkeypatch, posted, existing_completions, refill_calls, refill_return):
+def _setup_endpoint(monkeypatch, posted, existing_completions, refill_calls, refill_return, job_being_completed=None):
     """Reviewer with two assigned projects (A, B); refill is stubbed."""
     monkeypatch.setenv("SLACK_NOTIFY_CHANNEL", "C0TEST")
     monkeypatch.setattr(main, "_latest_snapshot", lambda: ("snap1", {}))
@@ -48,10 +48,19 @@ def _setup_endpoint(monkeypatch, posted, existing_completions, refill_calls, ref
         "_rows_for_reviewer",
         lambda snap, email, force=False: [{"jobId": "A"}, {"jobId": "B"}],
     )
+
+    def fake_list_completions(snap, reviewer_email=None, force=False):
+        # When the finish-check reads completions with force=True, include the
+        # job being completed (it was written to storage by the POST endpoint).
+        completions = list(existing_completions)
+        if force and job_being_completed:
+            completions.append({"job_id": job_being_completed})
+        return completions
+
     monkeypatch.setattr(
         main,
         "_list_completions_for_snapshot",
-        lambda snap, reviewer_email=None, force=False: existing_completions,
+        fake_list_completions,
     )
     monkeypatch.setattr(main.roles, "list_reviewers", lambda: [
         {"id": "r1", "name": "Sam", "email": "sam@storesight.com"},
@@ -71,6 +80,9 @@ def _setup_endpoint(monkeypatch, posted, existing_completions, refill_calls, ref
 
     monkeypatch.setattr(internal_api, "post", fake_post)
 
+    # Return the job being completed so tests can pass it
+    return job_being_completed
+
 
 def test_finish_triggers_refill_and_ping(client, monkeypatch):
     c, token_file = client
@@ -78,7 +90,7 @@ def test_finish_triggers_refill_and_ping(client, monkeypatch):
     posted, refill_calls = [], []
     # A already done; completing B finishes the queue. Refill returns 2 jobs.
     _setup_endpoint(monkeypatch, posted, [{"job_id": "A"}], refill_calls,
-                    refill_return=[{"jobId": "X"}, {"jobId": "Y"}])
+                    refill_return=[{"jobId": "X"}, {"jobId": "Y"}], job_being_completed="B")
 
     resp = c.post("/api/shifts/my/complete", json={"job_id": "B"})
     assert resp.status_code == 201, resp.get_json()
@@ -109,7 +121,7 @@ def test_refill_runs_but_no_ping_when_channel_unset(client, monkeypatch):
     token_file.write_text(_make_dev_token("sam@storesight.com", "Sam"))
     posted, refill_calls = [], []
     _setup_endpoint(monkeypatch, posted, [{"job_id": "A"}], refill_calls,
-                    refill_return=[{"jobId": "X"}, {"jobId": "Y"}])
+                    refill_return=[{"jobId": "X"}, {"jobId": "Y"}], job_being_completed="B")
     monkeypatch.delenv("SLACK_NOTIFY_CHANNEL", raising=False)
 
     resp = c.post("/api/shifts/my/complete", json={"job_id": "B"})

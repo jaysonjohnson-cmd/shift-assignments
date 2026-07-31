@@ -1860,16 +1860,17 @@ def api_shifts_my_complete():
         assigned_keys = {_row_job_key(r) for r in assigned}
         done = _list_completions_for_snapshot(snap_id, reviewer_email=email, force=True)
         done_keys = {_completion_job_key(c) for c in done}
-        # Check if the queue was already complete before this job, so only the
-        # request that pushes it from incomplete→complete sends the notification.
-        # This prevents duplicate pings when multiple jobs are marked done concurrently.
-        was_complete = assigned_keys and assigned_keys <= done_keys
-        done_keys.add(job_id)
-        is_complete = assigned_keys and assigned_keys <= done_keys
+        # The completion for this job was already written to storage above, so
+        # done_keys includes it. To detect the transition from incomplete→complete,
+        # we check the state before and after, excluding the current job from "before".
+        done_keys_before = done_keys - {job_id}
+        done_keys_after = done_keys
+        was_complete = assigned_keys and assigned_keys <= done_keys_before
+        is_complete = assigned_keys and assigned_keys <= done_keys_after
         if not was_complete and is_complete:
-            # Refill a fresh fixed-size batch (the original allotment), then
-            # ping the admin. len(assigned) is only a fallback for legacy
-            # snapshots that predate the stored batch_size.
+            # This job pushed us from incomplete→complete. Refill a fresh fixed-size
+            # batch (the original allotment), then ping the admin. len(assigned) is
+            # only a fallback for legacy snapshots that predate the stored batch_size.
             added = _auto_refill_reviewer(snap_id, email, len(assigned))
             _notify_reviewer_finished(email, len(assigned), len(added))
     except Exception as exc:  # noqa: BLE001 — refill/ping must not break completion
