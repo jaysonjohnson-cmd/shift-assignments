@@ -2168,8 +2168,8 @@ def api_shifts_jobs():
 
 @app.route("/api/shifts/remove-job", methods=["POST"])
 def api_remove_job():
-    """Remove a specific job from a reviewer's assignment. Admin only."""
-    denied = _require_admin()
+    """Remove a specific job from a reviewer's assignment. Admin or lead only."""
+    denied = _require_admin_or_lead()
     if denied is not None:
         return denied
     body = request.get_json(silent=True) or {}
