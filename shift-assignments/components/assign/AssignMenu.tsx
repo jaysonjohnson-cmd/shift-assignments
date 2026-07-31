@@ -220,39 +220,58 @@ export function AssignMenu({
               onClick={handleRefresh}
               disabled={busy}
             />
-            <div className="rounded-xl border border-storesight-border bg-white p-4 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark">
-              <div className="mb-3 flex items-center gap-2">
-                {SunIcon}
-                <h3 className="text-sm font-semibold text-storesight-primary-dark dark:text-storesight-ink-dark">
-                  Auto-publish Now
-                </h3>
+            <div className="rounded-xl border border-storesight-border bg-gradient-to-br from-storesight-accent/10 to-storesight-primary/10 p-5 dark:border-storesight-border-dark dark:from-storesight-accent-light/5 dark:to-storesight-primary/5">
+              <div className="mb-4 flex items-start justify-between">
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 text-storesight-accent">{SunIcon}</div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-storesight-primary-dark dark:text-storesight-ink-dark">
+                      Auto-publish Now
+                    </h3>
+                    <p className="mt-1 text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                      Fetch and distribute jobs automatically
+                    </p>
+                  </div>
+                </div>
               </div>
-              <p className="mb-3 text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-                Fetch jobs and distribute to scheduled reviewers automatically.
-              </p>
-              <div className="mb-3 space-y-2">
-                <label className="block text-[11px] font-medium text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-                  Shift time (optional)
-                </label>
-                <select
-                  value={selectedShiftTime}
-                  onChange={(e) => setSelectedShiftTime(e.target.value)}
+
+              <div className="space-y-3">
+                <div>
+                  <label className="mb-2 block text-[11px] font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                    Select Shift Time
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      { value: "", label: "All Shifts" },
+                      { value: "8:00 AM – 2:00 PM", label: "8:00 AM" },
+                      { value: "8:30 AM – 12:00 PM", label: "8:30 AM" },
+                      { value: "1:00 PM – 5:00 PM", label: "1:00 PM" },
+                      { value: "1:00 PM – 6:00 PM", label: "1:00 PM – 6PM" },
+                    ].map((option) => (
+                      <button
+                        key={option.value}
+                        onClick={() => setSelectedShiftTime(option.value)}
+                        disabled={busy}
+                        className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+                          selectedShiftTime === option.value
+                            ? "border-storesight-accent bg-storesight-accent/20 text-storesight-primary dark:border-storesight-accent-light dark:bg-storesight-accent-light/20 dark:text-storesight-accent-light"
+                            : "border-storesight-border bg-white text-storesight-ink-muted hover:border-storesight-accent/50 hover:text-storesight-primary dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark dark:hover:border-storesight-accent-light/50 dark:hover:text-storesight-accent-light"
+                        } disabled:opacity-50`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleAutoPublish}
                   disabled={busy}
-                  className="w-full rounded-lg border border-storesight-border bg-white px-2.5 py-1.5 text-xs font-medium text-storesight-primary-dark transition dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark disabled:opacity-50"
+                  className="w-full rounded-lg bg-storesight-accent px-3 py-2 text-xs font-semibold text-white transition hover:bg-storesight-accent-dark disabled:opacity-60 dark:bg-storesight-accent-light dark:text-storesight-primary-dark dark:hover:bg-white"
                 >
-                  <option value="">All scheduled reviewers</option>
-                  <option value="8:30 AM">8:30 AM</option>
-                  <option value="1:00 PM">1:00 PM</option>
-                  <option value="Other Times">Other Times</option>
-                </select>
+                  {busy ? "Publishing…" : "Publish"}
+                </button>
               </div>
-              <button
-                onClick={handleAutoPublish}
-                disabled={busy}
-                className="w-full rounded-lg bg-storesight-accent px-3 py-1.5 text-xs font-medium text-white transition hover:bg-storesight-accent-dark disabled:opacity-50 dark:bg-storesight-accent-light dark:text-storesight-primary-dark"
-              >
-                {busy ? "Publishing…" : "Publish"}
-              </button>
             </div>
           </div>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">

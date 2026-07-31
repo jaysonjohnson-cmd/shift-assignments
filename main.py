@@ -447,8 +447,23 @@ def _get_todays_scheduled_reviewers(shift_time=None):
 
         # Fetch this week's schedule from Team Scheduler
         url = f"{TEAM_SCHEDULER_URL}/api/week/{week_key}?team=default"
-        token = request.cookies.get("storesight_session")
-        headers = {"Cookie": f"storesight_session={token}"} if token else {}
+        headers = {}
+
+        # In LOCAL_DEV, read dev token from file and pass as Bearer token
+        if LOCAL_DEV:
+            try:
+                import pathlib
+                token_file = pathlib.Path.home() / ".storesight" / "dev-token"
+                dev_token = token_file.read_text().strip()
+                headers = {"Authorization": f"Bearer {dev_token}"}
+            except Exception:
+                pass  # Continue without auth if token unavailable
+        else:
+            # Production: pass session cookie
+            token = request.cookies.get("storesight_session")
+            if token:
+                headers = {"Cookie": f"storesight_session={token}"}
+
         resp = requests.get(url, headers=headers, timeout=10)
         resp.raise_for_status()
 
