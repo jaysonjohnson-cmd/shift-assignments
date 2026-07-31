@@ -181,10 +181,13 @@ export async function publishShift(
   return resp.data;
 }
 
-export async function autoPublishShift(): Promise<{ snapshot_id: string; assigned_jobs: number; reviewer_count: number; published_at: string }> {
+export async function autoPublishShift(shiftTime?: string): Promise<{ snapshot_id: string; assigned_jobs: number; reviewer_count: number; published_at: string }> {
+  const url = shiftTime
+    ? `/api/shifts/auto-publish?shift_time=${encodeURIComponent(shiftTime)}`
+    : "/api/shifts/auto-publish";
   const resp = await call<{ snapshot_id: string; assigned_jobs: number; reviewer_count: number; published_at: string }>(
     "POST",
-    "/api/shifts/auto-publish",
+    url,
   );
   return resp;
 }

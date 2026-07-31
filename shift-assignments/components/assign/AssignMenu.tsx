@@ -76,6 +76,7 @@ export function AssignMenu({
   const [toast, setToast] = useState<string | null>(null);
   const [clearCount, setClearCount] = useState(0);
   const [breakdownDismissed, setBreakdownDismissed] = useState(false);
+  const [selectedShiftTime, setSelectedShiftTime] = useState<string>("");
   const dashboardRef = useRef<HTMLDivElement>(null);
 
   const handleRefresh = async () => {
@@ -145,8 +146,9 @@ export function AssignMenu({
     setBusy(true);
     setError(null);
     try {
-      const result = await autoPublishShift();
-      setToast(`Published ${result.assigned_jobs} jobs to ${result.reviewer_count} reviewers`);
+      const result = await autoPublishShift(selectedShiftTime || undefined);
+      const timeLabel = selectedShiftTime ? ` at ${selectedShiftTime}` : "";
+      setToast(`Published ${result.assigned_jobs} jobs to ${result.reviewer_count} reviewers${timeLabel}`);
       setTimeout(() => setToast(null), 4000);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Auto-publish failed");
@@ -218,14 +220,40 @@ export function AssignMenu({
               onClick={handleRefresh}
               disabled={busy}
             />
-            <Tile
-              title={busy ? "Publishing…" : "Auto-publish Now"}
-              description="Fetch jobs and distribute to scheduled reviewers automatically."
-              icon={SunIcon}
-              accent="from-storesight-accent/10 to-storesight-primary/10"
-              onClick={handleAutoPublish}
-              disabled={busy}
-            />
+            <div className="rounded-xl border border-storesight-border bg-white p-4 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark">
+              <div className="mb-3 flex items-center gap-2">
+                {SunIcon}
+                <h3 className="text-sm font-semibold text-storesight-primary-dark dark:text-storesight-ink-dark">
+                  Auto-publish Now
+                </h3>
+              </div>
+              <p className="mb-3 text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                Fetch jobs and distribute to scheduled reviewers automatically.
+              </p>
+              <div className="mb-3 space-y-2">
+                <label className="block text-[11px] font-medium text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                  Shift time (optional)
+                </label>
+                <select
+                  value={selectedShiftTime}
+                  onChange={(e) => setSelectedShiftTime(e.target.value)}
+                  disabled={busy}
+                  className="w-full rounded-lg border border-storesight-border bg-white px-2.5 py-1.5 text-xs font-medium text-storesight-primary-dark transition dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark disabled:opacity-50"
+                >
+                  <option value="">All scheduled reviewers</option>
+                  <option value="8:30 AM">8:30 AM</option>
+                  <option value="1:00 PM">1:00 PM</option>
+                  <option value="Other Times">Other Times</option>
+                </select>
+              </div>
+              <button
+                onClick={handleAutoPublish}
+                disabled={busy}
+                className="w-full rounded-lg bg-storesight-accent px-3 py-1.5 text-xs font-medium text-white transition hover:bg-storesight-accent-dark disabled:opacity-50 dark:bg-storesight-accent-light dark:text-storesight-primary-dark"
+              >
+                {busy ? "Publishing…" : "Publish"}
+              </button>
+            </div>
           </div>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <Tile
