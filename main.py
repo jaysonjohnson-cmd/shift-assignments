@@ -1860,8 +1860,13 @@ def api_shifts_my_complete():
         assigned_keys = {_row_job_key(r) for r in assigned}
         done = _list_completions_for_snapshot(snap_id, reviewer_email=email, force=True)
         done_keys = {_completion_job_key(c) for c in done}
+        # Check if the queue was already complete before this job, so only the
+        # request that pushes it from incomplete→complete sends the notification.
+        # This prevents duplicate pings when multiple jobs are marked done concurrently.
+        was_complete = assigned_keys and assigned_keys <= done_keys
         done_keys.add(job_id)
-        if assigned_keys and assigned_keys <= done_keys:
+        is_complete = assigned_keys and assigned_keys <= done_keys
+        if not was_complete and is_complete:
             # Refill a fresh fixed-size batch (the original allotment), then
             # ping the admin. len(assigned) is only a fallback for legacy
             # snapshots that predate the stored batch_size.
