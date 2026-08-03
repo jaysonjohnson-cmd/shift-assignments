@@ -1580,12 +1580,19 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
     return fresh
 
 
+# Track when we last notified a reviewer to prevent Slack spam from concurrent requests
+_LAST_NOTIFICATION_TIME: dict = {}
+_NOTIFICATION_COOLDOWN_SECS = 5  # Don't send another notification within 5 seconds
+
 def _notify_reviewer_finished(email, total_jobs, added_jobs):
     """Best-effort Slack ping when a reviewer finishes their whole queue.
 
     Posts to the channel in the SLACK_NOTIFY_CHANNEL env var. No-ops (with a
     log line) when no channel is configured, and never raises — a failed ping
     must never break the reviewer's completion.
+
+    Includes de-duplication: won't send another notification for the same
+    reviewer within 5 seconds to prevent Slack spam from concurrent requests.
     """
     channel = (os.environ.get("SLACK_NOTIFY_CHANNEL") or "").strip()
     if not channel:
@@ -1593,6 +1600,16 @@ def _notify_reviewer_finished(email, total_jobs, added_jobs):
             "reviewer %s finished all jobs; SLACK_NOTIFY_CHANNEL unset, no ping", email
         )
         return
+
+    # De-duplicate: skip if we just notified this reviewer recently
+    now = time.time()
+    last_notif = _LAST_NOTIFICATION_TIME.get(email, 0)
+    if now - last_notif < _NOTIFICATION_COOLDOWN_SECS:
+        logging.info("finish-ping skipped for %s (notified %0.1f seconds ago)",
+                    email, now - last_notif)
+        return
+    _LAST_NOTIFICATION_TIME[email] = now
+
     name = email
     try:
         for r in roles.list_reviewers():
@@ -1889,18 +1906,12 @@ def api_shifts_my_complete():
         was_complete = len(assigned_keys) > 0 and assigned_keys <= done_keys_before
         is_complete = len(assigned_keys) > 0 and assigned_keys <= done_keys_after
 
-        # Race condition guard: only refill if this is the FIRST completion ever
-        # for this reviewer in this snapshot (done_keys_before is empty). This
-        # prevents multiple concurrent completions from all triggering refill.
-        first_completion = len(done_keys_before) == 0
-
         logging.info(
-            "finish-check for %s: assigned=%d, done=%d, was_complete=%s, is_complete=%s, first=%s",
-            email, len(assigned_keys), len(done_keys), was_complete, is_complete, first_completion,
+            "finish-check for %s: assigned=%d, done=%d, was_complete=%s, is_complete=%s",
+            email, len(assigned_keys), len(done_keys), was_complete, is_complete,
         )
-        if not was_complete and is_complete and first_completion:
-            # This job pushed us from incomplete→complete, and this is the first
-            # completion. Refill a fresh fixed-size batch.
+        if not was_complete and is_complete:
+            # This job pushed us from incomplete→complete. Refill a fresh fixed-size batch.
             batch_size = len(assigned)
             logging.info("finish-check: triggering auto-refill for %s (batch_size=%d)", email, batch_size)
             added = _auto_refill_reviewer(snap_id, email, batch_size)
@@ -1911,10 +1922,8 @@ def api_shifts_my_complete():
             else:
                 logging.info("finish-check: auto-refill found no new jobs for %s (pool exhausted?)", email)
         else:
-            if not first_completion:
-                logging.info("finish-check: not first completion, skipping refill")
-            else:
-                logging.info("finish-check: no refill needed (not complete)")
+            logging.info("finish-check: no refill needed for %s (was_complete=%s, is_complete=%s)",
+                        email, was_complete, is_complete)
     except Exception as exc:  # noqa: BLE001 — refill/ping must not break completion
         logging.error("finish-check failed for %s: %s", email, exc, exc_info=True)
     return jsonify({"data": {"id": doc_id, **doc}}), 201
