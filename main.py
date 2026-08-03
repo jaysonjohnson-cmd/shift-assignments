@@ -1580,19 +1580,12 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
     return fresh
 
 
-# Track when we last notified a reviewer to prevent Slack spam from concurrent requests
-_LAST_NOTIFICATION_TIME: dict = {}
-_NOTIFICATION_COOLDOWN_SECS = 5  # Don't send another notification within 5 seconds
-
-def _notify_reviewer_finished(email, total_jobs, added_jobs):
+def _notify_reviewer_finished(email, total_jobs, added_jobs, snap_id=None):
     """Best-effort Slack ping when a reviewer finishes their whole queue.
 
     Posts to the channel in the SLACK_NOTIFY_CHANNEL env var. No-ops (with a
     log line) when no channel is configured, and never raises — a failed ping
     must never break the reviewer's completion.
-
-    Includes de-duplication: won't send another notification for the same
-    reviewer within 5 seconds to prevent Slack spam from concurrent requests.
     """
     channel = (os.environ.get("SLACK_NOTIFY_CHANNEL") or "").strip()
     if not channel:
@@ -1600,15 +1593,6 @@ def _notify_reviewer_finished(email, total_jobs, added_jobs):
             "reviewer %s finished all jobs; SLACK_NOTIFY_CHANNEL unset, no ping", email
         )
         return
-
-    # De-duplicate: skip if we just notified this reviewer recently
-    now = time.time()
-    last_notif = _LAST_NOTIFICATION_TIME.get(email, 0)
-    if now - last_notif < _NOTIFICATION_COOLDOWN_SECS:
-        logging.info("finish-ping skipped for %s (notified %0.1f seconds ago)",
-                    email, now - last_notif)
-        return
-    _LAST_NOTIFICATION_TIME[email] = now
 
     name = email
     try:
@@ -1916,9 +1900,12 @@ def api_shifts_my_complete():
             logging.info("finish-check: triggering auto-refill for %s (batch_size=%d)", email, batch_size)
             added = _auto_refill_reviewer(snap_id, email, batch_size)
             logging.info("finish-check: auto-refill for %s returned %d new jobs", email, len(added))
-            # Only send notification if refill actually found jobs
+            # Only send notification if refill actually found jobs. With high concurrency,
+            # multiple requests may all call refill before any writes to storage, potentially
+            # sending duplicate notifications. This is acceptable since notifications are
+            # best-effort and duplicates won't break the system.
             if added:
-                _notify_reviewer_finished(email, batch_size, len(added))
+                _notify_reviewer_finished(email, batch_size, len(added), snap_id)
             else:
                 logging.info("finish-check: auto-refill found no new jobs for %s (pool exhausted?)", email)
         else:

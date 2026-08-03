@@ -211,13 +211,13 @@ export default function AssignmentsPage() {
         const db = dateOf(b);
         // Known oldest dates first (ascending = oldest), unknowns sink last,
         // priority as the final tiebreak.
-        if (da && db) return da < db ? -1 : da > db ? 1 : b.priority - a.priority;
+        if (da && db) return da < db ? -1 : da > db ? 1 : a.priority - b.priority;
         if (da) return -1;
         if (db) return 1;
-        return b.priority - a.priority;
+        return a.priority - b.priority;
       });
     }
-    return [...filtered].sort((a, b) => b.priority - a.priority);
+    return [...filtered].sort((a, b) => a.priority - b.priority);
   }, [rows, prioritizeAged, retailPipelineOnly, assignedElsewhereKeys, agedSubDates, agedMinDays]);
 
   const cancel = () => {
