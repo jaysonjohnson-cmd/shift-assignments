@@ -276,9 +276,20 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
     distributeJobs(regularJobs, "priority");
   }
 
-  const leftover = unpinned.slice(
-    unpinned.length - Object.values(unpinnedNeeded).reduce((a, b) => a + b, 0)
-  );
+  // Calculate leftover by tracking which unpinned jobs were actually placed.
+  // Can't use slice() because distributed jobs may be scattered throughout the
+  // unpinned array when priority reordering happens.
+  const placedKeys = new Set<string>();
+  for (const rows of Object.values(assignments)) {
+    for (const row of rows) {
+      const key = String(row.jobId || row.id || "");
+      if (key) placedKeys.add(key);
+    }
+  }
+  const leftover = unpinned.filter((r) => {
+    const key = String(r.jobId || r.id || "");
+    return !placedKeys.has(key);
+  });
   return { assignments, leftover };
 }
 
