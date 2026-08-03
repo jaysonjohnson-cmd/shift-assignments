@@ -114,7 +114,8 @@
       "Bash(grep -E \"\\\\.\\(tsx|ts|jsx|js\\)$\")",
       "Bash(npm install *)",
       "Bash(curl -s http://localhost:5173)",
-      "Bash(git commit -m 'Fix auto-refill completion check logic and add detailed logging *)"
+      "Bash(git commit -m 'Fix auto-refill completion check logic and add detailed logging *)",
+      "Bash(git commit -m 'Fix multiple auto-refill notifications per snapshot *)"
     ]
   }
 }
