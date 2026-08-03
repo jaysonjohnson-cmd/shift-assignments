@@ -597,7 +597,8 @@ def api_shifts_auto_publish():
         if not normalized:
             return jsonify({"error": "no valid jobs to assign"}), 400
 
-        # Dedup across reviewers
+        # Dedup across reviewers and cap at 20 jobs per reviewer
+        MAX_JOBS_PER_REVIEWER = 20
         seen_job_keys = set()
         reviewer_emails = sorted(normalized.keys())
         for email in reviewer_emails:
@@ -608,7 +609,8 @@ def api_shifts_auto_publish():
                     deduped.append(r)
                     if jk:
                         seen_job_keys.add(jk)
-            normalized[email] = deduped
+            # Cap at 20 jobs per reviewer
+            normalized[email] = deduped[:MAX_JOBS_PER_REVIEWER]
 
         published_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
         published_by = "auto-scheduler"
