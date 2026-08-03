@@ -1883,36 +1883,24 @@ def api_shifts_my_complete():
         done_keys_before = done_keys - {job_id}
         done_keys_after = done_keys
 
-        # Detect if refill has already happened for this reviewer in this snapshot
-        # by checking if there are any non-part-0 reviewer_shift docs (refills add
-        # new parts). If refill has happened, we DON'T trigger another refill until
-        # the next snapshot.
-        refilled_already = False
-        for doc in roles.list_docs_by_kind("reviewer_shift", force=True):
-            data = doc.get("data") or {}
-            if data.get("shift_snapshot_id") != snap_id:
-                continue
-            if (data.get("reviewer_email") or "").strip().lower() != email.lower():
-                continue
-            part = int(data.get("part") or 0)
-            if part > 0:
-                refilled_already = True
-                break
-
         # was_complete = all assigned jobs were done before this completion
         # is_complete = all assigned jobs are done after this completion
-        # Only trigger refill if: not all were done before, but all are done now,
-        # AND we haven't already refilled this reviewer in this snapshot
+        # Only trigger refill if: not all were done before, but all are done now
         was_complete = len(assigned_keys) > 0 and assigned_keys <= done_keys_before
         is_complete = len(assigned_keys) > 0 and assigned_keys <= done_keys_after
 
+        # Race condition guard: only refill if this is the FIRST completion ever
+        # for this reviewer in this snapshot (done_keys_before is empty). This
+        # prevents multiple concurrent completions from all triggering refill.
+        first_completion = len(done_keys_before) == 0
+
         logging.info(
-            "finish-check for %s: assigned=%d, done=%d, was_complete=%s, is_complete=%s, refilled_already=%s",
-            email, len(assigned_keys), len(done_keys), was_complete, is_complete, refilled_already,
+            "finish-check for %s: assigned=%d, done=%d, was_complete=%s, is_complete=%s, first=%s",
+            email, len(assigned_keys), len(done_keys), was_complete, is_complete, first_completion,
         )
-        if not was_complete and is_complete and not refilled_already:
-            # This job pushed us from incomplete→complete, and we haven't refilled
-            # this reviewer yet. Refill a fresh fixed-size batch.
+        if not was_complete and is_complete and first_completion:
+            # This job pushed us from incomplete→complete, and this is the first
+            # completion. Refill a fresh fixed-size batch.
             batch_size = len(assigned)
             logging.info("finish-check: triggering auto-refill for %s (batch_size=%d)", email, batch_size)
             added = _auto_refill_reviewer(snap_id, email, batch_size)
@@ -1923,10 +1911,10 @@ def api_shifts_my_complete():
             else:
                 logging.info("finish-check: auto-refill found no new jobs for %s (pool exhausted?)", email)
         else:
-            if refilled_already and not was_complete:
-                logging.info("finish-check: reviewer already refilled this snapshot, no more refills")
-            elif was_complete:
-                logging.info("finish-check: no refill needed (not yet complete or already refilled)")
+            if not first_completion:
+                logging.info("finish-check: not first completion, skipping refill")
+            else:
+                logging.info("finish-check: no refill needed (not complete)")
     except Exception as exc:  # noqa: BLE001 — refill/ping must not break completion
         logging.error("finish-check failed for %s: %s", email, exc, exc_info=True)
     return jsonify({"data": {"id": doc_id, **doc}}), 201
