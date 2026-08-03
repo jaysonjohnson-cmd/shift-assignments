@@ -1882,16 +1882,27 @@ def api_shifts_my_complete():
         # we check the state before and after, excluding the current job from "before".
         done_keys_before = done_keys - {job_id}
         done_keys_after = done_keys
-        was_complete = assigned_keys and assigned_keys <= done_keys_before
-        is_complete = assigned_keys and assigned_keys <= done_keys_after
+        # was_complete = all assigned jobs were done before this completion
+        # is_complete = all assigned jobs are done after this completion
+        # Only trigger refill if: not all were done before, but all are done now
+        was_complete = len(assigned_keys) > 0 and assigned_keys <= done_keys_before
+        is_complete = len(assigned_keys) > 0 and assigned_keys <= done_keys_after
+        logging.info(
+            "finish-check for %s: assigned=%d, done=%d, was_complete=%s, is_complete=%s",
+            email, len(assigned_keys), len(done_keys), was_complete, is_complete,
+        )
         if not was_complete and is_complete:
             # This job pushed us from incomplete→complete. Refill a fresh fixed-size
             # batch (the original allotment), then ping the admin. len(assigned) is
             # only a fallback for legacy snapshots that predate the stored batch_size.
+            logging.info("finish-check: triggering auto-refill for %s (assigned=%d)", email, len(assigned))
             added = _auto_refill_reviewer(snap_id, email, len(assigned))
+            logging.info("finish-check: auto-refill for %s returned %d new jobs", email, len(added))
             _notify_reviewer_finished(email, len(assigned), len(added))
+        else:
+            logging.info("finish-check: no refill needed for %s", email)
     except Exception as exc:  # noqa: BLE001 — refill/ping must not break completion
-        logging.warning("finish-check failed for %s: %s", email, exc)
+        logging.error("finish-check failed for %s: %s", email, exc, exc_info=True)
     return jsonify({"data": {"id": doc_id, **doc}}), 201
 
 

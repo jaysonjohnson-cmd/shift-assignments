@@ -113,7 +113,8 @@
       "Bash(curl -s -H 'Authorization: Bearer __CMDSUB_OUTPUT__' 'http://localhost:8080/api/storage/shift-scheduler/?page=1&per_page=100')",
       "Bash(grep -E \"\\\\.\\(tsx|ts|jsx|js\\)$\")",
       "Bash(npm install *)",
-      "Bash(curl -s http://localhost:5173)"
+      "Bash(curl -s http://localhost:5173)",
+      "Bash(git commit -m 'Fix auto-refill completion check logic and add detailed logging *)"
     ]
   }
 }
