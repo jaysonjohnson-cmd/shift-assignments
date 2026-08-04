@@ -120,7 +120,8 @@
       "Bash(git commit -m 'Revert race-condition check and add Slack notification de-duplication *)",
       "Bash(git commit -m 'Fix priority sort order and clean up Slack deduplication *)",
       "Bash(git commit -m 'Fix leftover calculation in shift assignment *)",
-      "Bash(git commit -m 'Fix duplicate job assignments during merge-publish *)"
+      "Bash(git commit -m 'Fix duplicate job assignments during merge-publish *)",
+      "Bash(git commit -m 'Fix concurrent auto-refill duplicate job assignments *)"
     ]
   }
 }

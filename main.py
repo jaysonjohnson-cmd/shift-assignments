@@ -1485,11 +1485,44 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
     appends the new rows as an additional reviewer_shift chunk. Returns the
     rows added (compacted). Best-effort: returns [] on any failure or when the
     feed has nothing new left.
+
+    Concurrent refill safety: uses a "refill_lock" marker in storage to prevent
+    duplicate jobs when multiple refill requests run in parallel. Only one
+    refill per reviewer per snapshot is allowed at a time.
     """
     norm = (email or "").strip().lower()
     touched_keys = set()
     max_part = -1
     batch_size = None
+
+    # Guard against concurrent refills: check if another refill is in progress.
+    # If so, skip this one to avoid distributing the same jobs twice.
+    try:
+        lock_docs = roles.list_docs_by_kind("refill_lock", force=True)
+        for doc in lock_docs:
+            data = doc.get("data") or {}
+            if (data.get("shift_snapshot_id") == snap_id and
+                (data.get("reviewer_email") or "").strip().lower() == norm):
+                logging.info("auto-refill skipped for %s (refill already in progress)", email)
+                return []  # Another refill is running; skip to avoid duplicates
+    except Exception:
+        pass  # Best-effort; continue without the lock if it fails
+
+    # Write a lock marker to prevent concurrent refills
+    lock_doc = {
+        "kind": "refill_lock",
+        "shift_snapshot_id": snap_id,
+        "reviewer_email": norm,
+        "locked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    lock_id = None
+    try:
+        lock_resp = internal_api.post(_STORAGE_PATH, json={"data": lock_doc})
+        lock_id = (lock_resp.get("data") or {}).get("id")
+    except Exception as exc:
+        logging.warning("auto-refill: failed to create lock for %s: %s", email, exc)
+        return []  # Can't proceed safely without lock
+
     try:
         # Authoritative read: compute assigned_keys and next_part from current
         # storage so a concurrent refill's just-written part is seen — otherwise
@@ -1497,6 +1530,8 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         docs = roles.list_docs_by_kind("reviewer_shift", force=True)
     except Exception as exc:  # noqa: BLE001 — refill is best-effort
         logging.warning("auto-refill: failed to list shifts for %s: %s", email, exc)
+        if lock_id:
+            _try_delete(lock_id)
         return []
     for doc in docs:
         data = doc.get("data") or {}
@@ -1572,30 +1607,37 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             break
     if not fresh:
         logging.info("auto-refill: no new jobs left for %s", email)
+        if lock_id:
+            _try_delete(lock_id)
         return []
 
-    next_part = max_part + 1
-    chunks = _chunk_rows_for_storage(fresh)
-    for idx, chunk in enumerate(chunks):
-        doc = {
-            "kind": "reviewer_shift",
-            "shift_snapshot_id": snap_id,
-            "reviewer_email": norm,
-            "rows": chunk,
-            "part": next_part + idx,
-            "part_count": next_part + len(chunks),
-            "batch_size": count,
-        }
-        try:
-            r = internal_api.post(_STORAGE_PATH, json={"data": doc})
-            new_id = (r.get("data") or {}).get("id")
-            if new_id:
-                roles.cache_upsert_doc("reviewer_shift", {"id": new_id, "data": doc})
-        except Exception as exc:  # noqa: BLE001 — refill is best-effort
-            logging.warning("auto-refill: failed to store chunk for %s: %s", email, exc)
-            break
-    logging.info("auto-refilled %d jobs for %s", len(fresh), email)
-    return fresh
+    try:
+        next_part = max_part + 1
+        chunks = _chunk_rows_for_storage(fresh)
+        for idx, chunk in enumerate(chunks):
+            doc = {
+                "kind": "reviewer_shift",
+                "shift_snapshot_id": snap_id,
+                "reviewer_email": norm,
+                "rows": chunk,
+                "part": next_part + idx,
+                "part_count": next_part + len(chunks),
+                "batch_size": count,
+            }
+            try:
+                r = internal_api.post(_STORAGE_PATH, json={"data": doc})
+                new_id = (r.get("data") or {}).get("id")
+                if new_id:
+                    roles.cache_upsert_doc("reviewer_shift", {"id": new_id, "data": doc})
+            except Exception as exc:  # noqa: BLE001 — refill is best-effort
+                logging.warning("auto-refill: failed to store chunk for %s: %s", email, exc)
+                break
+        logging.info("auto-refilled %d jobs for %s", len(fresh), email)
+        return fresh
+    finally:
+        # Clean up the refill lock marker to allow future refills
+        if lock_id:
+            _try_delete(lock_id)
 
 
 def _notify_reviewer_finished(email, total_jobs, added_jobs, snap_id=None):
