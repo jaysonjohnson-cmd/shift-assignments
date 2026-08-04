@@ -1091,17 +1091,35 @@ def api_shifts_publish():
         except requests.exceptions.HTTPError as e:
             return _http_error_response(e)
         retained_keys: set = set()
+        deleted_ids: list = []
         for doc in all_shift_docs:
             doc_data = doc.get("data") or {}
             if doc_data.get("shift_snapshot_id") != existing_snap_id:
                 continue
-            if (doc_data.get("reviewer_email") or "").strip().lower() in normalized:
-                _try_delete(doc.get("id"))
+            reviewer_email = (doc_data.get("reviewer_email") or "").strip().lower()
+            if reviewer_email in normalized:
+                # Reviewer is being replaced — mark their old doc for deletion
+                deleted_ids.append(doc.get("id"))
             else:
+                # Reviewer is being kept — record their job keys as off-limits
                 for r in doc_data.get("rows") or []:
                     jk = str(r.get("jobId") or r.get("id") or "")
                     if jk:
                         retained_keys.add(jk)
+
+        # Delete old docs for replaced reviewers. If any deletion fails,
+        # abort the entire publish rather than silently creating duplicates.
+        for doc_id in deleted_ids:
+            try:
+                internal_api.delete(f"{_STORAGE_PATH}/{doc_id}")
+            except requests.exceptions.HTTPError as e:
+                logging.error("Failed to delete old reviewer doc %s during merge-publish: %s", doc_id, e)
+                return jsonify({
+                    "error": (
+                        f"Failed to clean up old assignments for replaced reviewer. "
+                        "This prevents duplicate job assignments. Please retry the publish."
+                    )
+                }), 500
 
         # Drop incoming rows that collide with a retained reviewer's jobs.
         if retained_keys:
