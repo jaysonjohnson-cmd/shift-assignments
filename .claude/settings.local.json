@@ -121,7 +121,12 @@
       "Bash(git commit -m 'Fix priority sort order and clean up Slack deduplication *)",
       "Bash(git commit -m 'Fix leftover calculation in shift assignment *)",
       "Bash(git commit -m 'Fix duplicate job assignments during merge-publish *)",
-      "Bash(git commit -m 'Fix concurrent auto-refill duplicate job assignments *)"
+      "Bash(git commit -m 'Fix concurrent auto-refill duplicate job assignments *)",
+      "Bash(curl -s -H \"Authorization: Bearer $\\(cat ~/.storesight/dev-token\\)\" http://localhost:8080/api/shifts/jobs)",
+      "Bash(curl -s http://localhost:60673)",
+      "Bash(npm test *)",
+      "Bash(cat)",
+      "Bash(node /tmp/tier-demo.js)"
     ]
   }
 }

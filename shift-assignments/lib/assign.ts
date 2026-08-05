@@ -69,6 +69,17 @@ export function evenDistribute(
 }
 
 /**
+ * Calculate days until a job's deadline. null when no/invalid endDate; negative = overdue.
+ */
+function daysUntilDeadline(row: Row): number | null {
+  const raw = String(row.extras?.endDate ?? "");
+  if (!raw) return null;
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return null;
+  return Math.ceil((d.getTime() - Date.now()) / 86_400_000);
+}
+
+/**
  * Walk `pool` using round-robin distribution (pool is assumed to be sorted
  * highest-priority first). Pinned projects are honored first: any row whose
  * `projectId` is pinned to a reviewer goes to that reviewer, and the slot's
@@ -77,7 +88,7 @@ export function evenDistribute(
  * frontloading early reviewers. Slots with empty reviewerId are dropped
  * (their would-be rows fall into leftover).
  */
-export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = false, balanceByResponses = false, prioritizeAged = false): ShiftResult {
+export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = false, balanceByResponses = false, prioritizeAged = false, prioritize36hr = false): ShiftResult {
   const pins = draft.projectPins ?? {};
 
   // Guarantee each job is handed to at most one reviewer. The upstream feed
@@ -155,6 +166,19 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
           (row.oldestSubmission && row.oldestSubmission > oneHourAgo)
       );
       regularJobs = unpinned.filter((row) => !newResponses.includes(row));
+    }
+
+    // Separate 36hr critical jobs (deadline within 36 hours)
+    let criticalJobs: Row[] = [];
+    if (prioritize36hr) {
+      criticalJobs = regularJobs.filter((row) => {
+        const daysLeft = daysUntilDeadline(row);
+        return daysLeft !== null && daysLeft <= 1.5;
+      });
+      regularJobs = regularJobs.filter((row) => {
+        const daysLeft = daysUntilDeadline(row);
+        return daysLeft === null || daysLeft > 1.5;
+      });
     }
 
     // Separate aged submissions (old_sub flag from Bloom) from fresh jobs
@@ -266,7 +290,14 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
       }
     };
 
-    // Distribute new responses first (Tier 1), then aged (Tier 2), then regular (Tier 3)
+    // Distribute in priority order:
+    // Tier 1: 36hr critical (deadline within 36 hours)
+    // Tier 2: New responses (last hour)
+    // Tier 3: Aged submissions
+    // Tier 4: Regular jobs
+    if (prioritize36hr) {
+      distributeJobs(criticalJobs, "new");
+    }
     if (prioritizeNew) {
       distributeJobs(newResponses, "new");
     }
