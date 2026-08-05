@@ -80,6 +80,53 @@ function daysUntilDeadline(row: Row): number | null {
 }
 
 /**
+ * Calculate days since oldest unreviewed response. null when no/invalid oldestSubmission.
+ */
+function daysWaiting(row: Row): number | null {
+  const raw = String(row.oldestSubmission ?? "");
+  if (!raw) return null;
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return null;
+  return Math.floor((Date.now() - d.getTime()) / 86_400_000);
+}
+
+/**
+ * Combined urgency score (0-100) based on deadline pressure and response age.
+ * Weights: deadline 60%, wait time 40%.
+ * Higher score = more urgent. Threshold for critical: 55+
+ */
+function urgencyScore(row: Row): number {
+  const daysLeft = daysUntilDeadline(row);
+  const daysOld = daysWaiting(row);
+
+  // Deadline urgency: 0-100 (overdue=100, >30 days=0)
+  let closeScore = 15; // unknown deadline — low baseline
+  if (daysLeft !== null) {
+    if (daysLeft < 0) closeScore = 100; // overdue
+    else if (daysLeft <= 1.5) closeScore = 100; // ≤36 hours
+    else if (daysLeft <= 3) closeScore = 90;
+    else if (daysLeft <= 7) closeScore = 70;
+    else if (daysLeft <= 14) closeScore = 50;
+    else if (daysLeft <= 30) closeScore = 30;
+    else closeScore = 10;
+  }
+
+  // Response age urgency: 0-100 (30+ days=100, 0 days=0)
+  let waitScore = 0; // unknown age — not urgent
+  if (daysOld !== null) {
+    if (daysOld >= 30) waitScore = 100;
+    else if (daysOld >= 14) waitScore = 80;
+    else if (daysOld >= 7) waitScore = 60;
+    else if (daysOld >= 3) waitScore = 40;
+    else if (daysOld >= 1) waitScore = 20;
+    else waitScore = 0;
+  }
+
+  // Blended score: deadline 60%, wait time 40%
+  return Math.round(0.6 * closeScore + 0.4 * waitScore);
+}
+
+/**
  * Walk `pool` using round-robin distribution (pool is assumed to be sorted
  * highest-priority first). Pinned projects are honored first: any row whose
  * `projectId` is pinned to a reviewer goes to that reviewer, and the slot's
@@ -88,7 +135,7 @@ function daysUntilDeadline(row: Row): number | null {
  * frontloading early reviewers. Slots with empty reviewerId are dropped
  * (their would-be rows fall into leftover).
  */
-export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = false, balanceByResponses = false, prioritizeAged = false, prioritize36hr = false): ShiftResult {
+export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = false, balanceByResponses = false, prioritizeUrgency = false, prioritizeAged = false): ShiftResult {
   const pins = draft.projectPins ?? {};
 
   // Guarantee each job is handed to at most one reviewer. The upstream feed
@@ -168,17 +215,12 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
       regularJobs = unpinned.filter((row) => !newResponses.includes(row));
     }
 
-    // Separate 36hr critical jobs (deadline within 36 hours)
-    let criticalJobs: Row[] = [];
-    if (prioritize36hr) {
-      criticalJobs = regularJobs.filter((row) => {
-        const daysLeft = daysUntilDeadline(row);
-        return daysLeft !== null && daysLeft <= 1.5;
-      });
-      regularJobs = regularJobs.filter((row) => {
-        const daysLeft = daysUntilDeadline(row);
-        return daysLeft === null || daysLeft > 1.5;
-      });
+    // Separate high-urgency jobs (deadline + response age combined)
+    let urgentJobs: Row[] = [];
+    if (prioritizeUrgency) {
+      // Score threshold: 55+ is high urgency (approaching deadline OR aged responses)
+      urgentJobs = regularJobs.filter((row) => urgencyScore(row) >= 55);
+      regularJobs = regularJobs.filter((row) => urgencyScore(row) < 55);
     }
 
     // Separate aged submissions (old_sub flag from Bloom) from fresh jobs
@@ -291,12 +333,12 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
     };
 
     // Distribute in priority order:
-    // Tier 1: 36hr critical (deadline within 36 hours)
+    // Tier 1: High-urgency jobs (deadline + response age combined)
     // Tier 2: New responses (last hour)
-    // Tier 3: Aged submissions
+    // Tier 3: Aged submissions (with true submission dates if loading)
     // Tier 4: Regular jobs
-    if (prioritize36hr) {
-      distributeJobs(criticalJobs, "new");
+    if (prioritizeUrgency) {
+      distributeJobs(urgentJobs, "new");
     }
     if (prioritizeNew) {
       distributeJobs(newResponses, "new");

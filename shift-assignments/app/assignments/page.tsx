@@ -49,8 +49,8 @@ export default function AssignmentsPage() {
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [prioritizeFilter, setPrioritizeFilter] = useState(false);
   const [balanceByResponses, setBalanceByResponses] = useState(false);
+  const [prioritizeUrgency, setPrioritizeUrgency] = useState(false);
   const [prioritizeAged, setPrioritizeAged] = useState(false);
-  const [prioritize36hr, setPrioritize36hr] = useState(false);
   // True oldest-unreviewed-submission date per jobId, used to rank the aged pool.
   const [agedSubDates, setAgedSubDates] = useState<Record<string, string>>({});
   // "Only assign jobs older than N days" (0 = no threshold, just oldest-first).
@@ -268,7 +268,7 @@ export default function AssignmentsPage() {
     setBusy(true);
     setError(null);
     try {
-      const result = assignShift(priorityPool, draft, prioritizeFilter, balanceByResponses, prioritizeAged, prioritize36hr);
+      const result = assignShift(priorityPool, draft, prioritizeFilter, balanceByResponses, prioritizeUrgency, prioritizeAged);
       const byEmail = toEmailMap(result.assignments, reviewers);
       const resp = await publishShift(byEmail);
       setLastPublishedAt(resp.published_at);
@@ -336,9 +336,9 @@ export default function AssignmentsPage() {
                 <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3h.2a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8v.2a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
               </svg>
               Options
-              {(prioritizeFilter || balanceByResponses || statusFilter || prioritizeAged || prioritize36hr || retailPipelineOnly) && (
+              {(prioritizeFilter || balanceByResponses || statusFilter || prioritizeUrgency || prioritizeAged || retailPipelineOnly) && (
                 <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-storesight-primary text-[9px] font-bold text-white dark:bg-storesight-accent-light dark:text-storesight-surface-dark">
-                  {[prioritizeFilter, balanceByResponses, !!statusFilter, prioritizeAged, prioritize36hr, retailPipelineOnly].filter(Boolean).length}
+                  {[prioritizeFilter, balanceByResponses, !!statusFilter, prioritizeUrgency, prioritizeAged, retailPipelineOnly].filter(Boolean).length}
                 </span>
               )}
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden className={`transition-transform ${showOptions ? "rotate-180" : ""}`}>
@@ -386,15 +386,15 @@ export default function AssignmentsPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setPrioritize36hr(!prioritize36hr)}
-                    title="Prioritize jobs closing within 36 hours and assign them first"
+                    onClick={() => setPrioritizeUrgency(!prioritizeUrgency)}
+                    title="Prioritize jobs by combined deadline + response age urgency (55+ score)"
                     className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                      prioritize36hr
+                      prioritizeUrgency
                         ? "border border-storesight-primary bg-storesight-primary/10 text-storesight-primary dark:border-storesight-accent-light dark:bg-storesight-accent/20 dark:text-storesight-accent-light"
                         : "border border-storesight-border bg-white text-storesight-ink-muted hover:border-storesight-primary/40 dark:border-storesight-border-dark dark:bg-storesight-surface-dark dark:text-storesight-ink-muted-dark"
                     }`}
                   >
-                    {prioritize36hr ? "✓ " : ""}Prioritize 36hr critical
+                    {prioritizeUrgency ? "✓ " : ""}Prioritize by urgency
                   </button>
                   <button
                     type="button"
