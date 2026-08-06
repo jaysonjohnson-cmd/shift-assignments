@@ -234,40 +234,6 @@ export default function AssignmentsPage() {
     );
   }
 
-  const [loadingInitialDraft, setLoadingInitialDraft] = useState(false);
-
-  useEffect(() => {
-    if (mode.kind !== "shift" || loadingInitialDraft) return;
-    if (mode.draft.slots.length > 0) return; // Already has slots, don't reload
-
-    setLoadingInitialDraft(true);
-    (async () => {
-      try {
-        const liveShift = await getShiftJobs();
-        if (liveShift.jobs_by_reviewer && liveShift.jobs_by_reviewer.length > 0) {
-          const newSlots = liveShift.jobs_by_reviewer
-            .filter((group) => group.email)
-            .map((group) => {
-              const reviewer = reviewers.find((r) => r.email.toLowerCase() === group.email.toLowerCase());
-              return {
-                reviewerId: reviewer?.id || "",
-                count: group.jobs.length,
-                locked: false,
-              };
-            })
-            .filter((slot) => slot.reviewerId);
-          if (newSlots.length > 0) {
-            setMode({ kind: "shift", draft: { ...mode.draft, slots: newSlots } });
-          }
-        }
-      } catch {
-        // Best-effort — if we can't load live shift, keep the empty draft
-      } finally {
-        setLoadingInitialDraft(false);
-      }
-    })();
-  }, [mode.kind, mode.draft.slots.length, reviewers, loadingInitialDraft]);
-
   if (mode.kind === "menu") {
     return (
       <AssignMenu
