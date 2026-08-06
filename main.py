@@ -1080,15 +1080,14 @@ def api_shifts_publish():
 
     if existing_snap_id:
         # When adding to a published shift, merge new jobs with existing ones.
-        # Collect all existing job keys (across all reviewers) to prevent duplicates.
-        # Reviewers not in this publish keep all their jobs; reviewers in this
-        # publish get the new jobs appended.
+        # Collect existing jobs per reviewer to preserve them.
+        # Only prevent assigning jobs to multiple reviewers (cross-reviewer dedup).
         try:
             all_shift_docs = roles.list_docs_by_kind("reviewer_shift")
         except requests.exceptions.HTTPError as e:
             return _http_error_response(e)
         existing_jobs_by_email: dict = {}
-        all_assigned_keys: set = set()
+        other_reviewers_keys: set = set()
         for doc in all_shift_docs:
             doc_data = doc.get("data") or {}
             if doc_data.get("shift_snapshot_id") != existing_snap_id:
@@ -1098,20 +1097,23 @@ def api_shifts_publish():
             if not existing_jobs_by_email.get(reviewer_email):
                 existing_jobs_by_email[reviewer_email] = []
             existing_jobs_by_email[reviewer_email].extend(rows)
-            # Track all assigned jobs to prevent duplicates
-            for r in rows:
-                jk = str(r.get("jobId") or r.get("id") or "")
-                if jk:
-                    all_assigned_keys.add(jk)
 
-        # For reviewers already in the shift, append new jobs to their existing ones.
-        # For reviewers not in this publish, keep all their existing jobs.
+        # Build set of keys for OTHER reviewers (to prevent cross-reviewer duplication)
+        for email, jobs in existing_jobs_by_email.items():
+            if email not in normalized:  # This reviewer is NOT in the new publish
+                # Their jobs stay assigned to them; track keys to prevent reassigning to others
+                for r in jobs:
+                    jk = str(r.get("jobId") or r.get("id") or "")
+                    if jk:
+                        other_reviewers_keys.add(jk)
+
+        # For reviewers in the new publish: keep all existing + add new jobs (minus cross-reviewer dupes)
         for email in reviewer_emails:
             existing = existing_jobs_by_email.get(email, [])
-            # Deduplicate against all assigned keys (including from other reviewers)
+            # Only filter new jobs against OTHER reviewers' jobs (not this reviewer's existing ones)
             new_jobs = [
                 r for r in normalized[email]
-                if str(r.get("jobId") or r.get("id") or "") not in all_assigned_keys
+                if str(r.get("jobId") or r.get("id") or "") not in other_reviewers_keys
             ]
             # Append new jobs to existing ones
             normalized[email] = existing + new_jobs
