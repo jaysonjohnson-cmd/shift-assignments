@@ -1079,55 +1079,42 @@ def api_shifts_publish():
         existing_snap_id, existing_snap_data = None, None
 
     if existing_snap_id:
-        # Single pass over the live shift's docs: delete the docs for reviewers
-        # being replaced, and collect the job keys held by reviewers we are
-        # KEEPING. Those retained jobs must not be handed to anyone in this
-        # publish, or the same job would sit on two reviewers at once. The
-        # assignment pool comes from the live Bloom feed, which doesn't know a
-        # job is already assigned — so this server-side guard is what actually
-        # prevents overlap, regardless of which compose options were used.
+        # When adding to a published shift, merge new jobs with existing ones.
+        # Collect all existing job keys (across all reviewers) to prevent duplicates.
+        # Reviewers not in this publish keep all their jobs; reviewers in this
+        # publish get the new jobs appended.
         try:
             all_shift_docs = roles.list_docs_by_kind("reviewer_shift")
         except requests.exceptions.HTTPError as e:
             return _http_error_response(e)
-        retained_keys: set = set()
-        deleted_ids: list = []
+        existing_jobs_by_email: dict = {}
+        all_assigned_keys: set = set()
         for doc in all_shift_docs:
             doc_data = doc.get("data") or {}
             if doc_data.get("shift_snapshot_id") != existing_snap_id:
                 continue
             reviewer_email = (doc_data.get("reviewer_email") or "").strip().lower()
-            if reviewer_email in normalized:
-                # Reviewer is being replaced — mark their old doc for deletion
-                deleted_ids.append(doc.get("id"))
-            else:
-                # Reviewer is being kept — record their job keys as off-limits
-                for r in doc_data.get("rows") or []:
-                    jk = str(r.get("jobId") or r.get("id") or "")
-                    if jk:
-                        retained_keys.add(jk)
+            rows = doc_data.get("rows") or []
+            if not existing_jobs_by_email.get(reviewer_email):
+                existing_jobs_by_email[reviewer_email] = []
+            existing_jobs_by_email[reviewer_email].extend(rows)
+            # Track all assigned jobs to prevent duplicates
+            for r in rows:
+                jk = str(r.get("jobId") or r.get("id") or "")
+                if jk:
+                    all_assigned_keys.add(jk)
 
-        # Delete old docs for replaced reviewers. If any deletion fails,
-        # abort the entire publish rather than silently creating duplicates.
-        for doc_id in deleted_ids:
-            try:
-                internal_api.delete(f"{_STORAGE_PATH}/{doc_id}")
-            except requests.exceptions.HTTPError as e:
-                logging.error("Failed to delete old reviewer doc %s during merge-publish: %s", doc_id, e)
-                return jsonify({
-                    "error": (
-                        f"Failed to clean up old assignments for replaced reviewer. "
-                        "This prevents duplicate job assignments. Please retry the publish."
-                    )
-                }), 500
-
-        # Drop incoming rows that collide with a retained reviewer's jobs.
-        if retained_keys:
-            for email in reviewer_emails:
-                normalized[email] = [
-                    r for r in normalized[email]
-                    if str(r.get("jobId") or r.get("id") or "") not in retained_keys
-                ]
+        # For reviewers already in the shift, append new jobs to their existing ones.
+        # For reviewers not in this publish, keep all their existing jobs.
+        for email in reviewer_emails:
+            existing = existing_jobs_by_email.get(email, [])
+            # Deduplicate against all assigned keys (including from other reviewers)
+            new_jobs = [
+                r for r in normalized[email]
+                if str(r.get("jobId") or r.get("id") or "") not in all_assigned_keys
+            ]
+            # Append new jobs to existing ones
+            normalized[email] = existing + new_jobs
 
         # Write new reviewer_shift docs under the existing snapshot.
         snapshot_id = existing_snap_id
