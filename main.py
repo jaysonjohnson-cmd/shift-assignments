@@ -1098,22 +1098,21 @@ def api_shifts_publish():
                 existing_jobs_by_email[reviewer_email] = []
             existing_jobs_by_email[reviewer_email].extend(rows)
 
-        # Build set of keys for OTHER reviewers (to prevent cross-reviewer duplication)
+        # Build set of keys for ALL existing assignments (to prevent cross-reviewer and self-duplication)
+        all_existing_keys: set = set()
         for email, jobs in existing_jobs_by_email.items():
-            if email not in normalized:  # This reviewer is NOT in the new publish
-                # Their jobs stay assigned to them; track keys to prevent reassigning to others
-                for r in jobs:
-                    jk = str(r.get("jobId") or r.get("id") or "")
-                    if jk:
-                        other_reviewers_keys.add(jk)
+            for r in jobs:
+                jk = str(r.get("jobId") or r.get("id") or "")
+                if jk:
+                    all_existing_keys.add(jk)
 
-        # For reviewers in the new publish: keep all existing + add new jobs (minus cross-reviewer dupes)
+        # For reviewers in the new publish: keep all existing + add truly NEW jobs
         for email in reviewer_emails:
             existing = existing_jobs_by_email.get(email, [])
-            # Only filter new jobs against OTHER reviewers' jobs (not this reviewer's existing ones)
+            # Filter new jobs to exclude anything already assigned (to any reviewer, including this one)
             new_jobs = [
                 r for r in normalized[email]
-                if str(r.get("jobId") or r.get("id") or "") not in other_reviewers_keys
+                if str(r.get("jobId") or r.get("id") or "") not in all_existing_keys
             ]
             # Append new jobs to existing ones
             normalized[email] = existing + new_jobs
