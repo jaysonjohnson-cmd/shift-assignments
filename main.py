@@ -1109,13 +1109,19 @@ def api_shifts_publish():
         # For reviewers in the new publish: keep all existing + add truly NEW jobs
         for email in reviewer_emails:
             existing = existing_jobs_by_email.get(email, [])
+            # Re-filter existing jobs in case they contain excluded jobs from old publishes
+            existing_filtered = [
+                r for r in existing
+                if str(r.get("jobId") or r.get("id") or "") not in EXCLUDED_JOB_IDS
+                and str(r.get("name") or "") not in EXCLUDED_JOB_NAMES
+            ]
             # Filter new jobs to exclude anything already assigned (to any reviewer, including this one)
             new_jobs = [
                 r for r in normalized[email]
                 if str(r.get("jobId") or r.get("id") or "") not in all_existing_keys
             ]
-            # Append new jobs to existing ones
-            normalized[email] = existing + new_jobs
+            # Append new jobs to existing ones (now re-filtered)
+            normalized[email] = existing_filtered + new_jobs
 
         # Write new reviewer_shift docs under the existing snapshot.
         snapshot_id = existing_snap_id
