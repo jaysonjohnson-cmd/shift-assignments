@@ -1041,10 +1041,9 @@ def api_shifts_publish():
             if job_name in EXCLUDED_JOB_NAMES:
                 continue
             unreviewable = int(r.get("unreviewedCount") or 0)
-            total_new = int((r.get("extras") or {}).get("newCount") or 0)
-            auto_rejected = max(0, total_new - unreviewable)
-            total_responses = unreviewable + auto_rejected
-            if total_responses > 0:
+            # Only assign jobs with actual reviewable responses. Jobs with only
+            # auto-rejected responses (from CF) have nothing for the reviewer to do.
+            if unreviewable > 0:
                 valid_rows.append(_compact_row(r))
         if valid_rows:
             normalized[key] = valid_rows
