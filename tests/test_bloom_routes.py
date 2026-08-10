@@ -375,6 +375,71 @@ def test_merge_publish_drops_jobs_held_by_retained_reviewers(client, monkeypatch
     assert alex_jobs == ["J2"]
 
 
+def test_merge_publish_preserves_completions_for_retained_jobs(client, monkeypatch):
+    """Adding more jobs to an already-published reviewer must not resurrect
+    jobs they already finished — only completions for jobs that dropped out
+    of the reviewer's row set should be cleared."""
+    c, token_file = client
+    _as_admin(token_file)
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(roles, "list_reviewers", lambda: [])
+
+    published_docs = [
+        {"id": "snap-1", "data": {"kind": "shift_snapshot", "reviewer_emails": ["sam@storesight.com"]}},
+        {"id": "rs-1", "data": {"kind": "reviewer_shift", "shift_snapshot_id": "snap-1",
+                                 "reviewer_email": "sam@storesight.com",
+                                 "rows": [{"jobId": "J1", "projectId": "10", "name": "Job 1", "unreviewedCount": 2}],
+                                 "part": 0}},
+    ]
+    completions = [
+        {"id": "c1", "data": {"kind": "completion", "shift_snapshot_id": "snap-1",
+                               "reviewer_email": "sam@storesight.com", "job_id": "J1",
+                               "completed_at": "2026-04-21T01:00:00+00:00"}},
+    ]
+
+    def fake_post(path, json=None):
+        doc_id = f"doc-{len(published_docs) + 1}"
+        published_docs.append({"id": doc_id, "data": json["data"]})
+        return {"data": {"id": doc_id}}
+
+    def fake_list_docs_by_kind(kind, force=False):
+        if kind == "shift_snapshot":
+            return [d for d in published_docs if d["data"].get("kind") == "shift_snapshot"]
+        if kind == "reviewer_shift":
+            return [d for d in published_docs if d["data"].get("kind") == "reviewer_shift"]
+        if kind == "completion":
+            return completions
+        return []
+
+    deleted = []
+    monkeypatch.setattr(internal_api, "post", fake_post)
+    monkeypatch.setattr(internal_api, "put", lambda path, json=None: {"data": {}})
+    monkeypatch.setattr(internal_api, "delete", lambda path: deleted.append(path) or {"data": {}})
+    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list_docs_by_kind)
+
+    # Admin adds a second job (J2) to Sam's already-live, partially-completed shift.
+    resp = c.post("/api/shifts/publish", json={"assignments": {
+        "sam@storesight.com": [
+            {"jobId": "J2", "projectId": "20", "name": "Job 2", "unreviewedCount": 4},
+        ],
+    }})
+    assert resp.status_code == 201, resp.get_json()
+
+    # Sam's merged row set must keep J1 (already done) plus the new J2.
+    sam_docs = [
+        d for d in published_docs
+        if d["data"].get("kind") == "reviewer_shift"
+        and d["data"].get("reviewer_email") == "sam@storesight.com"
+        and d["id"] != "rs-1"
+    ]
+    sam_jobs = [r["jobId"] for d in sam_docs for r in d["data"]["rows"]]
+    assert sorted(sam_jobs) == ["J1", "J2"]
+
+    # J1's completion is still retained in the row set, so it must survive —
+    # not be swept up as a "stale" completion and deleted.
+    assert "/api/storage/qc-shift-assignments/c1" not in deleted
+
+
 def test_publish_compacts_rows_to_subset_needed_by_my_tasks(client, monkeypatch):
     """Oversized fields (`groupIds`, `extras`) must never reach Storage API."""
     c, token_file = client

@@ -1124,20 +1124,31 @@ def api_shifts_publish():
 
         # Write new reviewer_shift docs under the existing snapshot.
         snapshot_id = existing_snap_id
-        # Clear old completions for reviewers being republished (so they start
-        # fresh). Drop them from the warm cache immediately (in-memory, no
-        # network call) so every read reflects the reset right away, then
-        # delete the actual Storage docs in the background — this can be
-        # dozens of individual DELETE calls sharing the 60 req/min Storage
-        # limit, and doing that synchronously here was what made publish take
-        # minutes when a reviewer had a long completion history.
+        # Clear ORPHANED completions only — ones whose job is no longer in the
+        # reviewer's merged row set (e.g. dropped by the excluded-job re-filter
+        # above). Since this path now merges new jobs into the reviewer's
+        # existing ones instead of replacing them, a retained job's completion
+        # must survive the publish — deleting it unconditionally (the old
+        # behavior, from when publish fully replaced a reviewer's rows) made
+        # already-finished jobs reappear as incomplete every time an admin
+        # added more work to an active shift. Drop orphans from the warm cache
+        # immediately (in-memory, no network call) so every read reflects it
+        # right away, then delete the actual Storage docs in the background —
+        # this can be dozens of individual DELETE calls sharing the 60 req/min
+        # Storage limit, and doing that synchronously here was what made
+        # publish take minutes when a reviewer had a long completion history.
         stale_completion_ids = []
         for email in reviewer_emails:
+            retained_keys = {
+                str(r.get("jobId") or r.get("id") or "") for r in normalized[email]
+            }
             try:
                 existing_completions = _list_completions_for_snapshot(
                     snapshot_id, reviewer_email=email
                 )
                 for c in existing_completions:
+                    if _completion_job_key(c) in retained_keys:
+                        continue  # still assigned — keep the completion
                     roles.cache_remove_doc("completion", c.get("id"))
                     if c.get("id"):
                         stale_completion_ids.append(c["id"])
