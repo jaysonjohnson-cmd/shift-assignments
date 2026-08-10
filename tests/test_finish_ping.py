@@ -162,7 +162,9 @@ def test_finish_check_reads_completions_authoritatively(client, monkeypatch):
 
 def test_auto_refill_skips_excluded_client(monkeypatch):
     """Refill never hands out a third-party (Cloud Factory) client's jobs."""
-    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind, force=False: [])
+    def mock_list_docs(kind, force=False):
+        return [] if kind == "reviewer_shift" else []
+    monkeypatch.setattr(main.roles, "list_docs_by_kind", mock_list_docs)
     feed = [
         {"id": "J1", "jobId": "J1", "priority": 1, "name": "Menasha job", "unreviewedCount": 5,
          "extras": {"client": "joanna.riney@menasha.com"}},
@@ -187,7 +189,9 @@ def test_auto_refill_excludes_already_assigned(monkeypatch):
                                "reviewer_email": "kim@storesight.com",
                                "rows": [{"jobId": "J3"}], "part": 0}},
     ]
-    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind, force=False: shift_docs)
+    def mock_list_docs(kind, force=False):
+        return shift_docs if kind == "reviewer_shift" else []
+    monkeypatch.setattr(main.roles, "list_docs_by_kind", mock_list_docs)
     feed = [
         {"id": j, "jobId": j, "projectId": f"p{j}", "priority": 1, "name": j,
          "unreviewedCount": 3, "oldestSubmission": ""}
@@ -202,9 +206,10 @@ def test_auto_refill_excludes_already_assigned(monkeypatch):
 
     # J1-J3 are taken; the next two unassigned are J4, J5.
     assert [r["jobId"] for r in added] == ["J4", "J5"]
-    # Stored as a new chunk appended after sam's existing part 0.
-    assert len(stored) == 1
-    doc = stored[0]["data"]
+    # Stored includes lock doc + reviewer_shift chunk. Filter for reviewer_shift docs.
+    shift_docs_stored = [s for s in stored if s.get("data", {}).get("kind") == "reviewer_shift"]
+    assert len(shift_docs_stored) == 1
+    doc = shift_docs_stored[0]["data"]
     assert doc["reviewer_email"] == "sam@storesight.com"
     assert doc["part"] == 1
     assert [r["jobId"] for r in doc["rows"]] == ["J4", "J5"]
@@ -224,7 +229,9 @@ def test_auto_refill_uses_stored_batch_size_not_grown_queue(monkeypatch):
                               "rows": [{"jobId": "J3"}, {"jobId": "J4"}],
                               "part": 1, "batch_size": 2}},
     ]
-    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind, force=False: shift_docs)
+    def mock_list_docs(kind, force=False):
+        return shift_docs if kind == "reviewer_shift" else []
+    monkeypatch.setattr(main.roles, "list_docs_by_kind", mock_list_docs)
     feed = [
         {"id": j, "jobId": j, "projectId": f"p{j}", "priority": 1, "name": j,
          "unreviewedCount": 3, "oldestSubmission": ""}
@@ -238,7 +245,9 @@ def test_auto_refill_uses_stored_batch_size_not_grown_queue(monkeypatch):
     added = main._auto_refill_reviewer("snap1", "sam@storesight.com", 4)
 
     assert [r["jobId"] for r in added] == ["J5", "J6"]  # 2 fresh, not 4
-    doc = stored[0]["data"]
+    # Filter for reviewer_shift docs (skip lock doc).
+    shift_docs_stored = [s for s in stored if s.get("data", {}).get("kind") == "reviewer_shift"]
+    doc = shift_docs_stored[0]["data"]
     assert doc["part"] == 2
     assert doc["batch_size"] == 2  # persisted onto the refill chunk
 
@@ -249,7 +258,9 @@ def test_auto_refill_returns_empty_when_feed_exhausted(monkeypatch):
                               "reviewer_email": "sam@storesight.com",
                               "rows": [{"jobId": "J1"}], "part": 0}},
     ]
-    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind, force=False: shift_docs)
+    def mock_list_docs(kind, force=False):
+        return shift_docs if kind == "reviewer_shift" else []
+    monkeypatch.setattr(main.roles, "list_docs_by_kind", mock_list_docs)
     monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs",
                         lambda: [{"id": "J1", "jobId": "J1"}])  # only the taken job
     posted = []
@@ -257,4 +268,6 @@ def test_auto_refill_returns_empty_when_feed_exhausted(monkeypatch):
 
     added = main._auto_refill_reviewer("snap1", "sam@storesight.com", 5)
     assert added == []
-    assert posted == []  # nothing stored
+    # Lock doc may be posted but no reviewer_shift docs stored (feed exhausted).
+    shift_docs_stored = [p for p in posted if p.get("data", {}).get("kind") == "reviewer_shift"]
+    assert shift_docs_stored == []
