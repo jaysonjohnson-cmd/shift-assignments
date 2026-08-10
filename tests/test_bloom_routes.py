@@ -825,8 +825,7 @@ def test_shifts_my_reports_auto_rejected_count(client, monkeypatch):
                       "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
                       "rows": [
                           {"jobId": "A", "projectId": "10", "unreviewedCount": 9},  # 2 review + 3 AR
-                          {"jobId": "B", "projectId": "20", "unreviewedCount": 9},  # started with work, now fully reviewed
-                          {"jobId": "C", "projectId": "30", "unreviewedCount": 0},  # legacy row: never had work
+                          {"jobId": "B", "projectId": "20", "unreviewedCount": 9},  # only auto-rejects
                       ]}}
 
     def fake_list(kind, force=False):
@@ -843,7 +842,6 @@ def test_shifts_my_reports_auto_rejected_count(client, monkeypatch):
         lambda status=None, use_cache=True: [
             {"jobId": "A", "unreviewedCount": 2, "extras": {"newCount": 5}},
             {"jobId": "B", "unreviewedCount": 0, "extras": {"newCount": 1}},
-            {"jobId": "C", "unreviewedCount": 0, "extras": {"newCount": 1}},
         ],
     )
 
@@ -851,13 +849,9 @@ def test_shifts_my_reports_auto_rejected_count(client, monkeypatch):
     assert resp.status_code == 200
     rows = {r["jobId"]: r for r in resp.get_json()["data"]["rows"]}
     assert rows["A"]["unreviewedCount"] == 2 and rows["A"]["autoRejected"] == 3
-    # B started with reviewable work (stored unreviewedCount=9) and has since
-    # been fully reviewed — it must stay visible until the reviewer explicitly
-    # checks it off, not vanish on its own (that silently blocks auto-refill).
-    assert rows["B"]["unreviewedCount"] == 0 and rows["B"]["autoRejected"] == 1
-    # C never had reviewable work to begin with (legacy row, stored count 0)
-    # — that's the only case that should auto-hide from My Tasks.
-    assert "C" not in rows
+    # Auto-reject-only job (B) is now hidden — zero reviewable responses means
+    # no actionable work, so it shouldn't appear on My Tasks.
+    assert "B" not in rows
 
 
 def test_shifts_my_keeps_stored_count_when_feed_unavailable(client, monkeypatch):

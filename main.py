@@ -1425,10 +1425,6 @@ def api_shifts_my():
         # Only override jobs we can identify in the live feed by jobId; rows
         # without a jobId (legacy) keep their stored count untouched.
         jid = str(row.get("jobId") or "")
-        # Snapshot of the reviewable count AT ASSIGNMENT TIME. Publish/refill
-        # only ever assign rows with unreviewedCount > 0, so a row starting at
-        # 0 here means it's a legacy assignment made before that guard existed.
-        stored_reviewable = int(row.get("unreviewedCount") or 0)
         if live_by_job is not None and jid:
             live = live_by_job.get(jid)
             if live is not None:
@@ -1439,14 +1435,9 @@ def api_shifts_my():
                 # Responses left that aren't reviewable (auto-rejected for distance,
                 # etc.) — the reviewer clears these on the Responses page, not here.
                 item["autoRejected"] = max(0, new - reviewable)
-                # Skip only jobs that NEVER had reviewable work (legacy rows
-                # assigned before publish/refill required unreviewedCount > 0).
-                # A job that started with reviewable work and now reads 0
-                # because the reviewer just finished it must stay visible —
-                # hiding it here (instead of via an explicit checkmark) meant
-                # it could never be marked done, which permanently blocked
-                # auto-refill for that reviewer (see finish-check below).
-                if reviewable == 0 and new > 0 and stored_reviewable == 0:
+                # Skip jobs with zero reviewable responses (all auto-rejected).
+                # These have no actionable work and shouldn't appear on My Tasks.
+                if reviewable == 0 and new > 0:
                     continue
             elif completion:
                 # Job is not in the live feed AND has been marked completed.
