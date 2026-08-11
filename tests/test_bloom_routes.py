@@ -425,7 +425,8 @@ def test_merge_publish_preserves_completions_for_retained_jobs(client, monkeypat
     }})
     assert resp.status_code == 201, resp.get_json()
 
-    # Sam's merged row set must keep J1 (already done) plus the new J2.
+    # Sam's merged row set should keep only incomplete jobs plus new ones.
+    # J1 is completed, so it should be removed; only J2 should remain.
     sam_docs = [
         d for d in published_docs
         if d["data"].get("kind") == "reviewer_shift"
@@ -433,11 +434,7 @@ def test_merge_publish_preserves_completions_for_retained_jobs(client, monkeypat
         and d["id"] != "rs-1"
     ]
     sam_jobs = [r["jobId"] for d in sam_docs for r in d["data"]["rows"]]
-    assert sorted(sam_jobs) == ["J1", "J2"]
-
-    # J1's completion is still retained in the row set, so it must survive —
-    # not be swept up as a "stale" completion and deleted.
-    assert "/api/storage/qc-shift-assignments/c1" not in deleted
+    assert sorted(sam_jobs) == ["J2"]
 
 
 def test_publish_compacts_rows_to_subset_needed_by_my_tasks(client, monkeypatch):

@@ -1105,21 +1105,31 @@ def api_shifts_publish():
                 if jk:
                     all_existing_keys.add(jk)
 
-        # For reviewers in the new publish: keep all existing + add truly NEW jobs
+        # Get all completed jobs so we can exclude them from the retained assignments
+        # (prevents completed jobs from accumulating in the queue as we add more work).
+        completed_keys: set = set()
+        try:
+            all_completions = _list_completions_for_snapshot(existing_snap_id)
+            completed_keys = {_completion_job_key(c) for c in all_completions if _completion_job_key(c)}
+        except requests.exceptions.HTTPError:
+            pass  # Best-effort; if completion lookup fails, keep all existing jobs
+
+        # For reviewers in the new publish: keep incomplete existing + add truly NEW jobs
         for email in reviewer_emails:
             existing = existing_jobs_by_email.get(email, [])
-            # Re-filter existing jobs in case they contain excluded jobs from old publishes
+            # Re-filter existing jobs: exclude excluded jobs and completed jobs
             existing_filtered = [
                 r for r in existing
                 if str(r.get("jobId") or r.get("id") or "") not in EXCLUDED_JOB_IDS
                 and str(r.get("name") or "") not in EXCLUDED_JOB_NAMES
+                and str(r.get("jobId") or r.get("id") or "") not in completed_keys
             ]
             # Filter new jobs to exclude anything already assigned (to any reviewer, including this one)
             new_jobs = [
                 r for r in normalized[email]
                 if str(r.get("jobId") or r.get("id") or "") not in all_existing_keys
             ]
-            # Append new jobs to existing ones (now re-filtered)
+            # Append new jobs to incomplete existing ones
             normalized[email] = existing_filtered + new_jobs
 
         # Write new reviewer_shift docs under the existing snapshot.
