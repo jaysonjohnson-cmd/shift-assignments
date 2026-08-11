@@ -1516,10 +1516,10 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                 data = doc.get("data") or {}
                 if (data.get("shift_snapshot_id") == snap_id and
                     (data.get("reviewer_email") or "").strip().lower() == norm):
-                    logging.info("auto-refill skipped for %s (refill already in progress)", email)
+                    logging.warning("auto-refill BLOCKED: refill already in progress for %s (orphaned lock?)", email)
                     return []  # Another refill is running; skip to avoid duplicates
-        except Exception:
-            pass  # Best-effort; continue without the lock if it fails
+        except Exception as exc:
+            logging.warning("auto-refill: error checking for existing lock: %s", exc)
 
         # Write a lock marker to prevent concurrent refills
         lock_doc = {
