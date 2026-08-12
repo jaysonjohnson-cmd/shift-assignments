@@ -1998,12 +1998,19 @@ def api_shifts_my_complete():
         assigned = _rows_for_reviewer(snap_id, email, force=True) or []
         assigned_keys = {_row_job_key(r) for r in assigned}
         done = _list_completions_for_snapshot(snap_id, reviewer_email=email, force=True)
+
+        # Include override-completed jobs (forced completions that bypassed unreviewed checks).
+        # These count as "done" even though they may have unreviewed responses, because
+        # the reviewer explicitly confirmed they should be marked complete.
         done_keys = {_completion_job_key(c) for c in done}
+        override_keys = {_completion_job_key(c) for c in done if c.get("overridden")}
+        all_done_keys = done_keys | override_keys  # Union of normal and override completions
+
         # The completion for this job was already written to storage above, so
         # done_keys includes it. To detect the transition from incomplete→complete,
         # we check the state before and after, excluding the current job from "before".
-        done_keys_before = done_keys - {job_id}
-        done_keys_after = done_keys
+        done_keys_before = all_done_keys - {job_id}
+        done_keys_after = all_done_keys
 
         # was_complete = all assigned jobs were done before this completion
         # is_complete = all assigned jobs are done after this completion
@@ -2012,8 +2019,8 @@ def api_shifts_my_complete():
         is_complete = len(assigned_keys) > 0 and assigned_keys <= done_keys_after
 
         logging.info(
-            "finish-check for %s: assigned=%d, done=%d, was_complete=%s, is_complete=%s",
-            email, len(assigned_keys), len(done_keys), was_complete, is_complete,
+            "finish-check for %s: assigned=%d, done=%d, override=%d, was_complete=%s, is_complete=%s",
+            email, len(assigned_keys), len(done_keys), len(override_keys), was_complete, is_complete,
         )
         if not was_complete and is_complete:
             # This job pushed us from incomplete→complete. Refill a fresh fixed-size batch.
