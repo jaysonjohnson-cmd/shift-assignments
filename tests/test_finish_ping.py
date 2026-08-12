@@ -171,7 +171,7 @@ def test_auto_refill_skips_excluded_client(monkeypatch):
         {"id": "J2", "jobId": "J2", "priority": 1, "name": "Normal job", "unreviewedCount": 5,
          "extras": {"client": "someone@acme.com"}},
     ]
-    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda: feed)
+    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda use_cache=True: feed)
     stored = []
     monkeypatch.setattr(internal_api, "post", lambda path, json=None: stored.append(json) or {"data": {"id": "new"}})
 
@@ -197,7 +197,7 @@ def test_auto_refill_excludes_already_assigned(monkeypatch):
          "unreviewedCount": 3, "oldestSubmission": ""}
         for j in ["J1", "J2", "J3", "J4", "J5", "J6"]
     ]
-    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda: feed)
+    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda use_cache=True: feed)
 
     stored = []
     monkeypatch.setattr(internal_api, "post", lambda path, json=None: stored.append(json) or {"data": {"id": "new"}})
@@ -237,7 +237,7 @@ def test_auto_refill_uses_stored_batch_size_not_grown_queue(monkeypatch):
          "unreviewedCount": 3, "oldestSubmission": ""}
         for j in ["J1", "J2", "J3", "J4", "J5", "J6", "J7"]
     ]
-    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda: feed)
+    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda use_cache=True: feed)
     stored = []
     monkeypatch.setattr(internal_api, "post", lambda path, json=None: stored.append(json) or {"data": {"id": "new"}})
 

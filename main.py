@@ -1624,7 +1624,10 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             return []
 
         try:
-            pool = bloom.fetch_prioritized_jobs()
+            # Bypass cache to get fresh job data for refill. Refill is rare
+            # (only when a reviewer finishes their whole batch) so the rate-limit
+            # cost is minimal and freshness is critical.
+            pool = bloom.fetch_prioritized_jobs(use_cache=False)
         except Exception as exc:  # noqa: BLE001 — refill is best-effort
             logging.warning("auto-refill: failed to fetch jobs for %s: %s", email, exc)
             return []
