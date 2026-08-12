@@ -1505,153 +1505,151 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
     refill per reviewer per snapshot is allowed at a time.
     """
     norm = (email or "").strip().lower()
+    touched_keys = set()
+    max_part = -1
+    batch_size = None
+
+    # Guard against concurrent refills: check if another refill is in progress.
+    # If so, skip this one to avoid distributing the same jobs twice.
+    try:
+        lock_docs = roles.list_docs_by_kind("refill_lock", force=True)
+        for doc in lock_docs:
+            data = doc.get("data") or {}
+            if (data.get("shift_snapshot_id") == snap_id and
+                (data.get("reviewer_email") or "").strip().lower() == norm):
+                logging.info("auto-refill skipped for %s (refill already in progress)", email)
+                return []  # Another refill is running; skip to avoid duplicates
+    except Exception:
+        pass  # Best-effort; continue without the lock if it fails
+
+    # Write a lock marker to prevent concurrent refills
+    lock_doc = {
+        "kind": "refill_lock",
+        "shift_snapshot_id": snap_id,
+        "reviewer_email": norm,
+        "locked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
     lock_id = None
+    try:
+        lock_resp = internal_api.post(_STORAGE_PATH, json={"data": lock_doc})
+        lock_id = (lock_resp.get("data") or {}).get("id")
+    except Exception as exc:
+        logging.warning("auto-refill: failed to create lock for %s: %s", email, exc)
+        return []  # Can't proceed safely without lock
 
     try:
-        # Guard against concurrent refills: check if another refill is in progress.
-        # If so, skip this one to avoid distributing the same jobs twice.
-        try:
-            lock_docs = roles.list_docs_by_kind("refill_lock", force=True)
-            for doc in lock_docs:
-                data = doc.get("data") or {}
-                if (data.get("shift_snapshot_id") == snap_id and
-                    (data.get("reviewer_email") or "").strip().lower() == norm):
-                    logging.warning("auto-refill BLOCKED: refill already in progress for %s (orphaned lock?)", email)
-                    return []  # Another refill is running; skip to avoid duplicates
-        except Exception as exc:
-            logging.warning("auto-refill: error checking for existing lock: %s", exc)
-
-        # Write a lock marker to prevent concurrent refills
-        lock_doc = {
-            "kind": "refill_lock",
-            "shift_snapshot_id": snap_id,
-            "reviewer_email": norm,
-            "locked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        }
-        try:
-            lock_resp = internal_api.post(_STORAGE_PATH, json={"data": lock_doc})
-            lock_id = (lock_resp.get("data") or {}).get("id")
-        except Exception as exc:
-            logging.warning("auto-refill: failed to create lock for %s: %s", email, exc)
-            return []  # Can't proceed safely without lock
-
-        touched_keys = set()
-        max_part = -1
-        batch_size = None
-
-        try:
-            # Authoritative read: compute assigned_keys and next_part from current
-            # storage so a concurrent refill's just-written part is seen — otherwise
-            # two refills pick the same next_part and the same jobs (duplicate batch).
-            docs = roles.list_docs_by_kind("reviewer_shift", force=True)
-        except Exception as exc:  # noqa: BLE001 — refill is best-effort
-            logging.warning("auto-refill: failed to list shifts for %s: %s", email, exc)
-            return []
-        for doc in docs:
-            data = doc.get("data") or {}
-            if data.get("shift_snapshot_id") != snap_id:
-                continue
-            for r in data.get("rows") or []:
-                k = _job_key(r)
-                if k:
-                    touched_keys.add(k)
-            if (data.get("reviewer_email") or "").strip().lower() == norm:
-                max_part = max(max_part, int(data.get("part") or 0))
-                bs = data.get("batch_size")
-                if bs:
-                    batch_size = bs if batch_size is None else min(batch_size, bs)
-
-        # A job is only off-limits while it's actively sitting in someone's queue —
-        # once completed, drop it from the exclusion set so fresh unreviewed
-        # responses that land on it later (this feed gets continuous new
-        # submissions all day) are reachable again. Without this, every job ever
-        # touched during the shift was excluded forever, so the "fresh" pool only
-        # ever shrank — completed jobs that later racked up brand-new unreviewed
-        # responses became permanently unassignable to anyone.
-        try:
-            completions = _list_completions_for_snapshot(snap_id, force=True)
-        except Exception as exc:  # noqa: BLE001 — refill is best-effort
-            logging.warning("auto-refill: failed to list completions for %s: %s", email, exc)
-            completions = []
-        completed_keys = {_completion_job_key(c) for c in completions if _completion_job_key(c)}
-        assigned_keys = touched_keys - completed_keys
-
-        # Refill the original allotment, not the (possibly grown) current queue.
-        count = batch_size if batch_size else fallback_count
-        if count <= 0:
-            return []
-
-        try:
-            pool = bloom.fetch_prioritized_jobs()
-        except Exception as exc:  # noqa: BLE001 — refill is best-effort
-            logging.warning("auto-refill: failed to fetch jobs for %s: %s", email, exc)
-            return []
-
-        fresh = []
-        for r in pool:
+        # Authoritative read: compute assigned_keys and next_part from current
+        # storage so a concurrent refill's just-written part is seen — otherwise
+        # two refills pick the same next_part and the same jobs (duplicate batch).
+        docs = roles.list_docs_by_kind("reviewer_shift", force=True)
+    except Exception as exc:  # noqa: BLE001 — refill is best-effort
+        logging.warning("auto-refill: failed to list shifts for %s: %s", email, exc)
+        if lock_id:
+            _try_delete(lock_id)
+        return []
+    for doc in docs:
+        data = doc.get("data") or {}
+        if data.get("shift_snapshot_id") != snap_id:
+            continue
+        for r in data.get("rows") or []:
             k = _job_key(r)
-            if not k or k in assigned_keys:
-                continue
-            # Skip excluded jobs (jobs with responses stuck in CF are already filtered at the Bloom level).
-            if str(r.get("jobId") or "") in EXCLUDED_JOB_IDS:
-                continue
-            if str(r.get("name") or "") in EXCLUDED_JOB_NAMES:
-                continue
-            # Skip jobs from excluded clients (e.g., Menasha handled by Cloud Factory).
-            if bloom.is_excluded_client((r.get("extras") or {}).get("client")):
-                continue
-            # Skip jobs with no reviewable work (unreviewedCount == 0). These have
-            # only auto-rejected responses, which must be cleared on the Responses page
-            # (not in My Tasks), so assigning them to a reviewer would show them as
-            # blocked when trying to mark done. Let the reviewer encounter them via the
-            # completion block, not via auto-refill. (Checked first so we skip even if
-            # auto-rejected > 0, preventing auto-refill from assigning jobs that will
-            # immediately be hidden from My Tasks.)
-            unreviewable = int(r.get("unreviewedCount") or 0)
-            if unreviewable <= 0:
-                continue
-            total_new = int((r.get("extras") or {}).get("newCount") or 0)
-            auto_rejected = max(0, total_new - unreviewable)
-            total_responses = unreviewable + auto_rejected
-            if total_responses <= 0:
-                continue
-            fresh.append(_compact_row(r))
-            assigned_keys.add(k)  # guard against dupes within the same feed
-            if len(fresh) >= count:
-                break
-        if not fresh:
-            logging.info("auto-refill: no new jobs left for %s", email)
-            return []
+            if k:
+                touched_keys.add(k)
+        if (data.get("reviewer_email") or "").strip().lower() == norm:
+            max_part = max(max_part, int(data.get("part") or 0))
+            bs = data.get("batch_size")
+            if bs:
+                batch_size = bs if batch_size is None else min(batch_size, bs)
 
-        try:
-            next_part = max_part + 1
-            chunks = _chunk_rows_for_storage(fresh)
-            for idx, chunk in enumerate(chunks):
-                doc = {
-                    "kind": "reviewer_shift",
-                    "shift_snapshot_id": snap_id,
-                    "reviewer_email": norm,
-                    "rows": chunk,
-                    "part": next_part + idx,
-                    "part_count": next_part + len(chunks),
-                    "batch_size": count,
-                }
-                try:
-                    r = internal_api.post(_STORAGE_PATH, json={"data": doc})
-                    new_id = (r.get("data") or {}).get("id")
-                    if new_id:
-                        roles.cache_upsert_doc("reviewer_shift", {"id": new_id, "data": doc})
-                except Exception as exc:  # noqa: BLE001 — refill is best-effort
-                    logging.warning("auto-refill: failed to store chunk for %s: %s", email, exc)
-                    break
-            logging.info("auto-refilled %d jobs for %s", len(fresh), email)
-            return fresh
-        except Exception as exc:  # noqa: BLE001 — refill is best-effort
-            logging.warning("auto-refill: failed during storage write for %s: %s", email, exc)
-            return []
+    # A job is only off-limits while it's actively sitting in someone's queue —
+    # once completed, drop it from the exclusion set so fresh unreviewed
+    # responses that land on it later (this feed gets continuous new
+    # submissions all day) are reachable again. Without this, every job ever
+    # touched during the shift was excluded forever, so the "fresh" pool only
+    # ever shrank — completed jobs that later racked up brand-new unreviewed
+    # responses became permanently unassignable to anyone.
+    try:
+        completions = _list_completions_for_snapshot(snap_id, force=True)
+    except Exception as exc:  # noqa: BLE001 — refill is best-effort
+        logging.warning("auto-refill: failed to list completions for %s: %s", email, exc)
+        completions = []
+    completed_keys = {_completion_job_key(c) for c in completions if _completion_job_key(c)}
+    assigned_keys = touched_keys - completed_keys
+
+    # Refill the original allotment, not the (possibly grown) current queue.
+    count = batch_size if batch_size else fallback_count
+    if count <= 0:
+        return []
+
+    try:
+        pool = bloom.fetch_prioritized_jobs()
+    except Exception as exc:  # noqa: BLE001 — refill is best-effort
+        logging.warning("auto-refill: failed to fetch jobs for %s: %s", email, exc)
+        return []
+
+    fresh = []
+    for r in pool:
+        k = _job_key(r)
+        if not k or k in assigned_keys:
+            continue
+        # Skip excluded jobs (jobs with responses stuck in CF are already filtered at the Bloom level).
+        if str(r.get("jobId") or "") in EXCLUDED_JOB_IDS:
+            continue
+        if str(r.get("name") or "") in EXCLUDED_JOB_NAMES:
+            continue
+        # Skip jobs from excluded clients (e.g., Menasha handled by Cloud Factory).
+        if bloom.is_excluded_client((r.get("extras") or {}).get("client")):
+            continue
+        # Skip jobs with no reviewable work (unreviewedCount == 0). These have
+        # only auto-rejected responses, which must be cleared on the Responses page
+        # (not in My Tasks), so assigning them to a reviewer would show them as
+        # blocked when trying to mark done. Let the reviewer encounter them via the
+        # completion block, not via auto-refill. (Checked first so we skip even if
+        # auto-rejected > 0, preventing auto-refill from assigning jobs that will
+        # immediately be hidden from My Tasks.)
+        unreviewable = int(r.get("unreviewedCount") or 0)
+        if unreviewable <= 0:
+            continue
+        total_new = int((r.get("extras") or {}).get("newCount") or 0)
+        auto_rejected = max(0, total_new - unreviewable)
+        total_responses = unreviewable + auto_rejected
+        if total_responses <= 0:
+            continue
+        fresh.append(_compact_row(r))
+        assigned_keys.add(k)  # guard against dupes within the same feed
+        if len(fresh) >= count:
+            break
+    if not fresh:
+        logging.info("auto-refill: no new jobs left for %s", email)
+        if lock_id:
+            _try_delete(lock_id)
+        return []
+
+    try:
+        next_part = max_part + 1
+        chunks = _chunk_rows_for_storage(fresh)
+        for idx, chunk in enumerate(chunks):
+            doc = {
+                "kind": "reviewer_shift",
+                "shift_snapshot_id": snap_id,
+                "reviewer_email": norm,
+                "rows": chunk,
+                "part": next_part + idx,
+                "part_count": next_part + len(chunks),
+                "batch_size": count,
+            }
+            try:
+                r = internal_api.post(_STORAGE_PATH, json={"data": doc})
+                new_id = (r.get("data") or {}).get("id")
+                if new_id:
+                    roles.cache_upsert_doc("reviewer_shift", {"id": new_id, "data": doc})
+            except Exception as exc:  # noqa: BLE001 — refill is best-effort
+                logging.warning("auto-refill: failed to store chunk for %s: %s", email, exc)
+                break
+        logging.info("auto-refilled %d jobs for %s", len(fresh), email)
+        return fresh
     finally:
-        # Always clean up the refill lock marker to allow future refills,
-        # even if an exception occurred anywhere in the refill process.
+        # Clean up the refill lock marker to allow future refills
         if lock_id:
             _try_delete(lock_id)
 
