@@ -1485,6 +1485,46 @@ def _job_key(row):
     return str((row or {}).get("jobId") or (row or {}).get("id") or "")
 
 
+def _cleanup_orphaned_refill_locks(max_age_seconds=600):
+    """Clean up refill_lock documents older than max_age_seconds (default 10 min).
+
+    Defensive measure against orphaned locks accumulating if exceptions occur
+    that somehow bypass lock cleanup. Runs best-effort and never blocks refill.
+    """
+    try:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        cutoff = now - datetime.timedelta(seconds=max_age_seconds)
+
+        lock_docs = roles.list_docs_by_kind("refill_lock", force=True)
+        for doc in lock_docs:
+            data = doc.get("data") or {}
+            locked_at_str = data.get("locked_at")
+            if not locked_at_str:
+                continue
+            try:
+                locked_at = datetime.datetime.fromisoformat(
+                    locked_at_str.replace("Z", "+00:00")
+                )
+                if locked_at < cutoff:
+                    # Lock is stale; delete it
+                    doc_id = doc.get("id")
+                    if doc_id:
+                        _try_delete(doc_id)
+                        logging.warning(
+                            "Cleaned up orphaned refill_lock for %s (locked at %s)",
+                            data.get("reviewer_email"),
+                            locked_at_str,
+                        )
+            except (ValueError, TypeError):
+                # Malformed timestamp; delete the broken lock
+                doc_id = doc.get("id")
+                if doc_id:
+                    _try_delete(doc_id)
+                    logging.warning("Cleaned up malformed refill_lock (id=%s)", doc_id)
+    except Exception as exc:  # noqa: BLE001 — cleanup is best-effort
+        logging.warning("Failed to clean up orphaned refill locks: %s", exc)
+
+
 def _auto_refill_reviewer(snap_id, email, fallback_count):
     """Top up a finished reviewer's queue with a fresh fixed-size batch.
 
@@ -1504,6 +1544,9 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
     duplicate jobs when multiple refill requests run in parallel. Only one
     refill per reviewer per snapshot is allowed at a time.
     """
+    # Defensive cleanup: remove any orphaned locks older than 10 minutes
+    _cleanup_orphaned_refill_locks()
+
     norm = (email or "").strip().lower()
     lock_id = None
     try:
