@@ -1576,29 +1576,39 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
     completed_keys = {_completion_job_key(c) for c in completions if _completion_job_key(c)}
     assigned_keys = touched_keys - completed_keys
 
+    logging.info("auto-refill DEBUG for %s: touched=%d, completed=%d, assigned=%d", email, len(touched_keys), len(completed_keys), len(assigned_keys))
+
     # Refill the original allotment, not the (possibly grown) current queue.
     count = batch_size if batch_size else fallback_count
+    logging.info("auto-refill DEBUG: batch_size=%s, fallback_count=%d, count=%d", batch_size, fallback_count, count)
     if count <= 0:
+        logging.info("auto-refill: skipping refill for %s (count=%d)", email, count)
         return []
 
     try:
         pool = bloom.fetch_prioritized_jobs()
+        logging.info("auto-refill DEBUG: Bloom returned %d jobs", len(pool))
     except Exception as exc:  # noqa: BLE001 — refill is best-effort
         logging.warning("auto-refill: failed to fetch jobs for %s: %s", email, exc)
         return []
 
     fresh = []
+    filtered_count = 0
     for r in pool:
         k = _job_key(r)
         if not k or k in assigned_keys:
+            filtered_count += 1
             continue
         # Skip excluded jobs (jobs with responses stuck in CF are already filtered at the Bloom level).
         if str(r.get("jobId") or "") in EXCLUDED_JOB_IDS:
+            filtered_count += 1
             continue
         if str(r.get("name") or "") in EXCLUDED_JOB_NAMES:
+            filtered_count += 1
             continue
         # Skip jobs from excluded clients (e.g., Menasha handled by Cloud Factory).
         if bloom.is_excluded_client((r.get("extras") or {}).get("client")):
+            filtered_count += 1
             continue
         # Skip jobs with no reviewable work (unreviewedCount == 0). These have
         # only auto-rejected responses, which must be cleared on the Responses page
@@ -1609,18 +1619,21 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         # immediately be hidden from My Tasks.)
         unreviewable = int(r.get("unreviewedCount") or 0)
         if unreviewable <= 0:
+            filtered_count += 1
             continue
         total_new = int((r.get("extras") or {}).get("newCount") or 0)
         auto_rejected = max(0, total_new - unreviewable)
         total_responses = unreviewable + auto_rejected
         if total_responses <= 0:
+            filtered_count += 1
             continue
         fresh.append(_compact_row(r))
         assigned_keys.add(k)  # guard against dupes within the same feed
         if len(fresh) >= count:
             break
+    logging.info("auto-refill DEBUG: filtered out %d jobs, keeping %d fresh jobs for %s", filtered_count, len(fresh), email)
     if not fresh:
-        logging.info("auto-refill: no new jobs left for %s", email)
+        logging.info("auto-refill: no new jobs left for %s (all filtered or already assigned)", email)
         if lock_id:
             _try_delete(lock_id)
         return []
