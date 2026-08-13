@@ -51,6 +51,7 @@ EXCLUDED_JOB_IDS = {
 EXCLUDED_JOB_NAMES = {
     "Photos of House from Street",  # OSI
     "Bayer CVS Audit - Cadillac Program",  # Monthly recurring; excludes all month versions
+    "Screener",  # Generic screener jobs - exclude all variants containing "Screener"
 }
 
 
@@ -58,7 +59,12 @@ def _is_excluded_job(row):
     """True if this job should never be assignable or visible in the composer."""
     if str(row.get("jobId") or "") in EXCLUDED_JOB_IDS:
         return True
-    return str(row.get("name") or "") in EXCLUDED_JOB_NAMES
+    job_name = str(row.get("name") or "").lower()
+    # Check both exact matches and substring matches (case-insensitive for patterns)
+    for excluded_name in EXCLUDED_JOB_NAMES:
+        if excluded_name.lower() in job_name:
+            return True
+    return False
 
 
 def _dev_token_path():
