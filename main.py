@@ -1153,12 +1153,13 @@ def api_shifts_publish():
         # For reviewers in the new publish: keep incomplete existing + add truly NEW jobs
         for email in reviewer_emails:
             existing = existing_jobs_by_email.get(email, [])
-            # Re-filter existing jobs: exclude excluded jobs and completed jobs
+            # Re-filter existing jobs: exclude excluded jobs, completed jobs, and jobs with zero reviewable work
             existing_filtered = [
                 r for r in existing
                 if str(r.get("jobId") or r.get("id") or "") not in EXCLUDED_JOB_IDS
                 and str(r.get("name") or "") not in EXCLUDED_JOB_NAMES
                 and str(r.get("jobId") or r.get("id") or "") not in completed_keys
+                and int(r.get("unreviewedCount") or 0) > 0
             ]
             # Filter new jobs to exclude anything already assigned (to any reviewer, including this one)
             new_jobs = [
