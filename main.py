@@ -1066,14 +1066,23 @@ def api_shifts_publish():
             if unreviewable > 0:
                 valid_rows.append(_compact_row(r))
             else:
-                filtered_jobs.append((job_id, "zero_reviewable"))
+                filtered_jobs.append((job_id, f"zero_reviewable(count={unreviewable})"))
         if filtered_jobs:
-            logging.info(
+            logging.warning(
                 "publish: filtered out %d jobs for %s (reasons: %s)",
                 len(filtered_jobs), key, filtered_jobs[:5],
             )
         if valid_rows:
+            logging.warning(
+                "publish: assigned %d jobs to %s (after filtering %d)",
+                len(valid_rows), key, len(filtered_jobs),
+            )
             normalized[key] = valid_rows
+        else:
+            logging.warning(
+                "publish: NO jobs assigned to %s after filtering (filtered %d with 0 work)",
+                key, len(filtered_jobs),
+            )
 
     if not normalized:
         return jsonify({"error": "assignments cannot be empty — assign at least one reviewer before publishing"}), 400
