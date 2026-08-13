@@ -849,12 +849,22 @@ def api_bloom_jobs():
         rows = bloom.fetch_prioritized_jobs(status=status)
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e, source="bloom api")
-    rows = [r for r in rows if not _is_excluded_job(r)]
+
+    # Filter out: (1) excluded jobs, (2) jobs with zero reviewable responses
+    filtered = []
+    for r in rows:
+        if _is_excluded_job(r):
+            continue
+        unreviewable = int(r.get("unreviewedCount") or 0)
+        if unreviewable <= 0:
+            continue
+        filtered.append(r)
+
     logging.info(
-        "GET /api/bloom/jobs by=%s status=%s count=%d",
-        g.user.get("email"), status, len(rows),
+        "GET /api/bloom/jobs by=%s status=%s count=%d (filtered from %d)",
+        g.user.get("email"), status, len(filtered), len(rows),
     )
-    return jsonify({"data": rows})
+    return jsonify({"data": filtered})
 
 
 @app.route("/api/bloom/projects", methods=["GET"])

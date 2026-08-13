@@ -266,7 +266,7 @@ def test_bloom_jobs_returns_rows(client, monkeypatch):
         bloom,
         "fetch_prioritized_jobs",
         lambda status=None, use_cache=True: [
-            {"id": "1", "projectId": "10", "priority": 1, "name": "Job"},
+            {"id": "1", "jobId": "1", "projectId": "10", "priority": 1, "name": "Job", "unreviewedCount": 5},
         ],
     )
     resp = c.get("/api/bloom/jobs")
