@@ -2007,9 +2007,9 @@ def api_shifts_my_complete():
         _record_review_event(email, completed_at, responses)
     except Exception as exc:  # noqa: BLE001 — leaderboard must not break completion
         logging.warning("review tally failed for %s: %s", email, exc)
-    logging.info(
-        "POST /api/shifts/my/complete by=%s job_id=%s snapshot_id=%s",
-        email, job_id, snap_id,
+    logging.warning(
+        "POST /api/shifts/my/complete by=%s job_id=%s override=%s snapshot_id=%s",
+        email, job_id, doc.get("overridden"), snap_id,
     )
     # If this completion cleared the reviewer's whole queue, ping the admin so
     # they can hand out more work. Best-effort — never block the response.
