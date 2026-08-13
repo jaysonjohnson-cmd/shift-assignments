@@ -2047,7 +2047,8 @@ def api_shifts_my_complete():
         # The completion for this job was already written to storage above, so
         # done_keys includes it. To detect the transition from incomplete→complete,
         # we check the state before and after, excluding the current job from "before".
-        done_keys_before = all_done_keys - {job_id}
+        # Must convert job_id to string since all_done_keys contains strings.
+        done_keys_before = all_done_keys - {str(job_id)}
         done_keys_after = all_done_keys
 
         # was_complete = all assigned jobs were done before this completion
