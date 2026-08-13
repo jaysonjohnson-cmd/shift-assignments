@@ -2056,9 +2056,14 @@ def api_shifts_my_complete():
         was_complete = len(assigned_keys) > 0 and assigned_keys <= done_keys_before
         is_complete = len(assigned_keys) > 0 and assigned_keys <= done_keys_after
 
-        logging.info(
+        logging.warning(
             "finish-check for %s: assigned=%d, done=%d, override=%d, was_complete=%s, is_complete=%s",
             email, len(assigned_keys), len(done_keys), len(override_keys), was_complete, is_complete,
+        )
+        # Debug: show actual keys for comparison
+        logging.warning(
+            "finish-check DEBUG: assigned_keys=%s, all_done_keys=%s",
+            sorted(list(assigned_keys)), sorted(list(all_done_keys)),
         )
         # Debug: show which jobs are still incomplete (if any)
         incomplete = assigned_keys - all_done_keys
