@@ -45,11 +45,12 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
 # Job IDs to exclude from assignment (do not assign to reviewers)
 EXCLUDED_JOB_IDS = {
-    "1966569",  # Bayer CVS Audit - Cadillac Program (July 2026)
+    "1966569",  # Bayer CVS Audit - Cadillac Program (July 2026 - keep for backwards compat)
 }
 
 EXCLUDED_JOB_NAMES = {
     "Photos of House from Street",  # OSI
+    "Bayer CVS Audit - Cadillac Program",  # Monthly recurring; excludes all month versions
 }
 
 
