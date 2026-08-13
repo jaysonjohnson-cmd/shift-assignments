@@ -1576,6 +1576,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
 
     norm = (email or "").strip().lower()
     lock_id = None
+    logging.warning("auto-refill: starting for %s (snap=%s, fallback_count=%d)", email, snap_id, fallback_count)
     try:
         # Guard against concurrent refills: check if another refill is in progress.
         # If so, skip this one to avoid distributing the same jobs twice.
@@ -2049,23 +2050,32 @@ def api_shifts_my_complete():
             "finish-check for %s: assigned=%d, done=%d, override=%d, was_complete=%s, is_complete=%s",
             email, len(assigned_keys), len(done_keys), len(override_keys), was_complete, is_complete,
         )
+        # Debug: show which jobs are still incomplete (if any)
+        incomplete = assigned_keys - all_done_keys
+        if incomplete:
+            logging.warning(
+                "finish-check: %s has %d incomplete jobs: %s",
+                email, len(incomplete), list(incomplete)[:3],
+            )
         if not was_complete and is_complete:
             # This job pushed us from incomplete→complete. Refill a fresh fixed-size batch.
             batch_size = len(assigned)
-            logging.info("finish-check: triggering auto-refill for %s (batch_size=%d)", email, batch_size)
+            logging.warning("finish-check: triggering auto-refill for %s (batch_size=%d, total_assigned=%d)",
+                           email, batch_size, len(assigned_keys))
             added = _auto_refill_reviewer(snap_id, email, batch_size)
-            logging.info("finish-check: auto-refill for %s returned %d new jobs", email, len(added))
+            logging.warning("finish-check: auto-refill for %s returned %d new jobs", email, len(added))
             # Only send notification if refill actually found jobs. With high concurrency,
             # multiple requests may all call refill before any writes to storage, potentially
             # sending duplicate notifications. This is acceptable since notifications are
             # best-effort and duplicates won't break the system.
             if added:
+                logging.warning("finish-check: notifying reviewer %s of %d new assignments", email, len(added))
                 _notify_reviewer_finished(email, batch_size, len(added), snap_id)
             else:
-                logging.info("finish-check: auto-refill found no new jobs for %s (pool exhausted?)", email)
+                logging.warning("finish-check: auto-refill found no new jobs for %s (pool exhausted?)", email)
         else:
-            logging.info("finish-check: no refill needed for %s (was_complete=%s, is_complete=%s)",
-                        email, was_complete, is_complete)
+            logging.warning("finish-check: no refill triggered for %s (was_complete=%s, is_complete=%s, assigned=%d, done=%d)",
+                        email, was_complete, is_complete, len(assigned_keys), len(all_done_keys))
     except Exception as exc:  # noqa: BLE001 — refill/ping must not break completion
         logging.error("finish-check failed for %s: %s", email, exc, exc_info=True)
     return jsonify({"data": {"id": doc_id, **doc}}), 201
