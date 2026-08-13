@@ -1143,10 +1143,15 @@ def api_shifts_publish():
 
         # Get all completed jobs so we can exclude them from the retained assignments
         # (prevents completed jobs from accumulating in the queue as we add more work).
+        # IMPORTANT: only exclude "normally" completed jobs (not override-completed).
+        # Override-completed jobs must stay in the queue to show as completed on My Tasks.
         completed_keys: set = set()
         try:
             all_completions = _list_completions_for_snapshot(existing_snap_id)
-            completed_keys = {_completion_job_key(c) for c in all_completions if _completion_job_key(c)}
+            completed_keys = {
+                _completion_job_key(c) for c in all_completions
+                if _completion_job_key(c) and not c.get("overridden")
+            }
         except requests.exceptions.HTTPError:
             pass  # Best-effort; if completion lookup fails, keep all existing jobs
 
