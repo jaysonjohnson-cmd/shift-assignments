@@ -1033,18 +1033,28 @@ def api_shifts_publish():
         # Filter out excluded jobs and empty jobs (no responses to review).
         # Jobs with responses stuck in CF (0 new, > 0 massReview) are already filtered at the Bloom level.
         valid_rows = []
+        filtered_jobs = []
         for r in rows:
             job_id = str(r.get("jobId") or r.get("id") or "")
             if job_id in EXCLUDED_JOB_IDS:
+                filtered_jobs.append((job_id, "excluded_id"))
                 continue
             job_name = str(r.get("name") or "")
             if job_name in EXCLUDED_JOB_NAMES:
+                filtered_jobs.append((job_id, "excluded_name"))
                 continue
             unreviewable = int(r.get("unreviewedCount") or 0)
             # Only assign jobs with actual reviewable responses. Jobs with only
             # auto-rejected responses (from CF) have nothing for the reviewer to do.
             if unreviewable > 0:
                 valid_rows.append(_compact_row(r))
+            else:
+                filtered_jobs.append((job_id, "zero_reviewable"))
+        if filtered_jobs:
+            logging.info(
+                "publish: filtered out %d jobs for %s (reasons: %s)",
+                len(filtered_jobs), key, filtered_jobs[:5],
+            )
         if valid_rows:
             normalized[key] = valid_rows
 
