@@ -2068,8 +2068,13 @@ def api_shifts_my_complete():
         )
         # Debug: show actual keys for comparison
         logging.warning(
-            "finish-check DEBUG: assigned_keys=%s, all_done_keys=%s",
-            sorted(list(assigned_keys)), sorted(list(all_done_keys)),
+            "finish-check DEBUG: assigned_keys=%s, done_keys=%s, override_keys=%s, all_done_keys=%s",
+            sorted(list(assigned_keys)), sorted(list(done_keys)), sorted(list(override_keys)), sorted(list(all_done_keys)),
+        )
+        # Debug: show raw completions to verify overridden flag
+        logging.warning(
+            "finish-check DEBUG raw completions: %s",
+            [(c.get("job_id"), c.get("overridden")) for c in done][:5],
         )
         # Debug: show which jobs are still incomplete (if any)
         incomplete = assigned_keys - all_done_keys
