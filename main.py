@@ -1167,10 +1167,15 @@ def api_shifts_publish():
                 and int(r.get("unreviewedCount") or 0) > 0
             ]
             # Filter new jobs to exclude anything already assigned (to any reviewer, including this one)
+            # AND exclude jobs with zero reviewable work (hidden from My Tasks, excluded from auto-refill)
             new_jobs = [
                 r for r in normalized[email]
                 if str(r.get("jobId") or r.get("id") or "") not in all_existing_keys
+                and int(r.get("unreviewedCount") or 0) > 0
             ]
+            filtered_count = len(normalized[email]) - len([r for r in normalized[email] if int(r.get("unreviewedCount") or 0) > 0])
+            if filtered_count > 0:
+                logging.warning("publish: filtered out %d jobs with unreviewedCount<=0 for %s", filtered_count, email)
             # Append new jobs to incomplete existing ones
             normalized[email] = existing_filtered + new_jobs
 
