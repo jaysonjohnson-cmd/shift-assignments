@@ -2086,8 +2086,8 @@ def api_shifts_my_complete():
         if not was_complete and is_complete:
             # This job pushed us from incomplete→complete. Refill a fresh fixed-size batch.
             batch_size = len(assigned)
-            logging.warning("finish-check: triggering auto-refill for %s (batch_size=%d, total_assigned=%d)",
-                           email, batch_size, len(assigned_keys))
+            logging.warning("finish-check: triggering auto-refill for %s (batch_size=%d, assigned=%d, done=%d, override=%d)",
+                           email, batch_size, len(assigned), len(done_keys), len(override_keys))
             added = _auto_refill_reviewer(snap_id, email, batch_size)
             logging.warning("finish-check: auto-refill for %s returned %d new jobs", email, len(added))
             # Only send notification if refill actually found jobs. With high concurrency,
