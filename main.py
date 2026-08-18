@@ -1676,17 +1676,25 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             return []
 
         fresh = []
+        skipped_reasons = {"no_key": 0, "already_assigned": 0, "excluded_id": 0, "excluded_name": 0, "excluded_client": 0, "no_unreviewed": 0}
         for r in pool:
             k = _job_key(r)
             if not k or k in assigned_keys:
+                if not k:
+                    skipped_reasons["no_key"] += 1
+                else:
+                    skipped_reasons["already_assigned"] += 1
                 continue
             # Skip excluded jobs (jobs with responses stuck in CF are already filtered at the Bloom level).
             if str(r.get("jobId") or "") in EXCLUDED_JOB_IDS:
+                skipped_reasons["excluded_id"] += 1
                 continue
             if str(r.get("name") or "") in EXCLUDED_JOB_NAMES:
+                skipped_reasons["excluded_name"] += 1
                 continue
             # Skip jobs from excluded clients (e.g., Menasha handled by Cloud Factory).
             if bloom.is_excluded_client((r.get("extras") or {}).get("client")):
+                skipped_reasons["excluded_client"] += 1
                 continue
             # Skip jobs with no reviewable work (unreviewedCount == 0). These have
             # only auto-rejected responses, which must be cleared on the Responses page
@@ -1697,6 +1705,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             # immediately be hidden from My Tasks.)
             unreviewable = int(r.get("unreviewedCount") or 0)
             if unreviewable <= 0:
+                skipped_reasons["no_unreviewed"] += 1
                 continue
             total_new = int((r.get("extras") or {}).get("newCount") or 0)
             auto_rejected = max(0, total_new - unreviewable)
@@ -1707,8 +1716,10 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             assigned_keys.add(k)  # guard against dupes within the same feed
             if len(fresh) >= count:
                 break
+        logging.warning("auto-refill for %s: pool=%d, assigned_keys=%d, skipped: %s, fresh=%d",
+                       email, len(pool), len(assigned_keys), skipped_reasons, len(fresh))
         if not fresh:
-            logging.info("auto-refill: no new jobs left for %s", email)
+            logging.warning("auto-refill: no new jobs left for %s (reasons: %s)", email, skipped_reasons)
             return []
 
         try:
