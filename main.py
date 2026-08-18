@@ -1660,6 +1660,8 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             completions = []
         completed_keys = {_completion_job_key(c) for c in completions if _completion_job_key(c)}
         assigned_keys = touched_keys - completed_keys
+        logging.warning("auto-refill for %s: touched=%d, completed=%d, assigned=%d (to filter from pool)",
+                       email, len(touched_keys), len(completed_keys), len(assigned_keys))
 
         # Refill the original allotment, not the (possibly grown) current queue.
         count = batch_size if batch_size else fallback_count
