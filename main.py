@@ -2117,7 +2117,20 @@ def api_shifts_my_complete():
                         email, was_complete, is_complete, len(assigned_keys), len(all_done_keys))
     except Exception as exc:  # noqa: BLE001 — refill/ping must not break completion
         logging.error("finish-check failed for %s: %s", email, exc, exc_info=True)
-    return jsonify({"data": {"id": doc_id, **doc}}), 201
+
+    # Include refill debugging info in response so user can see why refill succeeded/failed
+    refill_debug = {}
+    if 'is_complete' in locals() and is_complete:
+        refill_debug = {
+            "refill_triggered": True,
+            "refill_found_jobs": len(added) if 'added' in locals() else 0,
+            "debug_info": f"assigned={len(assigned_keys) if 'assigned_keys' in locals() else 0}, touched_keys tracked"
+        }
+
+    response_data = {"id": doc_id, **doc}
+    if refill_debug:
+        response_data["_refill_debug"] = refill_debug
+    return jsonify({"data": response_data}), 201
 
 
 @app.route("/api/shifts/my/complete/<job_id>", methods=["DELETE"])
