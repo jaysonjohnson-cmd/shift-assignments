@@ -1133,8 +1133,18 @@ def api_shifts_publish():
                 existing_jobs_by_email[reviewer_email] = []
             existing_jobs_by_email[reviewer_email].extend(rows)
 
-        # Get all completed jobs first (before building all_existing_keys)
-        # so we can exclude them from the duplication check
+        # Build set of keys for ALL existing assignments (to prevent cross-reviewer and self-duplication)
+        all_existing_keys: set = set()
+        for email, jobs in existing_jobs_by_email.items():
+            for r in jobs:
+                jk = str(r.get("jobId") or r.get("id") or "")
+                if jk:
+                    all_existing_keys.add(jk)
+
+        # Get all completed jobs so we can exclude them from the retained assignments
+        # (prevents completed jobs from accumulating in the queue as we add more work).
+        # IMPORTANT: only exclude "normally" completed jobs (not override-completed).
+        # Override-completed jobs must stay in the queue to show as completed on My Tasks.
         completed_keys: set = set()
         try:
             all_completions = _list_completions_for_snapshot(existing_snap_id)
@@ -1144,16 +1154,6 @@ def api_shifts_publish():
             }
         except requests.exceptions.HTTPError:
             pass  # Best-effort; if completion lookup fails, keep all existing jobs
-
-        # Build set of keys for ALL existing assignments (to prevent cross-reviewer and self-duplication)
-        # CRITICAL: exclude completed jobs so they're not marked as "already assigned" in the UI
-        # and don't block auto-refill from assigning new jobs
-        all_existing_keys: set = set()
-        for email, jobs in existing_jobs_by_email.items():
-            for r in jobs:
-                jk = str(r.get("jobId") or r.get("id") or "")
-                if jk and jk not in completed_keys:
-                    all_existing_keys.add(jk)
 
         # For reviewers in the new publish: keep incomplete existing + add truly NEW jobs
         for email in reviewer_emails:
