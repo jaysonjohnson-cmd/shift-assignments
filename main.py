@@ -52,6 +52,7 @@ EXCLUDED_JOB_NAMES = {
     "Photos of House from Street",  # OSI
     "Bayer CVS Audit - Cadillac Program",  # Monthly recurring; excludes all month versions
     "Screener",  # Generic screener jobs - exclude all variants containing "Screener"
+    "Talking Rain",  # WHITE GLOVE - Sparkling Water; JID/PID changes weekly
 }
 
 
