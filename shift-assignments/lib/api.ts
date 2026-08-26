@@ -153,10 +153,11 @@ export async function getSubmissionAges(): Promise<{ data: Record<string, string
   );
 }
 
-export async function getBloomJobs(force = false, status?: string): Promise<Row[]> {
+export async function getBloomJobs(force = false, status?: string, aged = false): Promise<Row[]> {
   const params = new URLSearchParams();
   if (force) params.set("force", "1");
   if (status) params.set("status", status);
+  if (aged) params.set("aged", "1");
   const qs = params.toString() ? `?${params.toString()}` : "";
   const resp = await call<{ data: Row[] }>("GET", `/api/bloom/jobs${qs}`);
   return resp.data;

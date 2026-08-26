@@ -164,7 +164,7 @@ export default function AgedJobsPage() {
     setLoading(true);
     setError(null);
     try {
-      const jobs = await getBloomJobs(force);
+      const jobs = await getBloomJobs(force, undefined, true);
       const aged: AgedRow[] = jobs
         .filter((r) => Number(r.extras?.old_sub ?? 0) > 0)
         .map((r) => ({ ...r, daysOld: null, oldestSubDate: null }));

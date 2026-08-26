@@ -851,10 +851,11 @@ def api_bloom_jobs():
         return denied
     status = request.args.get("status") or bloom.DEFAULT_STATUS
     force = request.args.get("force") == "1"
+    include_aged = request.args.get("aged") == "1"
     if force:
         bloom.clear_cache()
     try:
-        rows = bloom.fetch_prioritized_jobs(status=status)
+        rows = bloom.fetch_prioritized_jobs(status=status, include_aged=include_aged)
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e, source="bloom api")
 

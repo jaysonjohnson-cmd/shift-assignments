@@ -310,7 +310,7 @@ def _fetch_cf_denied_counts(min_submission_date):
     return counts
 
 
-def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True):
+def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True, include_aged=False):
     """Return Rows for every job with unreviewed submissions, pre-prioritized by FA-web.
 
     Calls /api/prioritized-jobs which returns jobs ranked by jicco, close date,
@@ -320,6 +320,9 @@ def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True):
     A 60-second in-process cache keeps the Internal-API rate limit headroom
     comfortable. The `status` parameter is kept for backward compatibility but
     unused (the API only returns jobs with new submissions).
+
+    When include_aged=True, includes jobs with old unreviewed submissions even if
+    they have zero new responses. Used by the Old Submissions page.
 
     Excludes jobs from clients handled by a third party (Cloud Factory).
     """
@@ -334,8 +337,8 @@ def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True):
 
     # Defensive: skip malformed records with no job id — they can't be assigned
     # or completed, and would render as blank rows in the UI.
-    # Skip jobs with no "new" responses in FieldAgent's queue. Even if CF-denied
-    # responses exist, they're either already auto-approved or parked at a third
+    # Skip jobs with no "new" responses in FieldAgent's queue unless include_aged is True.
+    # Even if CF-denied responses exist, they're either already auto-approved or parked at a third
     # party (e.g. Cloud Factory) with nothing actionable here. Only include jobs
     # where reviewers have actual queue entries to work on. Uses _safe_int (not
     # bare int()) since the feed sends "" for some counts, which int() would raise on.
@@ -343,7 +346,7 @@ def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True):
         _row_from_api(job, cf_denied_counts.get(str(job.get("id") or ""), 0))
         for job in jobs
         if isinstance(job, dict) and job.get("id") not in (None, "")
-        and (_safe_int(job.get("new")) or 0) > 0
+        and ((_safe_int(job.get("new")) or 0) > 0 or (include_aged and (_safe_int(job.get("old_sub")) or 0) > 0))
     ]
 
     # Skip project name fetching on cache misses to reduce rate limit pressure.
