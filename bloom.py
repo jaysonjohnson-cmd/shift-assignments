@@ -337,16 +337,15 @@ def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True, include_aged=F
 
     # Defensive: skip malformed records with no job id — they can't be assigned
     # or completed, and would render as blank rows in the UI.
-    # Skip jobs with no "new" responses in FieldAgent's queue unless include_aged is True.
-    # Even if CF-denied responses exist, they're either already auto-approved or parked at a third
-    # party (e.g. Cloud Factory) with nothing actionable here. Only include jobs
-    # where reviewers have actual queue entries to work on. Uses _safe_int (not
-    # bare int()) since the feed sends "" for some counts, which int() would raise on.
+    # Include jobs with either new responses OR aged responses. CF-denied work comes back
+    # as aged submissions that still need human review. The include_aged parameter is
+    # kept for backward compatibility but no longer gates aged inclusion in the main feed.
+    # Uses _safe_int (not bare int()) since the feed sends "" for some counts.
     rows = [
         _row_from_api(job, cf_denied_counts.get(str(job.get("id") or ""), 0))
         for job in jobs
         if isinstance(job, dict) and job.get("id") not in (None, "")
-        and ((_safe_int(job.get("new")) or 0) > 0 or (include_aged and (_safe_int(job.get("old_sub")) or 0) > 0))
+        and ((_safe_int(job.get("new")) or 0) > 0 or (_safe_int(job.get("old_sub")) or 0) > 0)
     ]
 
     # Skip project name fetching on cache misses to reduce rate limit pressure.

@@ -65,6 +65,9 @@ def _is_excluded_job(row):
     for excluded_name in EXCLUDED_JOB_NAMES:
         if excluded_name.lower() in job_name:
             return True
+    # Exclude video jobs, but allow non-video jobs through
+    if "video" in job_name and "non-video" not in job_name:
+        return True
     return False
 
 
