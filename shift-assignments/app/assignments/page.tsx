@@ -270,7 +270,12 @@ export default function AssignmentsPage() {
     try {
       const result = assignShift(priorityPool, draft, prioritizeFilter, balanceByResponses, prioritizeUrgency, prioritizeAged);
       const byEmail = toEmailMap(result.assignments, reviewers);
-      const resp = await publishShift(byEmail);
+      const resp = await publishShift(byEmail, {
+        prioritizeNew: prioritizeFilter,
+        balanceByResponses,
+        prioritizeUrgency,
+        prioritizeAged,
+      });
       setLastPublishedAt(resp.published_at);
       refreshLiveJobs();
       const lines = summarizeShift("Shift", result.assignments, reviewers);

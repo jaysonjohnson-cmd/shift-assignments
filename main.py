@@ -1044,6 +1044,7 @@ def api_shifts_publish():
     assignments = body.get("assignments")
     if not isinstance(assignments, dict):
         return jsonify({"error": "assignments must be an object"}), 400
+    flags = body.get("flags") or {}
 
     normalized = {}
     for email, rows in assignments.items():
@@ -1245,6 +1246,7 @@ def api_shifts_publish():
             "reviewer_emails": merged_emails,
             "last_updated_at": published_at,
             "last_updated_by": published_by,
+            "prioritization_flags": flags,
         }
         try:
             internal_api.put(f"{_STORAGE_PATH}/{snapshot_id}", json={"data": updated_snap})
@@ -1287,6 +1289,7 @@ def api_shifts_publish():
         "published_at": published_at,
         "published_by": published_by,
         "reviewer_emails": reviewer_emails,
+        "prioritization_flags": flags,
     }
     try:
         resp = internal_api.post(_STORAGE_PATH, json={"data": index_doc})
@@ -1587,6 +1590,9 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
     rows added (compacted). Best-effort: returns [] on any failure or when the
     feed has nothing new left.
 
+    Reapplies the prioritization flags from the snapshot (prioritizeAged,
+    prioritizeUrgency, etc.) so refills maintain consistent prioritization.
+
     Concurrent refill safety: uses a "refill_lock" marker in storage to prevent
     duplicate jobs when multiple refill requests run in parallel. Only one
     refill per reviewer per snapshot is allowed at a time.
@@ -1628,6 +1634,18 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         touched_keys = set()
         max_part = -1
         batch_size = None
+        prioritization_flags = {}
+
+        # Read snapshot data to get prioritization flags for consistent refilling
+        try:
+            snaps = roles.list_docs_by_kind("shift_snapshot", force=True)
+            for snap in snaps:
+                if snap.get("id") == snap_id:
+                    snap_data = snap.get("data") or {}
+                    prioritization_flags = snap_data.get("prioritization_flags") or {}
+                    break
+        except Exception as exc:  # noqa: BLE001 — flags are best-effort
+            logging.warning("auto-refill: failed to read snapshot flags for %s: %s", email, exc)
 
         try:
             # Authoritative read: compute assigned_keys and next_part from current
@@ -1685,6 +1703,81 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         except Exception as exc:  # noqa: BLE001 — refill is best-effort
             logging.warning("auto-refill: failed to fetch jobs for %s: %s", email, exc)
             return []
+
+        # Reapply prioritization flags to sort pool consistently with initial assignment
+        if prioritization_flags:
+            prioritize_aged = prioritization_flags.get("prioritizeAged", False)
+            prioritize_urgency = prioritization_flags.get("prioritizeUrgency", False)
+            prioritize_new = prioritization_flags.get("prioritizeNew", False)
+
+            if prioritize_aged:
+                # Separate aged jobs (old_sub > 0) and prioritize them
+                aged_jobs = []
+                regular_jobs = []
+                for r in pool:
+                    if int((r.get("extras") or {}).get("old_sub") or 0) > 0:
+                        aged_jobs.append(r)
+                    else:
+                        regular_jobs.append(r)
+                pool = aged_jobs + regular_jobs
+                logging.warning("auto-refill for %s: prioritizeAged=True, separated %d aged + %d regular jobs",
+                               email, len(aged_jobs), len(regular_jobs))
+
+            if prioritize_urgency:
+                # Sort by urgency score (higher = more urgent)
+                def urgency_score(row):
+                    # Simplified urgency: days left (deadline) + days waiting (age)
+                    # This is a simplified version; full version would match assign.ts logic
+                    extras = row.get("extras") or {}
+                    end_date_str = str(extras.get("endDate") or "")
+                    oldest_sub_str = str(row.get("oldestSubmission") or "")
+
+                    # Days until deadline (-100 if no/invalid endDate)
+                    close_score = 15
+                    if end_date_str:
+                        try:
+                            end_date = datetime.datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                            days_left = (end_date.timestamp() - datetime.datetime.now(datetime.timezone.utc).timestamp()) / 86400
+                            if days_left < 0:
+                                close_score = 100
+                            elif days_left <= 1.5:
+                                close_score = 100
+                            elif days_left <= 3:
+                                close_score = 90
+                            elif days_left <= 7:
+                                close_score = 70
+                            elif days_left <= 14:
+                                close_score = 50
+                            elif days_left <= 30:
+                                close_score = 30
+                            else:
+                                close_score = 10
+                        except (ValueError, AttributeError):
+                            pass
+
+                    # Response age urgency
+                    wait_score = 0
+                    if oldest_sub_str:
+                        try:
+                            old_date = datetime.datetime.fromisoformat(oldest_sub_str.replace("Z", "+00:00"))
+                            days_old = (datetime.datetime.now(datetime.timezone.utc).timestamp() - old_date.timestamp()) / 86400
+                            if days_old >= 30:
+                                wait_score = 100
+                            elif days_old >= 14:
+                                wait_score = 80
+                            elif days_old >= 7:
+                                wait_score = 60
+                            elif days_old >= 3:
+                                wait_score = 40
+                            elif days_old >= 1:
+                                wait_score = 20
+                        except (ValueError, AttributeError):
+                            pass
+
+                    return int(0.6 * close_score + 0.4 * wait_score)
+
+                pool.sort(key=urgency_score, reverse=True)
+                logging.warning("auto-refill for %s: prioritizeUrgency=True, sorted by urgency", email)
 
         fresh = []
         skipped_reasons = {"no_key": 0, "already_assigned": 0, "excluded_id": 0, "excluded_name": 0, "excluded_client": 0, "no_unreviewed": 0}

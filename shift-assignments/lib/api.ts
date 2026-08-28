@@ -173,11 +173,17 @@ export async function getBloomProjects(): Promise<ProjectSummary[]> {
 
 export async function publishShift(
   assignments: Record<string, Row[]>,
+  flags?: {
+    prioritizeNew?: boolean;
+    balanceByResponses?: boolean;
+    prioritizeUrgency?: boolean;
+    prioritizeAged?: boolean;
+  },
 ): Promise<{ id: string; published_at: string }> {
   const resp = await call<{ data: { id: string; published_at: string } }>(
     "POST",
     "/api/shifts/publish",
-    { assignments },
+    { assignments, flags: flags || {} },
   );
   return resp.data;
 }
