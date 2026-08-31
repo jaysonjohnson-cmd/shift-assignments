@@ -61,9 +61,12 @@ def _is_excluded_job(row):
     if str(row.get("jobId") or "") in EXCLUDED_JOB_IDS:
         return True
     job_name = str(row.get("name") or "").lower()
+    # Normalize dashes/hyphens/en-dashes to hyphen for matching
+    job_name_normalized = job_name.replace("–", "-").replace("—", "-")
     # Check both exact matches and substring matches (case-insensitive for patterns)
     for excluded_name in EXCLUDED_JOB_NAMES:
-        if excluded_name.lower() in job_name:
+        excluded_normalized = excluded_name.lower().replace("–", "-").replace("—", "-")
+        if excluded_normalized in job_name_normalized:
             return True
     # Exclude video jobs, but allow non-video jobs through
     if "video" in job_name and "non-video" not in job_name:
