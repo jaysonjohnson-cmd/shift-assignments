@@ -33,12 +33,16 @@ export function MarkDoneButton({
   const complete = async (override: boolean) => {
     setBusy(true);
     setError(null);
+    const completedAt = new Date().toISOString();
+    // Optimistic update: remove from UI immediately
+    onChange(completedAt);
     try {
       await markTaskDone(jobId, undefined, override);
       setBlocked(null);
       if (onBeforeChange) await onBeforeChange();
-      onChange(new Date().toISOString());
     } catch (e) {
+      // Undo optimistic update on error
+      onChange(null);
       const unreviewed =
         e instanceof ApiError && e.status === 409
           ? (e.data as { unreviewed?: number } | null)?.unreviewed
