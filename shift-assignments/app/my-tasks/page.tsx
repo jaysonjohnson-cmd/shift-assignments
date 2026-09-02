@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { getMyTasks } from "@/lib/api";
+import { getMyTasks, markTaskDone } from "@/lib/api";
 import { useUser } from "@/lib/useUser";
 import { reviewerColor, type Row } from "@/lib/types";
 import { OpenInReviewButton } from "@/components/OpenInReviewButton";
@@ -181,6 +181,7 @@ export default function MyTasksPage() {
   const [density, setDensity] = useState<Density>("comfortable");
   const [viewByPid, setViewByPid] = useState(false);
   const [emptyMsgIdx, setEmptyMsgIdx] = useState(() => pickRandomMessageIndex());
+  const [blockedModal, setBlockedModal] = useState<{ jobId: string; unreviewed: number } | null>(null);
 
   useEffect(() => {
     try {
@@ -396,11 +397,98 @@ export default function MyTasksPage() {
                 onChange={(iso) =>
                   handleRowChange(row.jobId || row.id, iso)
                 }
+                onBlocked={(jobId, unreviewed) => setBlockedModal({ jobId, unreviewed })}
               />
             ))}
           </Section>
         )}
 
+      </div>
+
+      {blockedModal && (
+        <BlockedConfirmationModal
+          unreviewed={blockedModal.unreviewed}
+          jobId={blockedModal.jobId}
+          onConfirm={async () => {
+            try {
+              await markTaskDone(blockedModal.jobId, undefined, true);
+              setBlockedModal(null);
+            } catch {
+              // Error handled by MarkDoneButton state
+            }
+          }}
+          onCancel={() => {
+            // Undo the optimistic removal
+            handleRowChange(blockedModal.jobId, null);
+            setBlockedModal(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function BlockedConfirmationModal({
+  unreviewed,
+  jobId,
+  onConfirm,
+  onCancel,
+}: {
+  unreviewed: number;
+  jobId: string;
+  onConfirm: () => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+
+  const handleConfirm = async () => {
+    setConfirming(true);
+    try {
+      await onConfirm();
+    } finally {
+      setConfirming(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="max-w-sm rounded-lg border border-storesight-border bg-white p-4 shadow-lg dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark">
+        <div className="flex items-start gap-3">
+          <div className="shrink-0 rounded-full bg-[#FFA500]/15 p-2">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="text-[#FFA500]" aria-hidden>
+              <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z" fill="currentColor" />
+            </svg>
+          </div>
+          <div className="min-w-0 flex-1">
+            <h3 className="font-semibold text-storesight-ink-dark dark:text-storesight-ink-dark">
+              New responses arrived
+            </h3>
+            <p className="mt-1 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+              {unreviewed} unreviewed response{unreviewed === 1 ? "" : "s"} came in while marking this job done.
+            </p>
+            <p className="mt-2 text-[12px] leading-snug text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+              Clear them in FieldAgent, or mark done anyway to skip them.
+            </p>
+          </div>
+        </div>
+        <div className="mt-4 flex gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={confirming}
+            className="flex-1 rounded-lg border border-storesight-border px-3 py-2 text-sm font-medium text-storesight-ink-dark transition hover:border-storesight-accent/60 disabled:opacity-50 dark:border-storesight-border-dark dark:text-storesight-ink-dark"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleConfirm}
+            disabled={confirming}
+            className="flex-1 rounded-lg bg-[#FFA500]/15 px-3 py-2 text-sm font-semibold text-[#B26A00] transition hover:bg-[#FFA500]/25 disabled:opacity-50 dark:text-[#FFA500]"
+          >
+            {confirming ? "…" : "Mark done anyway"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -573,6 +661,7 @@ function TaskCard({
   density,
   grouped,
   accentColor,
+  onBlocked,
 }: {
   row: Row;
   onChange: (iso: string | null) => void;
@@ -581,6 +670,7 @@ function TaskCard({
   grouped?: boolean;
   /** Signed-in reviewer's color, used for the left accent bar. */
   accentColor?: string;
+  onBlocked?: (jobId: string, unreviewed: number) => void;
 }) {
   const jobCount = grouped
     ? (typeof row.extras?.jobCount === "number" ? (row.extras.jobCount as number) : 1)
@@ -689,6 +779,7 @@ function TaskCard({
             onChange={handleChange}
             size="sm"
             variant="ghost"
+            onBlocked={onBlocked}
           />
         </div>
       </div>

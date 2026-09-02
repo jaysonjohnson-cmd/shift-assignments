@@ -12,6 +12,8 @@ type Props = {
   variant?: "default" | "ghost";
   /** Called after the underlying API call succeeds, before onChange fires. Lets the parent play an exit animation. */
   onBeforeChange?: () => Promise<void> | void;
+  /** Called when marking done is blocked by unreviewed responses (409 conflict). */
+  onBlocked?: (jobId: string, unreviewed: number) => void;
 };
 
 export function MarkDoneButton({
@@ -20,6 +22,7 @@ export function MarkDoneButton({
   size = "md",
   variant = "default",
   onBeforeChange,
+  onBlocked,
 }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,15 +44,16 @@ export function MarkDoneButton({
       setBlocked(null);
       if (onBeforeChange) await onBeforeChange();
     } catch (e) {
-      // Undo optimistic update on error
-      onChange(null);
       const unreviewed =
         e instanceof ApiError && e.status === 409
           ? (e.data as { unreviewed?: number } | null)?.unreviewed
           : undefined;
       if (typeof unreviewed === "number") {
-        setBlocked(unreviewed);
+        // Keep optimistic removal; notify parent to show blocked modal
+        if (onBlocked) onBlocked(jobId, unreviewed);
       } else {
+        // Only undo for actual errors, not 409 conflicts
+        onChange(null);
         setError(e instanceof Error ? e.message : "Failed");
       }
     } finally {
