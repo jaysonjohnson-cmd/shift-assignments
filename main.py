@@ -56,20 +56,29 @@ EXCLUDED_JOB_NAMES = {
 }
 
 
-def _is_excluded_job(row):
-    """True if this job should never be assignable or visible in the composer."""
-    if str(row.get("jobId") or "") in EXCLUDED_JOB_IDS:
-        return True
-    job_name = str(row.get("name") or "").lower()
+def _is_excluded_job_name(job_name: str) -> bool:
+    """True if this job name matches any excluded pattern (substring, case-insensitive)."""
+    job_name_lower = str(job_name or "").lower()
     # Normalize dashes/hyphens/en-dashes to hyphen for matching
-    job_name_normalized = job_name.replace("–", "-").replace("—", "-")
+    job_name_normalized = job_name_lower.replace("–", "-").replace("—", "-")
     # Check both exact matches and substring matches (case-insensitive for patterns)
     for excluded_name in EXCLUDED_JOB_NAMES:
         excluded_normalized = excluded_name.lower().replace("–", "-").replace("—", "-")
         if excluded_normalized in job_name_normalized:
             return True
+    return False
+
+
+def _is_excluded_job(row):
+    """True if this job should never be assignable or visible in the composer."""
+    if str(row.get("jobId") or "") in EXCLUDED_JOB_IDS:
+        return True
+    job_name = str(row.get("name") or "")
+    if _is_excluded_job_name(job_name):
+        return True
     # Exclude video jobs, but allow non-video jobs through
-    if "video" in job_name and "non-video" not in job_name:
+    job_name_lower = job_name.lower()
+    if "video" in job_name_lower and "non-video" not in job_name_lower:
         return True
     return False
 
@@ -593,11 +602,7 @@ def api_shifts_auto_publish():
                 continue
             valid_rows = []
             for r in job_rows:
-                job_id = str(r.get("jobId") or r.get("id") or "")
-                if job_id in EXCLUDED_JOB_IDS:
-                    continue
-                job_name = str(r.get("name") or "")
-                if job_name in EXCLUDED_JOB_NAMES:
+                if _is_excluded_job(r):
                     continue
                 unreviewable = int(r.get("unreviewedCount") or 0)
                 total_new = int((r.get("extras") or {}).get("newCount") or 0)
@@ -1066,8 +1071,12 @@ def api_shifts_publish():
                 filtered_jobs.append((job_id, "excluded_id"))
                 continue
             job_name = str(r.get("name") or "")
-            if job_name in EXCLUDED_JOB_NAMES:
+            if _is_excluded_job_name(job_name):
                 filtered_jobs.append((job_id, "excluded_name"))
+                continue
+            # Exclude video jobs, but allow non-video jobs through
+            if "video" in job_name.lower() and "non-video" not in job_name.lower():
+                filtered_jobs.append((job_id, "excluded_video"))
                 continue
             unreviewable = int(r.get("unreviewedCount") or 0)
             # Only assign jobs with actual reviewable responses. Jobs with only
@@ -1170,8 +1179,7 @@ def api_shifts_publish():
             # Re-filter existing jobs: exclude excluded jobs, completed jobs, and jobs with zero reviewable work
             existing_filtered = [
                 r for r in existing
-                if str(r.get("jobId") or r.get("id") or "") not in EXCLUDED_JOB_IDS
-                and str(r.get("name") or "") not in EXCLUDED_JOB_NAMES
+                if not _is_excluded_job(r)
                 and str(r.get("jobId") or r.get("id") or "") not in completed_keys
                 and int(r.get("unreviewedCount") or 0) > 0
             ]
@@ -1796,8 +1804,11 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             if str(r.get("jobId") or "") in EXCLUDED_JOB_IDS:
                 skipped_reasons["excluded_id"] += 1
                 continue
-            if str(r.get("name") or "") in EXCLUDED_JOB_NAMES:
+            if _is_excluded_job_name(str(r.get("name") or "")):
                 skipped_reasons["excluded_name"] += 1
+                continue
+            if "video" in str(r.get("name") or "").lower() and "non-video" not in str(r.get("name") or "").lower():
+                skipped_reasons["excluded_client"] += 1
                 continue
             # Skip jobs from excluded clients (e.g., Menasha handled by Cloud Factory).
             if bloom.is_excluded_client((r.get("extras") or {}).get("client")):
