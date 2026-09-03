@@ -1488,6 +1488,9 @@ def api_shifts_my():
 
     enriched = []
     for row in rows:
+        # Filter out excluded jobs (including video jobs) that shouldn't appear in My Tasks
+        if _is_excluded_job(row):
+            continue
         completion = done_by_jid.get(_row_job_key(row))
         item = {
             **row,
