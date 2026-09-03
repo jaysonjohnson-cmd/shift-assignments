@@ -12,6 +12,8 @@ type Props = {
   size?: "sm" | "md";
   /** Visual variant. `default` keeps legacy outlined look; `primary` is a solid CTA. */
   variant?: "default" | "primary";
+  /** Disable the button (used when marking task done is processing). */
+  disabled?: boolean;
 };
 
 function buildClipboardPayload(row: Row): string {
@@ -35,10 +37,11 @@ function buildUrl(row: Row): string {
   return qs ? `${COLLECTION_REVIEW_URL}?${qs}#/` : COLLECTION_REVIEW_URL;
 }
 
-export function OpenInReviewButton({ row, size = "md", variant = "default" }: Props) {
+export function OpenInReviewButton({ row, size = "md", variant = "default", disabled = false }: Props) {
   const [copied, setCopied] = useState(false);
 
   const handleClick = async () => {
+    if (disabled) return;
     const payload = buildClipboardPayload(row);
     try {
       await navigator.clipboard.writeText(payload);
@@ -57,15 +60,24 @@ export function OpenInReviewButton({ row, size = "md", variant = "default" }: Pr
 
   const variantClass =
     variant === "primary"
-      ? "border-transparent bg-storesight-primary text-white shadow-sm shadow-storesight-primary/30 hover:bg-storesight-primary-dark dark:bg-storesight-accent dark:text-storesight-bg-dark dark:hover:bg-storesight-accent-light"
-      : "border-storesight-border bg-white text-storesight-primary-dark hover:border-storesight-accent hover:text-storesight-primary dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark dark:hover:border-storesight-accent-light dark:hover:text-storesight-accent-light";
+      ? disabled
+        ? "border-transparent bg-storesight-primary/50 text-white/70 shadow-sm dark:bg-storesight-accent/50 dark:text-storesight-bg-dark/70 dark:shadow-none"
+        : "border-transparent bg-storesight-primary text-white shadow-sm shadow-storesight-primary/30 hover:bg-storesight-primary-dark dark:bg-storesight-accent dark:text-storesight-bg-dark dark:hover:bg-storesight-accent-light"
+      : disabled
+        ? "border-storesight-border/60 bg-white/60 text-storesight-primary-dark/60 dark:border-storesight-border-dark/60 dark:bg-storesight-surface-raised-dark/60 dark:text-storesight-ink-dark/60"
+        : "border-storesight-border bg-white text-storesight-primary-dark hover:border-storesight-accent hover:text-storesight-primary dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark dark:hover:border-storesight-accent-light dark:hover:text-storesight-accent-light";
 
   return (
     <button
       type="button"
       onClick={handleClick}
-      title={`Opens Collection Review in a new tab and copies Project ${row.projectId || row.id} to clipboard`}
-      className={`inline-flex items-center gap-1.5 rounded-lg border font-medium transition ${variantClass} ${sizeClass}`}
+      disabled={disabled}
+      title={
+        disabled
+          ? "Processing approval — wait until complete before opening"
+          : `Opens Collection Review in a new tab and copies Project ${row.projectId || row.id} to clipboard`
+      }
+      className={`inline-flex items-center gap-1.5 rounded-lg border font-medium transition disabled:cursor-not-allowed ${variantClass} ${sizeClass}`}
     >
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
         <path

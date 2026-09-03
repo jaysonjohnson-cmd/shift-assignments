@@ -676,6 +676,7 @@ function TaskCard({
     ? (typeof row.extras?.jobCount === "number" ? (row.extras.jobCount as number) : 1)
     : 1;
   const [exiting, setExiting] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const meta = priorityMeta(row.priority);
   const heading = primaryHeading(row, !!grouped);
 
@@ -773,13 +774,14 @@ function TaskCard({
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {!completed && <OpenInReviewButton row={row} size="sm" variant="primary" />}
+          {!completed && <OpenInReviewButton row={row} size="sm" variant="primary" disabled={isProcessing} />}
           <MarkDoneButton
             row={row}
             onChange={handleChange}
             size="sm"
             variant="ghost"
             onBlocked={onBlocked}
+            onProcessingChange={setIsProcessing}
           />
         </div>
       </div>
@@ -859,8 +861,8 @@ function TaskCard({
         </div>
       </div>
       <div className="flex flex-col items-end gap-1.5">
-        {!completed && <OpenInReviewButton row={row} size="sm" variant="primary" />}
-        <MarkDoneButton row={row} onChange={handleChange} size="sm" variant="ghost" />
+        {!completed && <OpenInReviewButton row={row} size="sm" variant="primary" disabled={isProcessing} />}
+        <MarkDoneButton row={row} onChange={handleChange} size="sm" variant="ghost" onProcessingChange={setIsProcessing} />
       </div>
     </div>
   );
