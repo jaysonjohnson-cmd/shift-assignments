@@ -567,6 +567,10 @@ def api_shifts_auto_publish():
     """
     # Auth is required by the @app.before_request middleware
     try:
+        if not _get_auto_publish_enabled():
+            logging.info("Auto-publish skipped: disabled in settings")
+            return jsonify({"skipped": True, "reason": "auto-publish is disabled"}), 200
+
         # Get shift_time filter from query params
         shift_time = request.args.get("shift_time") or None
 
@@ -720,6 +724,31 @@ def api_shifts_auto_publish():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/shifts/auto-publish/settings", methods=["GET"])
+def api_auto_publish_settings_get():
+    return jsonify({"data": {"enabled": _get_auto_publish_enabled()}})
+
+
+@app.route("/api/shifts/auto-publish/settings", methods=["POST"])
+def api_auto_publish_settings_set():
+    denied = _require_admin()
+    if denied is not None:
+        return denied
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
+        return jsonify({"error": "enabled (boolean) is required"}), 400
+    enabled = body["enabled"]
+    try:
+        _set_auto_publish_enabled(enabled)
+    except requests.exceptions.HTTPError as e:
+        return _http_error_response(e)
+    logging.info(
+        "POST /api/shifts/auto-publish/settings by=%s enabled=%s",
+        g.user.get("email"), enabled,
+    )
+    return jsonify({"data": {"enabled": enabled}})
+
+
 # ---------- API: Sync Team Scheduler ----------
 
 @app.route("/api/sync/team-scheduler", methods=["POST"])
@@ -757,6 +786,36 @@ def api_sync_team_scheduler():
 
 
 _STORAGE_PATH = "/api/storage/qc-shift-assignments"
+
+
+_AUTO_PUBLISH_KEY = "auto_publish_enabled"
+
+
+def _find_tool_config_doc(key, force=False):
+    """Return the tool_config doc for `key`, or None."""
+    for doc in roles.list_docs_by_kind("tool_config", force=force):
+        if (doc.get("data") or {}).get("key") == key:
+            return doc
+    return None
+
+
+def _get_auto_publish_enabled(force=False):
+    """True if scheduled auto-publish is enabled. Defaults to False."""
+    doc = _find_tool_config_doc(_AUTO_PUBLISH_KEY, force=force)
+    if doc is None:
+        return False
+    return bool((doc.get("data") or {}).get("value"))
+
+
+def _set_auto_publish_enabled(enabled):
+    """Persist the auto-publish toggle to Storage API."""
+    data = {"kind": "tool_config", "key": _AUTO_PUBLISH_KEY, "value": bool(enabled)}
+    existing = _find_tool_config_doc(_AUTO_PUBLISH_KEY, force=True)
+    if existing:
+        internal_api.put(f"{_STORAGE_PATH}/{existing['id']}", json={"data": data})
+    else:
+        internal_api.post(_STORAGE_PATH, json={"data": data})
+    roles.invalidate_doc_cache("tool_config")
 
 
 # Fields kept in the published shift_snapshot per row. Storage API limits
@@ -1440,6 +1499,50 @@ def _list_completions_for_snapshot(snapshot_id, reviewer_email=None, force=False
     return out
 
 
+def _live_counts_by_job():
+    """{jobId: {"reviewable", "new"}} from the live feed, or None if unavailable.
+
+    None is meaningful and must be propagated: it means "no live data", and a
+    caller has to fall back to the stored snapshot counts. Treating an empty
+    feed as real data would mark every assigned job as fully reviewed.
+    """
+    try:
+        feed = bloom.fetch_prioritized_jobs()
+    except Exception:  # noqa: BLE001 — the live overlay is best-effort
+        return None
+    live = {
+        str(j.get("jobId")): {
+            "reviewable": int(j.get("unreviewedCount") or 0),
+            "new": int((j.get("extras") or {}).get("newCount") or 0),
+        }
+        for j in feed
+        if j.get("jobId")
+    }
+    # Empty feed → treat as no data (don't auto-mark every job reviewed).
+    return live or None
+
+
+def _is_unactionable_row(row, live_by_job):
+    """True if this job still has responses but none the reviewer can action.
+
+    Everything left on it was auto-rejected (distance, etc.), which is cleared
+    on the Responses page rather than in My Tasks. /api/shifts/my hides these
+    rows, so the completion finish-check MUST discount them the same way: a
+    reviewer holding one otherwise never reaches is_complete, so their queue is
+    never topped up and they sit idle with an apparently empty task list. Both
+    callers share this predicate so the two views can't drift apart again.
+    """
+    if live_by_job is None:
+        return False
+    jid = str(row.get("jobId") or "")
+    if not jid:
+        return False
+    live = live_by_job.get(jid)
+    if live is None:
+        return False
+    return live["reviewable"] == 0 and live["new"] > 0
+
+
 @app.route("/api/shifts/my", methods=["GET"])
 def api_shifts_my():
     """Return this reviewer's rows from the latest snapshot + completion state."""
@@ -1468,23 +1571,9 @@ def api_shifts_my():
     # feed has no unreviewed responses left (fully reviewed) → count 0, which the
     # UI treats as already-done. Best-effort: if the feed is unavailable we keep
     # the stored counts rather than blanking the page.
-    try:
-        feed = bloom.fetch_prioritized_jobs()
-        # Per job: reviewable count (massReview) and the raw New count, so we can
-        # show both "what's left to review" and "what's stuck as auto-rejected".
-        live_by_job = {
-            str(j.get("jobId")): {
-                "reviewable": int(j.get("unreviewedCount") or 0),
-                "new": int((j.get("extras") or {}).get("newCount") or 0),
-            }
-            for j in feed
-            if j.get("jobId")
-        }
-    except Exception:  # noqa: BLE001 — live overlay is best-effort
-        live_by_job = None
-    # Empty feed → treat as no data (don't auto-mark every job reviewed).
-    if not live_by_job:
-        live_by_job = None
+    # Per job: reviewable count (massReview) and the raw New count, so we can
+    # show both "what's left to review" and "what's stuck as auto-rejected".
+    live_by_job = _live_counts_by_job()
 
     enriched = []
     for row in rows:
@@ -1511,7 +1600,7 @@ def api_shifts_my():
                 item["autoRejected"] = max(0, new - reviewable)
                 # Skip jobs with zero reviewable responses (all auto-rejected).
                 # These have no actionable work and shouldn't appear on My Tasks.
-                if reviewable == 0 and new > 0:
+                if _is_unactionable_row(row, live_by_job):
                     continue
             elif completion:
                 # Job is not in the live feed AND has been marked completed.
@@ -1522,11 +1611,44 @@ def api_shifts_my():
             # preserve newly assigned jobs or jobs temporarily absent from the feed.
         enriched.append(item)
 
-    # NOTE: refilling happens ONLY on the completion POST finish-check, not here.
-    # A GET-time self-heal used to also refill, but with two triggers a finished
-    # reviewer got two batches at once (each missing the other's write → 40 rows,
-    # 20 duplicated). One trigger = no race. With checkmark-only the POST trigger
-    # is reliable, so this read stays a pure read.
+    # Self-heal refill. The completion POST finish-check is the primary trigger,
+    # but it only fires on the incomplete→complete *edge* — and when that edge is
+    # missed the reviewer has nothing left to click, so nothing can ever re-trigger
+    # it and they sit idle for the rest of the shift. Known ways to miss it: a job
+    # that's hidden from this list (all responses auto-rejected) still counts as
+    # assigned-and-not-done in the finish-check, so is_complete never goes true;
+    # an excluded-title straggler leaves was_complete already true on the last
+    # click; or the refill itself failed best-effort and returned nothing.
+    #
+    # An earlier GET-time refill was removed because running two triggers handed a
+    # finished reviewer two batches at once (each missing the other's write). That
+    # race is now held off by the storage-level refill_lock inside
+    # _auto_refill_reviewer, which didn't exist then — the second caller sees the
+    # lock and backs off. The cooldown covers the other direction: a polling page
+    # re-attempting on every load when the pool is genuinely empty.
+    pending = [it for it in enriched if not it.get("completedAt")]
+    if rows and not pending and _self_heal_cooldown_ok(snap_id, email):
+        logging.warning(
+            "self-heal: %s has 0 pending of %d visible jobs; attempting refill",
+            email, len(enriched),
+        )
+        try:
+            added = _auto_refill_reviewer(snap_id, email, len(enriched) or len(rows))
+        except Exception as exc:  # noqa: BLE001 — a read must never fail on refill
+            logging.warning("self-heal refill failed for %s: %s", email, exc)
+            added = []
+        if added:
+            logging.warning("self-heal: refilled %d jobs for %s", len(added), email)
+            for r in added:
+                item = {**r, "completedAt": None}
+                jid = str(r.get("jobId") or "")
+                live = live_by_job.get(jid) if (live_by_job is not None and jid) else None
+                if live is not None:
+                    item["unreviewedCount"] = live["reviewable"]
+                    item["autoRejected"] = max(0, live["new"] - live["reviewable"])
+                enriched.append(item)
+        else:
+            logging.warning("self-heal: no eligible jobs to refill for %s", email)
     try:
         color = next(
             (r.get("color") for r in roles.list_reviewers() if r["email"] == email),
@@ -1587,6 +1709,55 @@ def _cleanup_orphaned_refill_locks(max_age_seconds=600):
                     logging.warning("Cleaned up malformed refill_lock (id=%s)", doc_id)
     except Exception as exc:  # noqa: BLE001 — cleanup is best-effort
         logging.warning("Failed to clean up orphaned refill locks: %s", exc)
+
+
+# Oldest Bloom feed a refill will build a batch from. Comfortably above the
+# warmer's 45s interval so a warm cache always satisfies it, low enough that a
+# stalled warmer forces a real fetch rather than assigning from a stale ranking.
+_REFILL_MAX_FEED_AGE = 120
+
+_SELF_HEAL_COOLDOWN_SECONDS = 120
+_SELF_HEAL_MAX_TRACKED = 500
+_self_heal_attempts = {}  # (snap_id, email) -> time.monotonic() of last attempt
+_self_heal_lock = threading.Lock()
+
+
+def _mark_refill_attempted(snap_id, email):
+    """Stamp a refill attempt against the GET-time self-heal cooldown.
+
+    Called from both refill triggers. The POST finish-check stamps too, so the
+    page load that immediately follows a finish doesn't redo the same uncached
+    Bloom fetch the POST just did.
+    """
+    key = (snap_id, (email or "").strip().lower())
+    now = time.monotonic()
+    with _self_heal_lock:
+        # Keep the dict from growing without bound across a long-lived instance.
+        if len(_self_heal_attempts) >= _SELF_HEAL_MAX_TRACKED:
+            cutoff = now - _SELF_HEAL_COOLDOWN_SECONDS
+            for k in [k for k, v in _self_heal_attempts.items() if v < cutoff]:
+                del _self_heal_attempts[k]
+        _self_heal_attempts[key] = now
+
+
+def _self_heal_cooldown_ok(snap_id, email):
+    """True if it's been long enough to retry a self-heal refill for this reviewer.
+
+    Records the attempt as a side effect, so a caller that gets True should go
+    ahead and try. In-memory and per-instance on purpose: the cross-instance
+    guard against two refills running at once is the storage-level refill_lock
+    inside _auto_refill_reviewer. All this does is stop a polling My Tasks page
+    from re-fetching the uncached Bloom feed on every load when the pool is
+    legitimately empty.
+    """
+    key = (snap_id, (email or "").strip().lower())
+    now = time.monotonic()
+    with _self_heal_lock:
+        last = _self_heal_attempts.get(key)
+        if last is not None and now - last < _SELF_HEAL_COOLDOWN_SECONDS:
+            return False
+    _mark_refill_attempted(snap_id, email)
+    return True
 
 
 def _auto_refill_reviewer(snap_id, email, fallback_count):
@@ -1710,10 +1881,20 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             return []
 
         try:
-            # Bypass cache to get fresh job data for refill. Refill is rare
-            # (only when a reviewer finishes their whole batch) so the rate-limit
-            # cost is minimal and freshness is critical.
-            pool = bloom.fetch_prioritized_jobs(use_cache=False)
+            # Read the background-warmed cache rather than forcing a fresh fetch.
+            # The upstream ranks ~500 jobs and takes 10-12s to answer, and this
+            # runs on the reviewer's critical path (the GET self-heal), so a hard
+            # bypass meant a 10-12 second page load. _REFILL_MAX_FEED_AGE bounds
+            # how stale a pool we'll accept and refetches beyond that, so a dead
+            # warmer degrades to the old behaviour instead of assigning from a
+            # long-stale feed.
+            #
+            # The staleness this admits is a job whose last responses were
+            # cleared in the last minute. Such a job is hidden from My Tasks by
+            # the live overlay in /api/shifts/my and is discounted by the same
+            # rule in the finish-check, so it costs the reviewer a slot in the
+            # batch, not a stuck queue.
+            pool = bloom.fetch_prioritized_jobs(max_age=_REFILL_MAX_FEED_AGE)
         except Exception as exc:  # noqa: BLE001 — refill is best-effort
             logging.warning("auto-refill: failed to fetch jobs for %s: %s", email, exc)
             return []
@@ -2171,8 +2352,16 @@ def api_shifts_my_complete():
     # re-trigger the check — there's no job left for them to complete.
     try:
         assigned = _rows_for_reviewer(snap_id, email, force=True) or []
-        # Filter out excluded jobs (same as in /api/shifts/my) so refill triggers correctly
-        assigned = [r for r in assigned if not _is_excluded_job(r)]
+        # Count only what the reviewer can actually see and act on in My Tasks —
+        # the same two filters that endpoint applies. Excluded titles/video jobs,
+        # and jobs whose remaining responses are all auto-rejected (invisible
+        # there, so impossible to check off). Counting either as outstanding work
+        # means is_complete never goes true and the queue is never topped up.
+        live_by_job = _live_counts_by_job()
+        assigned = [
+            r for r in assigned
+            if not _is_excluded_job(r) and not _is_unactionable_row(r, live_by_job)
+        ]
         assigned_keys = {_row_job_key(r) for r in assigned}
         done = _list_completions_for_snapshot(snap_id, reviewer_email=email, force=True)
 
@@ -2222,6 +2411,7 @@ def api_shifts_my_complete():
             batch_size = len(assigned)
             logging.warning("finish-check: triggering auto-refill for %s (batch_size=%d, assigned=%d, done=%d, override=%d)",
                            email, batch_size, len(assigned), len(done_keys), len(override_keys))
+            _mark_refill_attempted(snap_id, email)
             added = _auto_refill_reviewer(snap_id, email, batch_size)
             logging.warning("finish-check: auto-refill for %s returned %d new jobs", email, len(added))
             # Only send notification if refill actually found jobs. With high concurrency,
@@ -2773,6 +2963,14 @@ def api_bloom_probe():
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e, source="bloom api")
     return jsonify({"data": resp})
+
+
+# Start the Bloom cache warmer at import, not on first request. gunicorn loads
+# main:app during container startup, so the ~11s upstream fetch is already in
+# flight before the first user request arrives on a new revision. Without this
+# the first reviewer to load a page after a deploy pays for it. Set
+# BLOOM_WARMER=0 to opt out (the test suite does).
+bloom._ensure_warmer_started()
 
 
 if __name__ == "__main__":

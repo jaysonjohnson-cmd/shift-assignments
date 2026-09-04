@@ -147,7 +147,7 @@ def test_bloom_projects_route_returns_summaries(client, monkeypatch):
     monkeypatch.setattr(
         bloom,
         "fetch_prioritized_jobs",
-        lambda status=None, use_cache=True: [
+        lambda *a, **k: [
             {"id": "10", "projectId": "110", "projectName": "Nestlé", "unreviewedCount": 3, "oldestSubmission": "2026-04-18"},
             {"id": "11", "projectId": "110", "projectName": "Nestlé", "unreviewedCount": 1, "oldestSubmission": "2026-04-20"},
             {"id": "20", "projectId": "120", "projectName": "", "unreviewedCount": 1, "oldestSubmission": "2026-04-22"},
@@ -265,7 +265,7 @@ def test_bloom_jobs_returns_rows(client, monkeypatch):
     monkeypatch.setattr(
         bloom,
         "fetch_prioritized_jobs",
-        lambda status=None, use_cache=True: [
+        lambda *a, **k: [
             {"id": "1", "jobId": "1", "projectId": "10", "priority": 1, "name": "Job", "unreviewedCount": 5},
         ],
     )
@@ -795,7 +795,7 @@ def test_shifts_my_overlays_live_unreviewed_counts(client, monkeypatch):
     # B is not completed (shows stored count), C is completed (shows 0).
     monkeypatch.setattr(
         main.bloom, "fetch_prioritized_jobs",
-        lambda status=None, use_cache=True: [{"jobId": "A", "unreviewedCount": 5}],
+        lambda *a, **k: [{"jobId": "A", "unreviewedCount": 5}],
     )
 
     resp = c.get("/api/shifts/my")
@@ -836,7 +836,7 @@ def test_shifts_my_reports_auto_rejected_count(client, monkeypatch):
     # bloom rows carry reviewable (unreviewedCount) + raw new (extras.newCount).
     monkeypatch.setattr(
         main.bloom, "fetch_prioritized_jobs",
-        lambda status=None, use_cache=True: [
+        lambda *a, **k: [
             {"jobId": "A", "unreviewedCount": 2, "extras": {"newCount": 5}},
             {"jobId": "B", "unreviewedCount": 0, "extras": {"newCount": 1}},
         ],
@@ -886,10 +886,19 @@ def test_shifts_my_keeps_stored_count_when_feed_unavailable(client, monkeypatch)
     assert rows[0]["unreviewedCount"] == 18  # stored count preserved
 
 
-def test_shifts_my_does_not_refill_on_load(client, monkeypatch):
-    """Loading My Tasks is a pure read — it must NOT refill. Refilling happens
-    only on the completion POST. Two triggers (POST + a GET self-heal) caused a
-    finished reviewer to get two batches at once, half of them duplicates."""
+def test_shifts_my_self_heals_a_finished_queue_on_load(client, monkeypatch):
+    """A reviewer whose queue is fully checked off gets topped up on load.
+
+    The completion POST is the primary refill trigger, but it only fires on the
+    incomplete->complete edge; when that edge is missed the reviewer has nothing
+    left to click and nothing can re-trigger it, so they idle for the rest of the
+    shift. This GET-time self-heal is the re-entry point.
+
+    An earlier version of this read did refill and was removed, because running
+    it alongside the POST trigger handed a finished reviewer two batches at once
+    (each missing the other's write). The storage-level refill_lock inside
+    _auto_refill_reviewer now holds that race off, and a per-reviewer cooldown
+    stops a polling page from re-attempting on every load."""
     c, token_file = client
     _as_reviewer(token_file, "sam@storesight.com")
     monkeypatch.setattr(roles, "list_admins", lambda: [])
@@ -917,7 +926,7 @@ def test_shifts_my_does_not_refill_on_load(client, monkeypatch):
 
     monkeypatch.setattr(
         main.bloom, "fetch_prioritized_jobs",
-        lambda status=None, use_cache=True: [
+        lambda *a, **k: [
             {"jobId": "B", "projectId": "20", "unreviewedCount": 5, "priority": 1, "name": "B"},
         ],
     )
@@ -929,8 +938,18 @@ def test_shifts_my_does_not_refill_on_load(client, monkeypatch):
     resp = c.get("/api/shifts/my")
     assert resp.status_code == 200
     jobs = {r["jobId"] for r in resp.get_json()["data"]["rows"]}
-    assert jobs == {"A"}   # only the existing row — no fresh B handed out on a GET
-    assert stored == []    # a GET writes nothing
+    # Completed A plus freshly refilled B, handed out without another round trip.
+    assert jobs == {"A", "B"}
+    # The refill persisted B as a new reviewer_shift part (alongside its lock doc).
+    shift_writes = [d for d in stored if (d or {}).get("data", {}).get("kind") == "reviewer_shift"]
+    assert len(shift_writes) == 1
+    assert [r["jobId"] for r in shift_writes[0]["data"]["rows"]] == ["B"]
+    assert shift_writes[0]["data"]["reviewer_email"] == "sam@storesight.com"
+
+    # A second load inside the cooldown must not hand out anything further.
+    resp2 = c.get("/api/shifts/my")
+    assert resp2.status_code == 200
+    assert len([d for d in stored if (d or {}).get("data", {}).get("kind") == "reviewer_shift"]) == 1
 
 
 def test_shifts_my_returns_empty_when_no_snapshot(client, monkeypatch):
@@ -989,7 +1008,7 @@ def test_complete_is_idempotent(client, monkeypatch):
     # Job 10 is fully reviewed (absent from the feed) → completion is allowed.
     monkeypatch.setattr(
         main.bloom, "fetch_prioritized_jobs",
-        lambda status=None, use_cache=True: [],
+        lambda *a, **k: [],
     )
 
     first = c.post("/api/shifts/my/complete", json={"job_id": "10"})
@@ -1032,7 +1051,7 @@ def test_complete_blocked_when_job_still_unreviewed(client, monkeypatch):
     # Bloom still shows 7 unreviewed responses for job 55 → must not complete.
     monkeypatch.setattr(
         main.bloom, "fetch_prioritized_jobs",
-        lambda status=None, use_cache=True: [{"jobId": "55", "id": "55", "unreviewedCount": 7}],
+        lambda *a, **k: [{"jobId": "55", "id": "55", "unreviewedCount": 7}],
     )
 
     resp = c.post("/api/shifts/my/complete", json={"job_id": "55"})
@@ -1072,7 +1091,7 @@ def test_complete_override_bypasses_unreviewed_guard(client, monkeypatch):
     # Job still shows 7 unreviewed, but override=true should record it anyway.
     monkeypatch.setattr(
         main.bloom, "fetch_prioritized_jobs",
-        lambda status=None, use_cache=True: [{"jobId": "55", "id": "55", "unreviewedCount": 7}],
+        lambda *a, **k: [{"jobId": "55", "id": "55", "unreviewedCount": 7}],
     )
 
     resp = c.post("/api/shifts/my/complete", json={"job_id": "55", "override": True})
@@ -1112,7 +1131,7 @@ def test_complete_allowed_when_job_reviewed(client, monkeypatch):
     # Job 55 is gone from the feed (fully reviewed) → completion goes through.
     monkeypatch.setattr(
         main.bloom, "fetch_prioritized_jobs",
-        lambda status=None, use_cache=True: [],
+        lambda *a, **k: [],
     )
 
     resp = c.post("/api/shifts/my/complete", json={"job_id": "55"})
@@ -1445,7 +1464,7 @@ def test_overview_counts_only_checkmarked_as_done(client, monkeypatch):
     monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
     monkeypatch.setattr(
         main.bloom, "fetch_prioritized_jobs",
-        lambda status=None, use_cache=True: [{"jobId": "C", "unreviewedCount": 5}],
+        lambda *a, **k: [{"jobId": "C", "unreviewedCount": 5}],
     )
 
     resp = c.get("/api/shifts/overview")

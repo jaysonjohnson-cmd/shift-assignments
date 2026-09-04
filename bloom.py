@@ -18,6 +18,8 @@ Response shape — one Row per job with unreviewed submissions:
 
 import datetime
 import logging
+import os
+import threading
 import time
 
 import internal_api
@@ -37,6 +39,48 @@ def is_excluded_client(client):
     return str(client or "").strip().lower() in EXCLUDED_CLIENTS
 _CACHE = {"fetched_at": 0.0, "rows": []}
 _CACHE_TTL_SECONDS = 60
+
+# /api/prioritized-jobs is a single unpaginated request, but the upstream ranks
+# ~500 jobs per call and takes 10-12 seconds to answer. Request count is not the
+# problem here; latency is. Two things keep that off any user-facing request:
+#
+#   * a background warmer refreshes _CACHE on a timer, so the 60s TTL is
+#     effectively never cold and nobody pays the 10-12s on a page load;
+#   * _FETCH_LOCK single-flights the fetch, so N concurrent cache misses cost
+#     one upstream call instead of N of them (a burst of reviewers finishing
+#     around the same time used to mean a 10-12s call each).
+_WARMER_INTERVAL_SECONDS = 45   # < _CACHE_TTL_SECONDS so the cache never expires
+_FETCH_LOCK = threading.Lock()
+_WARMER_STARTED = False
+_WARMER_LOCK = threading.Lock()
+
+
+def _warmer_loop():
+    """Daemon thread: keep _CACHE warm so no request pays the upstream latency."""
+    retry_delay = 15
+    while True:
+        try:
+            fetch_prioritized_jobs(use_cache=False)
+            retry_delay = 15
+            time.sleep(_WARMER_INTERVAL_SECONDS)
+        except Exception as exc:  # noqa: BLE001 — warmer must never die
+            logging.warning("bloom warmer refresh failed: %s", exc)
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 120)
+
+
+def _ensure_warmer_started():
+    """Start the warmer once, on first use. Set BLOOM_WARMER=0 to opt out."""
+    global _WARMER_STARTED
+    if _WARMER_STARTED or os.environ.get("BLOOM_WARMER") == "0":
+        return
+    with _WARMER_LOCK:
+        if _WARMER_STARTED:
+            return
+        threading.Thread(
+            target=_warmer_loop, daemon=True, name="bloom-cache-warmer"
+        ).start()
+        _WARMER_STARTED = True
 # Project-name cache: {project_id: name}. Shares the 60s TTL pattern.
 _PROJECT_NAME_CACHE = {"fetched_at": 0.0, "names": {}}
 # Constants for project name pagination
@@ -310,7 +354,8 @@ def _fetch_cf_denied_counts(min_submission_date):
     return counts
 
 
-def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True, include_aged=False):
+def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True, include_aged=False,
+                           max_age=None):
     """Return Rows for every job with unreviewed submissions, pre-prioritized by FA-web.
 
     Calls /api/prioritized-jobs which returns jobs ranked by jicco, close date,
@@ -318,18 +363,43 @@ def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True, include_aged=F
     sub-count / pending-ratio / days-remaining weighting.
 
     A 60-second in-process cache keeps the Internal-API rate limit headroom
-    comfortable. The `status` parameter is kept for backward compatibility but
-    unused (the API only returns jobs with new submissions).
+    comfortable, and a background warmer keeps that cache hot — the upstream
+    call takes 10-12 seconds for ~500 jobs, so a cold read is something no
+    user-facing request should ever pay. The `status` parameter is kept for
+    backward compatibility but unused (the API only returns jobs with new
+    submissions).
+
+    `max_age` accepts cached rows up to that many seconds old, overriding the
+    default TTL, and refetches when the cache is older (or empty). Use it for
+    callers that want "reasonably fresh, but never block for 12 seconds";
+    `use_cache=False` remains a hard bypass for the explicit Refresh button.
 
     When include_aged=True, includes jobs with old unreviewed submissions even if
     they have zero new responses. Used by the Old Submissions page.
 
     Excludes jobs from clients handled by a third party (Cloud Factory).
     """
+    _ensure_warmer_started()
     now = time.time()
-    if use_cache and _CACHE["rows"] and (now - _CACHE["fetched_at"]) < _CACHE_TTL_SECONDS:
+    ttl = _CACHE_TTL_SECONDS if max_age is None else max_age
+    if use_cache and _CACHE["rows"] and (now - _CACHE["fetched_at"]) < ttl:
         return _CACHE["rows"]
 
+    # Single-flight: only one caller does the 10-12s upstream call. The rest
+    # queue here and then re-check the cache below, so a burst of simultaneous
+    # misses costs one fetch rather than one each.
+    with _FETCH_LOCK:
+        now = time.time()
+        if use_cache and _CACHE["rows"] and (now - _CACHE["fetched_at"]) < ttl:
+            # Someone else refreshed it while we waited for the lock. Skipped for
+            # use_cache=False so the Refresh button still forces a real fetch.
+            return _CACHE["rows"]
+        return _fetch_and_cache_prioritized_jobs()
+
+
+def _fetch_and_cache_prioritized_jobs():
+    """Do the actual upstream fetch and populate _CACHE. Caller holds _FETCH_LOCK."""
+    now = time.time()
     jobs = _fetch_prioritized_jobs_raw()
 
     min_date = _earliest_start_date_iso(jobs)
