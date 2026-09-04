@@ -7,6 +7,7 @@ import re
 import threading
 import time
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import jwt
 import requests
@@ -709,6 +710,14 @@ def api_shifts_auto_publish():
         published_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
         published_by = "auto-scheduler"
 
+        # Reclaim yesterday's shift before publishing today's. _latest_snapshot
+        # already refuses to merge into a stale snapshot, so this only frees the
+        # storage those docs were holding.
+        try:
+            _purge_stale_shift_docs()
+        except requests.exceptions.HTTPError as e:
+            logging.warning("stale-shift purge failed, continuing: %s", e)
+
         try:
             existing_snap_id, existing_snap_data = _latest_snapshot()
         except requests.exceptions.HTTPError:
@@ -1257,6 +1266,12 @@ def api_shifts_publish():
     published_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     published_by = g.user.get("email", "")
 
+    # Reclaim yesterday's shift before publishing today's (see auto-publish).
+    try:
+        _purge_stale_shift_docs()
+    except requests.exceptions.HTTPError as e:
+        logging.warning("stale-shift purge failed, continuing: %s", e)
+
     # Merge-into-existing-snapshot: if an active shift is already live, add or
     # replace only the reviewers being published — everyone else keeps their rows.
     # Only create a brand-new snapshot when there is no active shift at all.
@@ -1484,10 +1499,85 @@ def api_shifts_publish():
     return jsonify({"data": {"id": snapshot_id, "published_at": published_at}}), 201
 
 
-def _latest_snapshot(reviewer_shift_docs=None):
+# Shifts run inside a single working day (earliest 8:00 AM, latest 6:00 PM), so a
+# snapshot published on an earlier local day is finished, never mid-flight.
+_SHIFT_TZ = ZoneInfo("America/Chicago")
+
+
+def _local_shift_date(iso_timestamp):
+    """Local (US Central) calendar date for an ISO timestamp, or None.
+
+    The QC team is in Arkansas, so day boundaries are Central, not UTC —
+    a shift published at 4 PM CDT is stored as 21:00Z and must still count as
+    that day rather than rolling over at 7 PM local.
+    """
+    if not iso_timestamp:
+        return None
+    try:
+        ts = datetime.datetime.fromisoformat(str(iso_timestamp).replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=datetime.timezone.utc)
+    return ts.astimezone(_SHIFT_TZ).date()
+
+
+def _is_stale_snapshot(snapshot_data):
+    """True if this snapshot was published on an earlier local day.
+
+    A snapshot with no readable timestamp is treated as current: hiding a shift
+    because its date failed to parse would be a worse failure than showing a
+    stale one.
+    """
+    published = (snapshot_data or {}).get("published_at")
+    day = _local_shift_date(published)
+    if day is None:
+        return False
+    return day < datetime.datetime.now(_SHIFT_TZ).date()
+
+
+def _purge_stale_shift_docs():
+    """Delete shift docs from earlier local days. Returns (snaps, rows, completions).
+
+    The read paths hide a stale shift, but hiding alone would let docs pile up
+    against the 10k-per-namespace Storage cap, so a publish also reclaims them.
+    Best-effort: a failed delete is logged and skipped rather than failing the
+    publish that triggered it.
+    """
+    stale_ids = set()
+    snaps = rows = comps = 0
+    for doc in roles.list_docs_by_kind("shift_snapshot"):
+        if _is_stale_snapshot(doc.get("data") or {}):
+            stale_ids.add(doc.get("id"))
+    if not stale_ids:
+        return 0, 0, 0
+
+    for doc in roles.list_docs_by_kind("reviewer_shift"):
+        data = doc.get("data") or {}
+        if data.get("shift_snapshot_id") in stale_ids:
+            rows += len(data.get("rows") or [])
+            _try_delete(doc.get("id"))
+    for doc in roles.list_docs_by_kind("completion"):
+        if ((doc.get("data") or {}).get("shift_snapshot_id")) in stale_ids:
+            _try_delete(doc.get("id"))
+            comps += 1
+    for sid in stale_ids:
+        _try_delete(sid)
+        snaps += 1
+
+    roles.invalidate_doc_cache("shift_snapshot", "reviewer_shift", "completion")
+    logging.info("purged stale shift docs: snapshots=%d rows=%d completions=%d",
+                 snaps, rows, comps)
+    return snaps, rows, comps
+
+
+def _latest_snapshot(reviewer_shift_docs=None, include_stale=False):
     """Helper — return (snapshot_id, snapshot_data) or (None, None).
 
-    Skips snapshots where all reviewer_shift docs have zero rows (empty publish).
+    Skips snapshots where all reviewer_shift docs have zero rows (empty publish),
+    and — unless include_stale — snapshots published on an earlier local day, so
+    yesterday's assignments don't linger in My Tasks. Callers that need to act on
+    a finished shift (clearing it, for instance) pass include_stale=True.
     Pass pre-fetched reviewer_shift_docs to avoid a duplicate storage scan when
     the caller already has them.
     """
@@ -1511,6 +1601,8 @@ def _latest_snapshot(reviewer_shift_docs=None):
         # Accept snapshots that have rows — whether or not reviewer_emails is set
         # (older snapshots published before merge-publish don't have that field).
         if row_count > 0:
+            if not include_stale and _is_stale_snapshot(data):
+                continue
             return snap.get("id"), data
 
     return None, None
@@ -3050,7 +3142,9 @@ def api_shifts_clear():
         return jsonify({"data": {"mode": "reset", "cleared_rows": cleared_rows, "cleared_completions": cleared_completions, "cleared_snapshots": cleared_snapshots}})
 
     try:
-        snap_id, _ = _latest_snapshot()
+        # include_stale: an admin clearing up after the fact must still be able to
+        # reach yesterday's shift, which the read paths deliberately hide.
+        snap_id, _ = _latest_snapshot(include_stale=True)
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e)
     if not snap_id:

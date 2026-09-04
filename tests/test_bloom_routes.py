@@ -23,6 +23,20 @@ from main import app  # noqa: E402
 # ---------- bloom.fetch_prioritized_jobs — /api/prioritized-jobs feed ----------
 
 
+
+def _today_published_at():
+    """ISO timestamp for a shift published today, in the app's local shift zone.
+
+    Fixtures used to hardcode a date. The read paths now hide shifts from an
+    earlier local day, so a hardcoded date silently turned every "active shift"
+    fixture into a finished one the day after it was written.
+    """
+    import datetime
+    from zoneinfo import ZoneInfo
+    noon = datetime.datetime.now(ZoneInfo("America/Chicago")).replace(
+        hour=12, minute=0, second=0, microsecond=0)
+    return noon.astimezone(datetime.timezone.utc).isoformat()
+
 def _prioritized_jobs(records):
     """Fake internal_api.get backing /api/prioritized-jobs with the given jobs."""
     def _get(path, params=None):
@@ -648,7 +662,7 @@ def test_shifts_my_filters_and_adds_completed_at(client, monkeypatch):
         "id": "snap-1",
         "data": {
             "kind": "shift_snapshot",
-            "published_at": "2026-04-21T00:00:00+00:00",
+            "published_at": _today_published_at(),
             "reviewer_emails": ["alex@storesight.com", "sam@storesight.com"],
         },
     }
@@ -711,7 +725,7 @@ def test_shifts_my_reads_from_per_reviewer_doc(client, monkeypatch):
         "id": "snap-1",
         "data": {
             "kind": "shift_snapshot",
-            "published_at": "2026-04-21T00:00:00+00:00",
+            "published_at": _today_published_at(),
             "reviewer_emails": ["alex@storesight.com", "sam@storesight.com"],
         },
     }
@@ -1280,7 +1294,7 @@ def test_overview_returns_per_reviewer_progress(client, monkeypatch):
         "id": "snap-1",
         "data": {
             "kind": "shift_snapshot",
-            "published_at": "2026-04-22T00:00:00+00:00",
+            "published_at": _today_published_at(),
             "reviewer_emails": ["alex@storesight.com", "sam@storesight.com"],
         },
     }
@@ -1351,7 +1365,7 @@ def test_overview_returns_per_reviewer_progress(client, monkeypatch):
     assert resp.status_code == 200, resp.get_json()
     body = resp.get_json()["data"]
     assert body["snapshot_id"] == "snap-1"
-    assert body["published_at"] == "2026-04-22T00:00:00+00:00"
+    assert body["published_at"] == _today_published_at()
 
     # Reviewers sorted by total desc — Sam has 3, Alex has 2.
     reviewers = body["reviewers"]

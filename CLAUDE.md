@@ -263,6 +263,36 @@ an explicit user-driven Refresh.
 
 ---
 
+## Shifts expire at the day boundary
+
+A shift published on an earlier *local* day is finished, and the read paths hide
+it — so yesterday's assignments never appear in today's My Tasks and nobody has
+to remember to clear them.
+
+Day boundaries are US Central, not UTC (`_SHIFT_TZ`), because the QC team is in
+Arkansas: a shift published at 4 PM CDT is stored as 21:00Z and must still count
+as that day rather than rolling over at 7 PM local. Every shift runs inside one
+working day (8:00 AM earliest, 6:00 PM latest), so a previous-day snapshot is
+never mid-flight.
+
+`_latest_snapshot()` skips stale snapshots. Callers that need to act on a
+finished shift pass `include_stale=True` — `/api/shifts/clear` does, so an admin
+can still tidy up after the fact. A snapshot whose timestamp won't parse counts
+as current: hiding a live shift is worse than showing a stale one.
+
+Hiding alone would let docs accumulate against the 10k-per-namespace Storage
+cap, so both publish paths call `_purge_stale_shift_docs()` first to delete the
+previous day's snapshot, `reviewer_shift` and `completion` docs. It's
+best-effort — a failed delete is logged and skipped rather than failing the
+publish.
+
+**Don't hardcode `published_at` in a shift fixture.** A fixed date silently turns
+an "active shift" fixture into a finished one the day after it's written; three
+tests broke this way. Use a helper that returns today (see `_today_published_at`
+in `tests/test_bloom_routes.py`).
+
+---
+
 ## Key Files and Their Roles
 
 | File | Purpose |
