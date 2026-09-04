@@ -178,6 +178,7 @@ export async function publishShift(
     balanceByResponses?: boolean;
     prioritizeUrgency?: boolean;
     prioritizeAged?: boolean;
+    retailPipelineOnly?: boolean;
   },
 ): Promise<{ id: string; published_at: string }> {
   const resp = await call<{ data: { id: string; published_at: string } }>(

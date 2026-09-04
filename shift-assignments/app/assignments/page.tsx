@@ -46,7 +46,6 @@ export default function AssignmentsPage() {
   const [error, setError] = useState<string | null>(null);
   const [showOptions, setShowOptions] = useState(false);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
-  const [statusFilter, setStatusFilter] = useState<string>("");
   const [prioritizeFilter, setPrioritizeFilter] = useState(false);
   // On by default: spreading work by response volume is what the team wants,
   // and it's also what auto-published shifts stamp. Leaving it off meant a
@@ -278,6 +277,9 @@ export default function AssignmentsPage() {
         balanceByResponses,
         prioritizeUrgency,
         prioritizeAged,
+        // Persisted so auto-refill keeps the shift scoped to this client too;
+        // without it a Retail-Pipeline-only shift topped up with everyone else's work.
+        retailPipelineOnly,
       });
       setLastPublishedAt(resp.published_at);
       refreshLiveJobs();
@@ -344,9 +346,9 @@ export default function AssignmentsPage() {
                 <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3h.2a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8v.2a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
               </svg>
               Options
-              {(prioritizeFilter || balanceByResponses || statusFilter || prioritizeUrgency || prioritizeAged || retailPipelineOnly) && (
+              {(prioritizeFilter || balanceByResponses || prioritizeUrgency || prioritizeAged || retailPipelineOnly) && (
                 <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-storesight-primary text-[9px] font-bold text-white dark:bg-storesight-accent-light dark:text-storesight-surface-dark">
-                  {[prioritizeFilter, balanceByResponses, !!statusFilter, prioritizeUrgency, prioritizeAged, retailPipelineOnly].filter(Boolean).length}
+                  {[prioritizeFilter, balanceByResponses, prioritizeUrgency, prioritizeAged, retailPipelineOnly].filter(Boolean).length}
                 </span>
               )}
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden className={`transition-transform ${showOptions ? "rotate-180" : ""}`}>
@@ -355,20 +357,6 @@ export default function AssignmentsPage() {
             </button>
             {showOptions && (
               <div className="mt-2 rounded-xl border border-storesight-border bg-white p-3 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark space-y-3">
-                <div className="flex items-center gap-2">
-                  <label className="text-xs font-medium text-storesight-ink dark:text-storesight-ink-dark">
-                    Filter by status:
-                  </label>
-                  <select
-                    value={statusFilter}
-                    onChange={(e) => setStatusFilter(e.target.value)}
-                    className="rounded border border-storesight-border bg-white px-2 py-1 text-xs text-storesight-ink dark:border-storesight-border-dark dark:bg-storesight-surface-dark dark:text-storesight-ink-dark"
-                  >
-                    <option value="">All (Default)</option>
-                    <option value="N">Unreviewed (N)</option>
-                    <option value="P">In Progress (P)</option>
-                  </select>
-                </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"

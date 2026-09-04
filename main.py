@@ -1813,6 +1813,9 @@ _REFILL_DEFAULT_RESPONSE_BUDGET = 120
 # finish, and the batch is filled out with smaller jobs instead.
 _REFILL_MAX_LARGE_JOBS = 2
 
+# Client behind the composer's "Storesight / Retail Pipeline only" filter.
+_RETAIL_PIPELINE_CLIENT = "retailpipeline@fieldagent.net"
+
 # A job counts as large at 3x the eligible pool's median, floored so that a
 # queue of 1-2 response jobs doesn't make a 6-response job "large".
 _REFILL_LARGE_MULTIPLE = 3
@@ -1839,15 +1842,84 @@ def _row_responses(row):
     return int((row or {}).get("unreviewedCount") or 0)
 
 
-def _refill_tier(row, prioritize_aged):
-    """Outer sort tier, so response ordering doesn't discard the aged-first rule.
+# Urgency score at or above which assign.ts treats a job as high-urgency.
+_URGENCY_TIER_THRESHOLD = 55
 
-    0 = aged (CF-denied work waiting on a human), 1 = everything else. Response
-    size orders jobs *within* a tier, never across one.
+# assign.ts calls a job "new" when its oldest submission landed within the hour.
+_NEW_ROW_WINDOW_SECONDS = 3600
+
+
+def _urgency_score(row):
+    """Combined deadline + response-age urgency, mirroring assign.ts.
+
+    Kept deliberately close to the frontend's urgencyScore so a refill tiers
+    jobs the same way the initial distribution did.
     """
-    if not prioritize_aged:
+    extras = row.get("extras") or {}
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+
+    close_score = 15
+    end_date_str = str(extras.get("endDate") or "")
+    if end_date_str:
+        try:
+            end = datetime.datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+            days_left = (end.timestamp() - now) / 86400
+            for limit, score in ((0, 100), (1.5, 100), (3, 90), (7, 70), (14, 50), (30, 30)):
+                if days_left <= limit:
+                    close_score = score
+                    break
+            else:
+                close_score = 10
+        except (ValueError, AttributeError):
+            pass
+
+    wait_score = 0
+    oldest = str(row.get("oldestSubmission") or "")
+    if oldest:
+        try:
+            old = datetime.datetime.fromisoformat(oldest.replace("Z", "+00:00"))
+            days_old = (now - old.timestamp()) / 86400
+            for limit, score in ((30, 100), (14, 80), (7, 60), (3, 40), (1, 20)):
+                if days_old >= limit:
+                    wait_score = score
+                    break
+        except (ValueError, AttributeError):
+            pass
+
+    return int(0.6 * close_score + 0.4 * wait_score)
+
+
+def _is_new_row(row):
+    """True if this job's oldest submission arrived within the last hour."""
+    if (row.get("extras") or {}).get("isNew") is True:
+        return True
+    oldest = str(row.get("oldestSubmission") or "")
+    if not oldest:
+        return False
+    try:
+        ts = datetime.datetime.fromisoformat(oldest.replace("Z", "+00:00")).timestamp()
+    except (ValueError, AttributeError):
+        return False
+    return (datetime.datetime.now(datetime.timezone.utc).timestamp() - ts) <= _NEW_ROW_WINDOW_SECONDS
+
+
+def _refill_tier(row, prioritize_new, prioritize_urgency, prioritize_aged):
+    """Distribution tier for a refill candidate.
+
+    Mirrors assign.ts's publish-time order — new, then urgent, then aged, then
+    everything else — so a top-up hands out work in the same priority the shift
+    was originally composed with. Each flag only activates its own tier; with
+    none set every job lands in the last tier and the feed's own ranking (or
+    response size) decides. Response size orders jobs *within* a tier, never
+    across one, so a big fresh job can't jump ahead of urgent work.
+    """
+    if prioritize_new and _is_new_row(row):
         return 0
-    return 0 if int((row.get("extras") or {}).get("old_sub") or 0) > 0 else 1
+    if prioritize_urgency and _urgency_score(row) >= _URGENCY_TIER_THRESHOLD:
+        return 1
+    if prioritize_aged and int((row.get("extras") or {}).get("old_sub") or 0) > 0:
+        return 2
+    return 3
 
 _SELF_HEAL_COOLDOWN_SECONDS = 120
 _SELF_HEAL_MAX_TRACKED = 500
@@ -2044,86 +2116,26 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             logging.warning("auto-refill: failed to fetch jobs for %s: %s", email, exc)
             return []
 
-        # Reapply prioritization flags to sort pool consistently with initial assignment
+        # Reapply the flags the shift was composed with, so a top-up hands out
+        # work in the same priority order as the original distribution. These
+        # were previously applied as ad-hoc in-place sorts of the whole pool;
+        # they're now expressed by _refill_tier and the eligible-list sort below,
+        # which keeps tiering and response ordering from fighting each other.
+        prioritize_new = bool(prioritization_flags.get("prioritizeNew", False))
+        prioritize_urgency = bool(prioritization_flags.get("prioritizeUrgency", False))
         prioritize_aged = bool(prioritization_flags.get("prioritizeAged", False))
-        # Whether to order this batch biggest-response-first, mirroring what
-        # assign.ts does at publish. Auto-published shifts stamp this true, so
-        # scheduled runs get it without anyone ticking a box.
         balance_by_responses = bool(prioritization_flags.get("balanceByResponses", False))
-        if prioritization_flags:
-            prioritize_urgency = prioritization_flags.get("prioritizeUrgency", False)
-
-            if prioritize_aged:
-                # Separate aged jobs (old_sub > 0) and prioritize them
-                aged_jobs = []
-                regular_jobs = []
-                for r in pool:
-                    if int((r.get("extras") or {}).get("old_sub") or 0) > 0:
-                        aged_jobs.append(r)
-                    else:
-                        regular_jobs.append(r)
-                pool = aged_jobs + regular_jobs
-                logging.warning("auto-refill for %s: prioritizeAged=True, separated %d aged + %d regular jobs",
-                               email, len(aged_jobs), len(regular_jobs))
-
-            if prioritize_urgency:
-                # Sort by urgency score (higher = more urgent)
-                def urgency_score(row):
-                    # Simplified urgency: days left (deadline) + days waiting (age)
-                    # This is a simplified version; full version would match assign.ts logic
-                    extras = row.get("extras") or {}
-                    end_date_str = str(extras.get("endDate") or "")
-                    oldest_sub_str = str(row.get("oldestSubmission") or "")
-
-                    # Days until deadline (-100 if no/invalid endDate)
-                    close_score = 15
-                    if end_date_str:
-                        try:
-                            end_date = datetime.datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
-                            days_left = (end_date.timestamp() - datetime.datetime.now(datetime.timezone.utc).timestamp()) / 86400
-                            if days_left < 0:
-                                close_score = 100
-                            elif days_left <= 1.5:
-                                close_score = 100
-                            elif days_left <= 3:
-                                close_score = 90
-                            elif days_left <= 7:
-                                close_score = 70
-                            elif days_left <= 14:
-                                close_score = 50
-                            elif days_left <= 30:
-                                close_score = 30
-                            else:
-                                close_score = 10
-                        except (ValueError, AttributeError):
-                            pass
-
-                    # Response age urgency
-                    wait_score = 0
-                    if oldest_sub_str:
-                        try:
-                            old_date = datetime.datetime.fromisoformat(oldest_sub_str.replace("Z", "+00:00"))
-                            days_old = (datetime.datetime.now(datetime.timezone.utc).timestamp() - old_date.timestamp()) / 86400
-                            if days_old >= 30:
-                                wait_score = 100
-                            elif days_old >= 14:
-                                wait_score = 80
-                            elif days_old >= 7:
-                                wait_score = 60
-                            elif days_old >= 3:
-                                wait_score = 40
-                            elif days_old >= 1:
-                                wait_score = 20
-                        except (ValueError, AttributeError):
-                            pass
-
-                    return int(0.6 * close_score + 0.4 * wait_score)
-
-                pool.sort(key=urgency_score, reverse=True)
-                logging.warning("auto-refill for %s: prioritizeUrgency=True, sorted by urgency", email)
+        retail_pipeline_only = bool(prioritization_flags.get("retailPipelineOnly", False))
+        logging.warning(
+            "auto-refill flags for %s: new=%s urgency=%s aged=%s balance=%s retail_only=%s",
+            email, prioritize_new, prioritize_urgency, prioritize_aged,
+            balance_by_responses, retail_pipeline_only,
+        )
 
         eligible = []
-        skipped_reasons = {"no_key": 0, "already_assigned": 0, "excluded_id": 0, "excluded_name": 0, "excluded_client": 0, "no_unreviewed": 0}
+        skipped_reasons = {"no_key": 0, "already_assigned": 0, "excluded_id": 0,
+                           "excluded_name": 0, "excluded_client": 0,
+                           "not_retail_pipeline": 0, "no_unreviewed": 0}
         for r in pool:
             k = _job_key(r)
             if not k or k in assigned_keys:
@@ -2145,6 +2157,12 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             # Skip jobs from excluded clients (e.g., Menasha handled by Cloud Factory).
             if bloom.is_excluded_client((r.get("extras") or {}).get("client")):
                 skipped_reasons["excluded_client"] += 1
+                continue
+            # "Storesight / Retail Pipeline only" is a hard filter on the pool at
+            # publish, so honour it here rather than refilling a scoped shift with
+            # work from every other client.
+            if retail_pipeline_only and str((r.get("extras") or {}).get("client") or "").strip().lower() != _RETAIL_PIPELINE_CLIENT:
+                skipped_reasons["not_retail_pipeline"] += 1
                 continue
             # Skip jobs with no reviewable work (unreviewedCount == 0). These have
             # only auto-rejected responses, which must be cleared on the Responses page
@@ -2185,10 +2203,13 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         # the workload fix, not a prioritisation preference — stopping at a job
         # count made 20 two-response jobs a "full batch", and no admin would ever
         # want that. Only the ordering is a choice.
+        def tier_of(row):
+            return _refill_tier(row, prioritize_new, prioritize_urgency, prioritize_aged)
+
         if balance_by_responses:
-            eligible.sort(key=lambda t: (_refill_tier(t[0], prioritize_aged), -t[2]))
+            eligible.sort(key=lambda t: (tier_of(t[0]), -t[2]))
         else:
-            eligible.sort(key=lambda t: _refill_tier(t[0], prioritize_aged))
+            eligible.sort(key=lambda t: tier_of(t[0]))
 
         large_threshold = _large_job_threshold([n for _, _, n in eligible])
         fresh = []

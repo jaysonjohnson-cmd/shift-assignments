@@ -191,3 +191,52 @@ def test_budget_applies_even_with_the_flag_off(refill):
     # Job ceiling caps it, but it is the budget — not a job count — doing the work.
     assert len(added) == 20
     assert _responses(added) == 20
+
+
+# --- the rest of the composer's options, honoured on refill ------------------
+
+def test_prioritize_new_puts_fresh_submissions_first(refill):
+    """prioritizeNew was persisted at publish but never read on the refill path."""
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc)
+    feed = _feed({"old_huge": 300, "brand_new": 4})
+    feed[0]["oldestSubmission"] = (now - datetime.timedelta(days=9)).isoformat()
+    feed[1]["oldestSubmission"] = (now - datetime.timedelta(minutes=5)).isoformat()
+
+    added = refill(feed, batch_size=20, batch_responses=300,
+                   flags={"prioritizeNew": True, "balanceByResponses": True})
+    assert added[0]["jobId"] == "brand_new", "new tier must outrank raw size"
+
+
+def test_urgency_is_a_tier_not_a_whole_pool_sort(refill):
+    """An urgent job leads even when a much larger non-urgent one exists."""
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc)
+    feed = _feed({"fat_relaxed": 300, "urgent_small": 5})
+    # Deadline tomorrow + old responses clears the 55-point threshold.
+    feed[1]["extras"]["endDate"] = (now + datetime.timedelta(hours=20)).isoformat()
+    feed[1]["oldestSubmission"] = (now - datetime.timedelta(days=20)).isoformat()
+    feed[0]["extras"]["endDate"] = (now + datetime.timedelta(days=90)).isoformat()
+    feed[0]["oldestSubmission"] = now.isoformat()
+
+    added = refill(feed, batch_size=20, batch_responses=300,
+                   flags={"prioritizeUrgency": True, "balanceByResponses": True})
+    assert added[0]["jobId"] == "urgent_small"
+
+
+def test_retail_pipeline_only_keeps_the_refill_scoped(refill):
+    """A client-scoped shift must not top up with everyone else's work."""
+    feed = _feed({"retail_job": 40, "other_client_job": 200})
+    feed[0]["extras"]["client"] = "retailpipeline@fieldagent.net"
+    feed[1]["extras"]["client"] = "someone@acme.com"
+
+    added = refill(feed, batch_size=20, batch_responses=300,
+                   flags={"retailPipelineOnly": True, "balanceByResponses": True})
+    assert [r["jobId"] for r in added] == ["retail_job"]
+
+
+def test_no_flags_means_no_tiering(refill):
+    """With nothing set every job is one tier and the feed's order stands."""
+    feed = _feed({"first": 2, "second": 3})
+    added = refill(feed, batch_size=20, batch_responses=10, flags={})
+    assert [r["jobId"] for r in added] == ["first", "second"]
