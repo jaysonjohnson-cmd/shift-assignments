@@ -745,6 +745,10 @@ def api_shifts_auto_publish():
             "published_at": published_at,
             "published_by": published_by,
             "reviewer_emails": list(normalized.keys()),
+            # Auto-published shifts had no flags at all, so every refill on them
+            # fell back to defaults. Response balancing is what the team wants on
+            # a scheduled run, so record it rather than leaving it implicit.
+            "prioritization_flags": {"balanceByResponses": True},
         }
 
         snap_resp = internal_api.post(_STORAGE_PATH, json={"data": snapshot_data})
@@ -2042,6 +2046,10 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
 
         # Reapply prioritization flags to sort pool consistently with initial assignment
         prioritize_aged = bool(prioritization_flags.get("prioritizeAged", False))
+        # Whether to order this batch biggest-response-first, mirroring what
+        # assign.ts does at publish. Auto-published shifts stamp this true, so
+        # scheduled runs get it without anyone ticking a box.
+        balance_by_responses = bool(prioritization_flags.get("balanceByResponses", False))
         if prioritization_flags:
             prioritize_urgency = prioritization_flags.get("prioritizeUrgency", False)
 
@@ -2169,7 +2177,18 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         # and stops, so the next reviewer to finish gets the next-largest ones
         # rather than the leftovers. `count` stays on as a ceiling so a queue of
         # tiny jobs can't produce an enormous batch.
-        eligible.sort(key=lambda t: (_refill_tier(t[0], prioritize_aged), -t[2]))
+        # "Balance by responses" is what decides ORDER: biggest jobs first, so the
+        # heavy end of the queue actually drains. With it off we keep the feed's
+        # own priority ranking (the sort is stable, so tier grouping preserves it).
+        #
+        # The response BUDGET below is deliberately not gated on the flag. That's
+        # the workload fix, not a prioritisation preference — stopping at a job
+        # count made 20 two-response jobs a "full batch", and no admin would ever
+        # want that. Only the ordering is a choice.
+        if balance_by_responses:
+            eligible.sort(key=lambda t: (_refill_tier(t[0], prioritize_aged), -t[2]))
+        else:
+            eligible.sort(key=lambda t: _refill_tier(t[0], prioritize_aged))
 
         large_threshold = _large_job_threshold([n for _, _, n in eligible])
         fresh = []

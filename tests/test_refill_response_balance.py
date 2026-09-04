@@ -67,10 +67,11 @@ def _responses(rows):
 def test_takes_big_jobs_before_small_ones(refill):
     """The whole complaint: heavy jobs should be picked over a tail of tiny ones."""
     feed = _feed({"tiny1": 1, "tiny2": 2, "big1": 60, "tiny3": 1, "big2": 55})
-    added = refill(feed, batch_size=20, batch_responses=100)
+    added = refill(feed, batch_size=20, batch_responses=100,
+                   flags={"balanceByResponses": True})
 
-    picked = {r["jobId"] for r in added}
-    assert "big1" in picked and "big2" in picked, f"big jobs skipped: {picked}"
+    # Biggest first, so the heavy jobs lead the batch rather than trailing it.
+    assert [r["jobId"] for r in added][:2] == ["big1", "big2"]
 
 
 def test_a_budget_stops_one_reviewer_taking_every_big_job(refill):
@@ -144,7 +145,8 @@ def test_one_reviewer_cannot_take_every_large_job_in_a_skewed_queue(refill):
     """
     feed = _feed({"a": 122, "b": 97, "c": 90, "d": 45,
                   **{f"tiny{i}": 2 for i in range(200)}})
-    added = refill(feed, batch_size=20, batch_responses=300)
+    added = refill(feed, batch_size=20, batch_responses=300,
+                   flags={"balanceByResponses": True})
 
     sizes = sorted((int(r["unreviewedCount"]) for r in added), reverse=True)
     large = [n for n in sizes if n >= 10]
@@ -161,3 +163,31 @@ def test_large_is_relative_so_an_all_big_queue_is_governed_by_budget(refill):
     feed = _feed({f"big{i}": 50 for i in range(10)})
     added = refill(feed, batch_size=20, batch_responses=100)
     assert len(added) == 2, "budget, not the large-cap, should bound this"
+
+
+# --- balanceByResponses: the flag actually drives the ordering now -----------
+
+def test_flag_on_orders_biggest_first(refill):
+    """balanceByResponses is read from the snapshot and picks the heavy jobs."""
+    feed = _feed({"small_first": 3, "huge": 200})
+    added = refill(feed, batch_size=20, batch_responses=200,
+                   flags={"balanceByResponses": True})
+    assert added[0]["jobId"] == "huge"
+
+
+def test_flag_off_keeps_the_feeds_own_priority_order(refill):
+    """With it off, the feed's ranking stands — size no longer reorders."""
+    feed = _feed({"small_first": 3, "huge": 200})
+    added = refill(feed, batch_size=20, batch_responses=200,
+                   flags={"balanceByResponses": False})
+    assert added[0]["jobId"] == "small_first"
+
+
+def test_budget_applies_even_with_the_flag_off(refill):
+    """The workload fix is unconditional: never 20 jobs of trivial work again."""
+    feed = _feed({f"tiny{i}": 1 for i in range(400)})
+    added = refill(feed, batch_size=20, batch_responses=300,
+                   flags={"balanceByResponses": False})
+    # Job ceiling caps it, but it is the budget — not a job count — doing the work.
+    assert len(added) == 20
+    assert _responses(added) == 20

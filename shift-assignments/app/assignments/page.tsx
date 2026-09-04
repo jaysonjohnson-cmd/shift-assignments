@@ -48,7 +48,10 @@ export default function AssignmentsPage() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [prioritizeFilter, setPrioritizeFilter] = useState(false);
-  const [balanceByResponses, setBalanceByResponses] = useState(false);
+  // On by default: spreading work by response volume is what the team wants,
+  // and it's also what auto-published shifts stamp. Leaving it off meant a
+  // hand-composed shift silently opted out of it.
+  const [balanceByResponses, setBalanceByResponses] = useState(true);
   const [prioritizeUrgency, setPrioritizeUrgency] = useState(false);
   const [prioritizeAged, setPrioritizeAged] = useState(false);
   // True oldest-unreviewed-submission date per jobId, used to rank the aged pool.
