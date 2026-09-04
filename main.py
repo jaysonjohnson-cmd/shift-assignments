@@ -2171,6 +2171,8 @@ def api_shifts_my_complete():
     # re-trigger the check — there's no job left for them to complete.
     try:
         assigned = _rows_for_reviewer(snap_id, email, force=True) or []
+        # Filter out excluded jobs (same as in /api/shifts/my) so refill triggers correctly
+        assigned = [r for r in assigned if not _is_excluded_job(r)]
         assigned_keys = {_row_job_key(r) for r in assigned}
         done = _list_completions_for_snapshot(snap_id, reviewer_email=email, force=True)
 
