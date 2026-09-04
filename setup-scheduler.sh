@@ -24,9 +24,10 @@ SA_NAME="qc-shift-scheduler"
 SA_EMAIL="${SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
 
 # ---------------------------------------------------------------------------
-# TIMEZONE — verify this matches the shift times your QC team actually works.
-# Everything below is expressed in it. us-central1 defaults to Chicago; set
-# TZ_NAME=America/New_York (or another IANA zone) if your shifts are Eastern.
+# TIMEZONE — every shift time below is expressed in this zone.
+# The QC team is in Arkansas, so shifts are US Central; America/Chicago is the
+# IANA zone for that and handles CST/CDT automatically. Override only if the
+# team's location changes.
 # ---------------------------------------------------------------------------
 TZ_NAME="${TZ_NAME:-America/Chicago}"
 

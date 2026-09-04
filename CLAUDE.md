@@ -235,8 +235,8 @@ the Cloud Scheduler jobs can safely exist before you turn it on.
 shift time, and is idempotent — re-run it after changing a time. Shift times live
 in the `JOBS` array and must match the `shift_time` values the UI sends verbatim
 (see `AssignMenu.tsx`), en-dash included, since they're compared against Team
-Scheduler's labels. Check `TZ_NAME` before the first run. `DRY_RUN=1` prints the
-commands without applying them.
+Scheduler's labels. Times are US Central (`America/Chicago`) — the QC team is in
+Arkansas. `DRY_RUN=1` prints the commands without applying them.
 
 Two shifts starting at the same clock time are staggered a couple of minutes
 apart on purpose: auto-publish writes a new snapshot and rewrites the
