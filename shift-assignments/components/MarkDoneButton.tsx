@@ -149,7 +149,7 @@ export function MarkDoneButton({
           }
           className={`inline-flex h-7 w-7 items-center justify-center rounded-full border text-storesight-ink-muted transition hover:scale-110 disabled:opacity-50 dark:text-storesight-ink-muted-dark ${
             processingState === "processing"
-              ? "border-storesight-accent/60 bg-storesight-accent/15 text-storesight-accent dark:border-storesight-accent-light/60 dark:text-storesight-accent-light"
+              ? "border-amber-400/60 bg-amber-400/20 text-amber-500 dark:border-amber-400/60 dark:bg-amber-400/15 dark:text-amber-300"
               : processingState === "approved"
                 ? "border-emerald-400/60 bg-emerald-400/15 text-emerald-400"
                 : isDone
@@ -204,7 +204,7 @@ export function MarkDoneButton({
 
   const baseClass =
     processingState === "processing"
-      ? "border-storesight-accent bg-storesight-accent/10 text-storesight-accent hover:border-storesight-accent/80 dark:border-storesight-accent-light/60 dark:bg-storesight-accent-light/10 dark:text-storesight-accent-light dark:hover:border-storesight-accent-light"
+      ? "border-amber-400 bg-amber-50 text-amber-700 hover:border-amber-500 dark:border-amber-400/40 dark:bg-amber-400/10 dark:text-amber-300 dark:hover:border-amber-400"
       : processingState === "approved"
         ? "border-emerald-300 bg-emerald-50 text-emerald-700 hover:border-emerald-400 dark:border-emerald-400/40 dark:bg-emerald-400/10 dark:text-emerald-300"
         : isDone
