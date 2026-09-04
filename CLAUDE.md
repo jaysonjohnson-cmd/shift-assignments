@@ -215,6 +215,49 @@ JWT_SIGNING_SECRET=test-secret pytest -v tests/
 - `JWT_SIGNING_SECRET` — from Secret Manager
 - `TOOL_SLUG=qc-shift-assignments` — sent in X-Tool-Slug header for rate limiting
 - `INTERNAL_API_BASE=https://internal-tool-api.storesight.org`
+- `SCHEDULER_SERVICE_ACCOUNTS` / `SCHEDULER_OIDC_AUDIENCE` — allow Cloud Scheduler
+  to call the auto-publish path with an OIDC token. Both must be set or that path
+  stays cookie-only (see Automatic shift assignment below).
+- `BLOOM_WARMER=0` — opt out of the background Bloom cache warmer (tests set this)
+
+---
+
+## Automatic shift assignment
+
+Shifts can publish themselves on a timer instead of being composed by hand.
+
+**The switch.** Settings → "Automatic shift assignment" (admin only). Stored as a
+`tool_config` doc in Storage, so it survives restarts. While it's off,
+`POST /api/shifts/auto-publish` returns `{"skipped": true}` and writes nothing —
+the Cloud Scheduler jobs can safely exist before you turn it on.
+
+**The schedule.** `bash setup-scheduler.sh` creates one Cloud Scheduler job per
+shift time, and is idempotent — re-run it after changing a time. Shift times live
+in the `JOBS` array and must match the `shift_time` values the UI sends verbatim
+(see `AssignMenu.tsx`), en-dash included, since they're compared against Team
+Scheduler's labels. Check `TZ_NAME` before the first run. `DRY_RUN=1` prints the
+commands without applying them.
+
+Two shifts starting at the same clock time are staggered a couple of minutes
+apart on purpose: auto-publish writes a new snapshot and rewrites the
+`reviewer_shift` docs for everyone in its batch, so simultaneous runs would race
+over that shared state.
+
+**The auth exception.** Production auth is normally the `storesight_session`
+cookie and nothing else. `/api/shifts/auto-publish` additionally accepts a Google
+OIDC token from an allowlisted service account — this is the *only* path that
+does, enforced by `_OIDC_ALLOWED_PATHS` in `main.py`. Keep it that way: don't add
+paths to that set, and don't widen it to a prefix match. A valid scheduler token
+must never unlock the rest of the API (`tests/test_scheduler_oidc_auth.py` pins
+this).
+
+**The Bloom feed is slow.** `/api/prioritized-jobs` is a single unpaginated
+request, but the upstream ranks ~500 jobs and takes 10-12 seconds. A background
+warmer keeps the 60s cache hot so no user-facing request pays that, concurrent
+misses are single-flighted into one call, and auto-refill reads the warm cache
+via `max_age` rather than forcing a fetch. If you add a caller, prefer
+`fetch_prioritized_jobs()` or a `max_age=` bound; reserve `use_cache=False` for
+an explicit user-driven Refresh.
 
 **Rollback:** Use Cloud Run revision traffic splitting in GCP console.
 
@@ -235,6 +278,7 @@ JWT_SIGNING_SECRET=test-secret pytest -v tests/
 | `requirements.txt` | Python dependencies |
 | `shift-assignments/package.json` | Frontend dependencies and scripts |
 | `cloudbuild.yaml` | Cloud Build deployment pipeline |
+| `setup-scheduler.sh` | Creates/updates the auto-publish Cloud Scheduler jobs |
 
 ---
 
@@ -287,6 +331,8 @@ curl -H "Authorization: Bearer $(cat ~/.storesight/dev-token)" \
 
 - ❌ Hardcode credentials, tokens, API keys, or secrets
 - ❌ Modify `@app.before_request` auth middleware or remove `/health` / `/logout` routes
+  — the one sanctioned exception is the Cloud Scheduler OIDC check for
+  `/api/shifts/auto-publish`; don't extend it to other paths
 - ❌ Call databases (Postgres, etc.) directly — use Internal API + Storage API only
 - ❌ Build a custom login page — centralized auth handles it
 - ❌ Use raw `requests` library for Internal API — use `internal_api` helper

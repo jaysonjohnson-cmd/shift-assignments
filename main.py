@@ -88,6 +88,65 @@ def _dev_token_path():
     return pathlib.Path.home() / ".storesight" / "dev-token"
 
 
+# Paths that a Google service account may call with an OIDC token instead of a
+# storesight_session cookie. Deliberately a fixed allowlist of one: this is for
+# Cloud Scheduler triggering the shift auto-publish on a timer, and nothing here
+# should widen to the rest of the API. Everything else still requires the cookie.
+_OIDC_ALLOWED_PATHS = frozenset({"/api/shifts/auto-publish"})
+
+# Service accounts permitted on those paths, comma-separated, and the audience
+# their token must be minted for (this service's public URL). BOTH must be set
+# or OIDC auth stays off entirely — that way a deployment that hasn't opted in
+# can't grow an accidental open door, and an operator can't half-configure it
+# into skipping audience verification.
+_OIDC_SERVICE_ACCOUNTS = frozenset(
+    e.strip().lower()
+    for e in (os.environ.get("SCHEDULER_SERVICE_ACCOUNTS") or "").split(",")
+    if e.strip()
+)
+_OIDC_AUDIENCE = (os.environ.get("SCHEDULER_OIDC_AUDIENCE") or "").strip()
+
+
+def _oidc_service_account_identity():
+    """Identity for a valid Cloud Scheduler OIDC bearer token, else None.
+
+    Returns None for anything unverified — a missing/!Bearer header, a token that
+    fails Google's signature/expiry/audience checks, or a verified token whose
+    service account isn't on the allowlist. Callers must treat None as
+    unauthenticated and fall through to the normal cookie flow.
+    """
+    if not _OIDC_SERVICE_ACCOUNTS or not _OIDC_AUDIENCE:
+        return None
+    header = request.headers.get("Authorization") or ""
+    if not header.startswith("Bearer "):
+        return None
+    token = header[len("Bearer "):].strip()
+    if not token:
+        return None
+    try:
+        from google.auth.transport import requests as ga_requests
+        from google.oauth2 import id_token as ga_id_token
+
+        # Verifies signature, expiry and issuer. The audience is the URL the
+        # scheduler was configured with, which must match this service's own.
+        claims = ga_id_token.verify_oauth2_token(
+            token, ga_requests.Request(), audience=_OIDC_AUDIENCE
+        )
+    except Exception as exc:  # noqa: BLE001 — any failure is just "not authed"
+        logging.warning("OIDC token rejected: %s", exc)
+        return None
+    if claims.get("iss") not in ("https://accounts.google.com", "accounts.google.com"):
+        return None
+    email = (claims.get("email") or "").strip().lower()
+    if not email or email not in _OIDC_SERVICE_ACCOUNTS:
+        logging.warning("OIDC token for non-allowlisted account: %s", email or "<none>")
+        return None
+    if not claims.get("email_verified"):
+        return None
+    return {"email": email, "name": "auto-scheduler"}
+
+
+
 @app.before_request
 def require_auth():
     if request.path in ("/health", "/version"):
@@ -128,6 +187,16 @@ def require_auth():
 
         g.user = {"email": payload.get("email", ""), "name": payload.get("name", "")}
         return
+
+    # Cloud Scheduler calls the auto-publish path with an OIDC token rather than
+    # a browser cookie. Checked only for _OIDC_ALLOWED_PATHS, and only when
+    # SCHEDULER_SERVICE_ACCOUNTS is configured; every other request falls
+    # straight through to the cookie flow below, unchanged.
+    if request.path in _OIDC_ALLOWED_PATHS:
+        machine = _oidc_service_account_identity()
+        if machine is not None:
+            g.user = machine
+            return
 
     # Production: validate storesight_session cookie
     token = request.cookies.get("storesight_session")
@@ -562,8 +631,10 @@ def api_shifts_auto_publish():
         shift_time: Optional shift time filter (e.g., "8:30 AM", "1:00 PM").
                    Only assigns to reviewers with shifts at that time.
 
-    Requires a bearer token or dev auth (anyone can trigger, but it's safe
-    to make public since it just publishes to existing reviewers).
+    Authenticated either by a signed-in user's storesight_session cookie or, for
+    the Cloud Scheduler timer, by an allowlisted service account's OIDC token
+    (see _oidc_service_account_identity). Any signed-in user may trigger it —
+    it only distributes work to reviewers who are already on the roster.
     """
     # Auth is required by the @app.before_request middleware
     try:

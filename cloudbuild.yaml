@@ -4,6 +4,11 @@ substitutions:
     # Slack channel ID that receives "reviewer finished all assignments" pings.
     # Set this to your channel id (e.g. C0XXXXXXX). Empty = pings disabled.
     _SLACK_NOTIFY_CHANNEL: "GKVDB7HNG"
+    # Service account allowed to trigger /api/shifts/auto-publish with an OIDC
+    # token (Cloud Scheduler), and the audience its token must carry. BOTH must
+    # be set or that path stays cookie-only. Created by setup-scheduler.sh.
+    _SCHEDULER_SERVICE_ACCOUNTS: "qc-shift-scheduler@storesight-internal-tools.iam.gserviceaccount.com"
+    _SCHEDULER_OIDC_AUDIENCE: "https://qc-shift-assignments.storesight.org"
 
 steps:
     - name: "gcr.io/cloud-builders/docker"
@@ -25,7 +30,7 @@ steps:
           - --network=default
           - --subnet=default
           - --set-secrets=JWT_SIGNING_SECRET=JWT_SIGNING_SECRET:latest
-          - --set-env-vars=INTERNAL_API_BASE=https://internal-tool-api.storesight.org,TOOL_SLUG=$_SERVICE_NAME,SLACK_NOTIFY_CHANNEL=$_SLACK_NOTIFY_CHANNEL,GIT_SHA=$COMMIT_SHA
+          - --set-env-vars=INTERNAL_API_BASE=https://internal-tool-api.storesight.org,TOOL_SLUG=$_SERVICE_NAME,SLACK_NOTIFY_CHANNEL=$_SLACK_NOTIFY_CHANNEL,GIT_SHA=$COMMIT_SHA,SCHEDULER_SERVICE_ACCOUNTS=$_SCHEDULER_SERVICE_ACCOUNTS,SCHEDULER_OIDC_AUDIENCE=$_SCHEDULER_OIDC_AUDIENCE
 options:
     logging: CLOUD_LOGGING_ONLY
     machineType: E2_HIGHCPU_8
