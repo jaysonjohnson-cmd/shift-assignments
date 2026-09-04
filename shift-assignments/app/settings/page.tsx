@@ -8,10 +8,12 @@ import {
   deleteAdmin,
   deleteLead,
   deleteReviewer,
+  getAutoClearEnabled,
   getAutoPublishEnabled,
   listAdmins,
   listLeads,
   listReviewers,
+  setAutoClearEnabled,
   setAutoPublishEnabled,
   syncTeamScheduler,
   updateReviewer,
@@ -164,6 +166,9 @@ export default function SettingsPage() {
   const [autoPublish, setAutoPublish] = useState<boolean | null>(null);
   const [autoPublishBusy, setAutoPublishBusy] = useState(false);
   const [autoPublishErr, setAutoPublishErr] = useState<string | null>(null);
+  const [autoClear, setAutoClear] = useState<boolean | null>(null);
+  const [autoClearBusy, setAutoClearBusy] = useState(false);
+  const [autoClearErr, setAutoClearErr] = useState<string | null>(null);
 
   const isAdmin = role === "admin";
 
@@ -171,17 +176,19 @@ export default function SettingsPage() {
     setLoading(true);
     setErr(null);
     try {
-      const [rs, as, ls, ap] = await Promise.all([
+      const [rs, as, ls, ap, ac] = await Promise.all([
         listReviewers(),
         listAdmins(),
         listLeads(),
         getAutoPublishEnabled(),
+        getAutoClearEnabled(),
       ]);
       setReviewers(rs);
       setAdmins(as);
       setLeads(ls);
       setReviewersStore(rs);
       setAutoPublish(ap);
+      setAutoClear(ac);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Failed to load");
     } finally {
@@ -253,6 +260,19 @@ export default function SettingsPage() {
       setAutoPublishErr(e instanceof Error ? e.message : "Failed to update");
     } finally {
       setAutoPublishBusy(false);
+    }
+  };
+
+  const toggleAutoClear = async () => {
+    const next = !autoClear;
+    setAutoClearBusy(true);
+    setAutoClearErr(null);
+    try {
+      setAutoClear(await setAutoClearEnabled(next));
+    } catch (e) {
+      setAutoClearErr(e instanceof Error ? e.message : "Failed to update");
+    } finally {
+      setAutoClearBusy(false);
     }
   };
 
@@ -338,6 +358,59 @@ export default function SettingsPage() {
             {autoPublishErr && (
               <p className="mt-3 rounded-lg border border-storesight-hot-pink/40 bg-storesight-hot-pink/10 px-3 py-2 text-xs text-storesight-hot-pink">
                 {autoPublishErr}
+              </p>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* ---------------- Clear shifts at end of day ---------------- */}
+      {isAdmin && (
+        <section className="mb-8 overflow-hidden rounded-2xl border border-storesight-border bg-storesight-surface shadow-sm dark:border-storesight-border-dark dark:bg-storesight-surface-dark">
+          <div className="h-1 w-full bg-storesight-mint/70 dark:bg-storesight-mint" />
+          <div className="p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h2 className="mb-1 text-base font-semibold text-storesight-ink dark:text-storesight-ink-dark">
+                  Clear shifts at end of day
+                </h2>
+                <p className="text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                  When on, the current shift is wiped at 5:30 PM Central each
+                  day — tasks and completion marks both. Reviewers see an empty
+                  My Tasks after that. When off, a finished shift stays visible
+                  until the next day and you clear it yourself.
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={!!autoClear}
+                aria-label="Clear shifts at end of day"
+                disabled={autoClear === null || autoClearBusy}
+                onClick={toggleAutoClear}
+                className={`relative mt-0.5 inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                  autoClear
+                    ? "border-emerald-500 bg-emerald-500"
+                    : "border-storesight-border bg-storesight-bg-tint dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark"
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                    autoClear ? "translate-x-6" : "translate-x-1"
+                  }`}
+                />
+              </button>
+            </div>
+            <p className="mt-3 text-xs font-medium text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+              {autoClear === null
+                ? "Loading…"
+                : autoClear
+                  ? "✓ On — shifts are cleared at 5:30 PM Central"
+                  : "Off — finished shifts must be cleared manually"}
+            </p>
+            {autoClearErr && (
+              <p className="mt-3 rounded-lg border border-storesight-hot-pink/40 bg-storesight-hot-pink/10 px-3 py-2 text-xs text-storesight-hot-pink">
+                {autoClearErr}
               </p>
             )}
           </div>

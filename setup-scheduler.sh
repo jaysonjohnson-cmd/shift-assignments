@@ -110,6 +110,40 @@ for entry in "${JOBS[@]}"; do
     --description "Auto-publish QC shift assignments for the ${shift_time} shift"
 done
 
+# --- 3. End-of-day clear ----------------------------------------------------
+# Wipes the current shift after the last one finishes, so reviewers don't open
+# an empty-but-stale My Tasks in the evening. Points at /api/shifts/auto-clear,
+# NOT /api/shifts/clear: the latter takes a `mode`, and a scheduled caller must
+# never be able to reach mode="reset" (which deletes every shift across all
+# time) or scope a clear to one reviewer. Gated by "Clear shifts at end of day"
+# in Settings, so this job is a no-op until that switch is on.
+#
+# Runs every day rather than weekdays only: a shift published on a Friday would
+# otherwise sit until Monday.
+CLEAR_JOB="qc-shift-clear-eod"
+CLEAR_SCHEDULE="${CLEAR_SCHEDULE:-30 17 * * *}"
+
+if gcloud scheduler jobs describe "$CLEAR_JOB" --location "$REGION" --project "$PROJECT" >/dev/null 2>&1; then
+  action=update
+else
+  action=create
+fi
+
+echo "→ ${action} ${CLEAR_JOB}  ('${CLEAR_SCHEDULE}' ${TZ_NAME})"
+run gcloud scheduler jobs "$action" http "$CLEAR_JOB" \
+  --project "$PROJECT" \
+  --location "$REGION" \
+  --schedule "$CLEAR_SCHEDULE" \
+  --time-zone "$TZ_NAME" \
+  --uri "${SERVICE_URL}/api/shifts/auto-clear" \
+  --http-method POST \
+  --oidc-service-account-email "$SA_EMAIL" \
+  --oidc-token-audience "$SERVICE_URL" \
+  --attempt-deadline 15m \
+  --max-retry-attempts 3 \
+  --min-backoff 30s \
+  --description "Clear the finished QC shift at end of day"
+
 echo
 echo "Done. Verify with:"
 echo "  gcloud scheduler jobs list --location $REGION --project $PROJECT"

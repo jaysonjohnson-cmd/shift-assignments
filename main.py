@@ -93,7 +93,15 @@ def _dev_token_path():
 # storesight_session cookie. Deliberately a fixed allowlist of one: this is for
 # Cloud Scheduler triggering the shift auto-publish on a timer, and nothing here
 # should widen to the rest of the API. Everything else still requires the cookie.
-_OIDC_ALLOWED_PATHS = frozenset({"/api/shifts/auto-publish"})
+# The ONLY paths that accept a Cloud Scheduler OIDC token instead of a browser
+# cookie. Both are purpose-built for the timer, take no destructive parameters,
+# and are gated behind their own Settings switch. Adding a path here widens what
+# a leaked scheduler token can reach, so don't — and never make this a prefix
+# match. tests/test_scheduler_oidc_auth.py pins the exact contents.
+_OIDC_ALLOWED_PATHS = frozenset({
+    "/api/shifts/auto-publish",
+    "/api/shifts/auto-clear",
+})
 
 # Service accounts permitted on those paths, comma-separated, and the audience
 # their token must be minted for (this service's public URL). BOTH must be set
@@ -808,6 +816,90 @@ def api_shifts_auto_publish():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/shifts/auto-clear", methods=["POST"])
+def api_shifts_auto_clear():
+    """Clear the whole current shift. Intended for the end-of-day timer.
+
+    Deliberately narrow. This exists instead of pointing Cloud Scheduler at
+    /api/shifts/clear, which takes a `mode` — a scheduled caller must not be
+    able to reach mode="reset" (which deletes every shift across all time) or
+    scope a clear to one reviewer. This endpoint takes no parameters and can do
+    exactly one thing: wipe the current shift's rows and completions.
+
+    Gated on the "Clear shifts at end of day" switch in Settings, so the
+    scheduler job can exist before anyone turns it on.
+
+    Authenticated either by a signed-in admin's cookie or, for the timer, by an
+    allowlisted service account's OIDC token — one of only two paths that accept
+    the latter (see _OIDC_ALLOWED_PATHS).
+    """
+    if not _get_auto_clear_enabled():
+        logging.info("Auto-clear skipped: disabled in settings")
+        return jsonify({"skipped": True, "reason": "auto-clear is disabled"}), 200
+
+    try:
+        # include_stale: at 5:30 PM the shift is today's, but a retry after
+        # midnight (or a run on a day nobody published) must still find it.
+        snap_id, _ = _latest_snapshot(include_stale=True)
+    except requests.exceptions.HTTPError as e:
+        return _http_error_response(e)
+    if not snap_id:
+        logging.info("Auto-clear: no shift to clear")
+        return jsonify({"data": {"cleared_rows": 0, "cleared_completions": 0}})
+
+    cleared_rows = 0
+    cleared_completions = 0
+    try:
+        for doc in roles.list_docs_by_kind("reviewer_shift"):
+            data = doc.get("data") or {}
+            if data.get("shift_snapshot_id") != snap_id:
+                continue
+            cleared_rows += len(data.get("rows") or [])
+            _try_delete(doc.get("id"))
+        for doc in roles.list_docs_by_kind("completion"):
+            if ((doc.get("data") or {}).get("shift_snapshot_id")) != snap_id:
+                continue
+            _try_delete(doc.get("id"))
+            cleared_completions += 1
+        _try_delete(snap_id)
+    except requests.exceptions.HTTPError as e:
+        return _http_error_response(e)
+
+    roles.invalidate_doc_cache("shift_snapshot", "reviewer_shift", "completion")
+    logging.info(
+        "POST /api/shifts/auto-clear by=%s snapshot=%s rows=%d completions=%d",
+        g.user.get("email"), snap_id, cleared_rows, cleared_completions,
+    )
+    return jsonify({"data": {"snapshot_id": snap_id,
+                             "cleared_rows": cleared_rows,
+                             "cleared_completions": cleared_completions}})
+
+
+@app.route("/api/shifts/auto-clear/settings", methods=["GET"])
+def api_auto_clear_settings_get():
+    return jsonify({"data": {"enabled": _get_auto_clear_enabled()}})
+
+
+@app.route("/api/shifts/auto-clear/settings", methods=["POST"])
+def api_auto_clear_settings_set():
+    denied = _require_admin()
+    if denied is not None:
+        return denied
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
+        return jsonify({"error": "enabled (boolean) is required"}), 400
+    enabled = body["enabled"]
+    try:
+        _set_auto_clear_enabled(enabled)
+    except requests.exceptions.HTTPError as e:
+        return _http_error_response(e)
+    logging.info(
+        "POST /api/shifts/auto-clear/settings by=%s enabled=%s",
+        g.user.get("email"), enabled,
+    )
+    return jsonify({"data": {"enabled": enabled}})
+
+
 @app.route("/api/shifts/auto-publish/settings", methods=["GET"])
 def api_auto_publish_settings_get():
     return jsonify({"data": {"enabled": _get_auto_publish_enabled()}})
@@ -873,6 +965,7 @@ _STORAGE_PATH = "/api/storage/qc-shift-assignments"
 
 
 _AUTO_PUBLISH_KEY = "auto_publish_enabled"
+_AUTO_CLEAR_KEY = "auto_clear_enabled"
 
 
 def _find_tool_config_doc(key, force=False):
@@ -883,23 +976,47 @@ def _find_tool_config_doc(key, force=False):
     return None
 
 
-def _get_auto_publish_enabled(force=False):
-    """True if scheduled auto-publish is enabled. Defaults to False."""
-    doc = _find_tool_config_doc(_AUTO_PUBLISH_KEY, force=force)
+def _get_tool_flag(key, force=False):
+    """True if the named tool_config flag is on. Defaults to False.
+
+    Scheduled behaviour is opt-in, so an absent doc must read as off — that's
+    what lets the Cloud Scheduler jobs exist before anyone turns them on.
+    """
+    doc = _find_tool_config_doc(key, force=force)
     if doc is None:
         return False
     return bool((doc.get("data") or {}).get("value"))
 
 
-def _set_auto_publish_enabled(enabled):
-    """Persist the auto-publish toggle to Storage API."""
-    data = {"kind": "tool_config", "key": _AUTO_PUBLISH_KEY, "value": bool(enabled)}
-    existing = _find_tool_config_doc(_AUTO_PUBLISH_KEY, force=True)
+def _set_tool_flag(key, enabled):
+    """Persist a boolean tool_config flag to Storage API."""
+    data = {"kind": "tool_config", "key": key, "value": bool(enabled)}
+    existing = _find_tool_config_doc(key, force=True)
     if existing:
         internal_api.put(f"{_STORAGE_PATH}/{existing['id']}", json={"data": data})
     else:
         internal_api.post(_STORAGE_PATH, json={"data": data})
     roles.invalidate_doc_cache("tool_config")
+
+
+def _get_auto_publish_enabled(force=False):
+    """True if scheduled auto-publish is enabled. Defaults to False."""
+    return _get_tool_flag(_AUTO_PUBLISH_KEY, force=force)
+
+
+def _set_auto_publish_enabled(enabled):
+    """Persist the auto-publish toggle to Storage API."""
+    _set_tool_flag(_AUTO_PUBLISH_KEY, enabled)
+
+
+def _get_auto_clear_enabled(force=False):
+    """True if the scheduled end-of-day clear is enabled. Defaults to False."""
+    return _get_tool_flag(_AUTO_CLEAR_KEY, force=force)
+
+
+def _set_auto_clear_enabled(enabled):
+    """Persist the auto-clear toggle to Storage API."""
+    _set_tool_flag(_AUTO_CLEAR_KEY, enabled)
 
 
 # Fields kept in the published shift_snapshot per row. Storage API limits

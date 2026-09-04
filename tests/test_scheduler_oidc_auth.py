@@ -115,3 +115,35 @@ def test_oidc_is_off_unless_both_settings_are_present(monkeypatch):
 def test_no_bearer_header_still_redirects(prod):
     resp = prod.post("/api/shifts/auto-publish")
     assert resp.status_code == 302
+
+
+# --- the allowlist itself ----------------------------------------------------
+#
+# These pin the exact contents. An earlier change added /api/shifts/clear here
+# and the whole suite still passed, because nothing asserted what was in the
+# set — a scheduler token would have been able to wipe every shift across all
+# time via mode="reset". Adding a path now fails loudly and on purpose.
+
+def test_oidc_allowlist_contents_are_pinned():
+    """Changing this set must be a deliberate act, not a silent one.
+
+    If you are here because this failed: adding a path widens what a leaked
+    scheduler token can reach. Only add one that is purpose-built for the timer,
+    takes no destructive parameters, and is gated behind its own Settings
+    switch — then update this test and the note in CLAUDE.md.
+    """
+    assert main._OIDC_ALLOWED_PATHS == frozenset({
+        "/api/shifts/auto-publish",
+        "/api/shifts/auto-clear",
+    })
+
+
+def test_the_general_purpose_clear_endpoint_is_not_oidc_reachable():
+    """/api/shifts/clear takes mode=reset, so the timer must never reach it."""
+    assert "/api/shifts/clear" not in main._OIDC_ALLOWED_PATHS
+
+
+def test_allowlist_is_exact_match_not_prefix():
+    """A prefix match would let /api/shifts/auto-publish/settings in too."""
+    assert "/api/shifts/auto-publish/settings" not in main._OIDC_ALLOWED_PATHS
+    assert "/api/shifts/auto-clear/settings" not in main._OIDC_ALLOWED_PATHS

@@ -217,6 +217,23 @@ export async function setAutoPublishEnabled(enabled: boolean): Promise<boolean> 
   return resp.data.enabled;
 }
 
+export async function getAutoClearEnabled(): Promise<boolean> {
+  const resp = await call<{ data: { enabled: boolean } }>(
+    "GET",
+    "/api/shifts/auto-clear/settings",
+  );
+  return resp.data.enabled;
+}
+
+export async function setAutoClearEnabled(enabled: boolean): Promise<boolean> {
+  const resp = await call<{ data: { enabled: boolean } }>(
+    "POST",
+    "/api/shifts/auto-clear/settings",
+    { enabled },
+  );
+  return resp.data.enabled;
+}
+
 export async function getLatestShift(): Promise<ShiftSnapshot | null> {
   const resp = await call<{ data: ShiftSnapshot | null }>(
     "GET",

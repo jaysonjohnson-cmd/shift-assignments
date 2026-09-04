@@ -226,10 +226,16 @@ JWT_SIGNING_SECRET=test-secret pytest -v tests/
 
 Shifts can publish themselves on a timer instead of being composed by hand.
 
-**The switch.** Settings → "Automatic shift assignment" (admin only). Stored as a
-`tool_config` doc in Storage, so it survives restarts. While it's off,
-`POST /api/shifts/auto-publish` returns `{"skipped": true}` and writes nothing —
-the Cloud Scheduler jobs can safely exist before you turn it on.
+**The switches.** Both admin-only, in Settings, stored as `tool_config` docs so
+they survive restarts. While one is off its endpoint returns `{"skipped": true}`
+and writes nothing, so the Cloud Scheduler jobs can safely exist before you turn
+them on.
+
+- "Automatic shift assignment" → `POST /api/shifts/auto-publish`
+- "Clear shifts at end of day" → `POST /api/shifts/auto-clear`, 5:30 PM Central
+  daily. Runs every day, not weekdays only: a Friday shift would otherwise sit
+  until Monday. Note this is a *hard* clear at 5:30 PM; the day-boundary expiry
+  below is a separate, always-on safety net.
 
 **The schedule.** `bash setup-scheduler.sh` creates one Cloud Scheduler job per
 shift time, and is idempotent — re-run it after changing a time. Shift times live
@@ -244,12 +250,25 @@ apart on purpose: auto-publish writes a new snapshot and rewrites the
 over that shared state.
 
 **The auth exception.** Production auth is normally the `storesight_session`
-cookie and nothing else. `/api/shifts/auto-publish` additionally accepts a Google
-OIDC token from an allowlisted service account — this is the *only* path that
-does, enforced by `_OIDC_ALLOWED_PATHS` in `main.py`. Keep it that way: don't add
-paths to that set, and don't widen it to a prefix match. A valid scheduler token
-must never unlock the rest of the API (`tests/test_scheduler_oidc_auth.py` pins
-this).
+cookie and nothing else. Exactly two paths additionally accept a Google OIDC
+token from an allowlisted service account, enforced by `_OIDC_ALLOWED_PATHS` in
+`main.py`:
+
+- `/api/shifts/auto-publish` — the shift timer
+- `/api/shifts/auto-clear` — the end-of-day clear
+
+Both are purpose-built for Cloud Scheduler: they take no destructive
+parameters and each is gated behind its own Settings switch. That shape is the
+whole point. `/api/shifts/auto-clear` exists *instead of* pointing the scheduler
+at `/api/shifts/clear`, which takes a `mode` — a scheduled caller must never be
+able to reach `mode="reset"` (deletes every shift across all time) or scope a
+clear to a single reviewer.
+
+Don't add a third path unless it has those same properties, and never widen this
+to a prefix match. `tests/test_scheduler_oidc_auth.py` pins the set's exact
+contents — an earlier change added `/api/shifts/clear` here and the whole suite
+still passed, because nothing asserted what was in it. A valid scheduler token
+must never unlock the rest of the API.
 
 **The Bloom feed is slow.** `/api/prioritized-jobs` is a single unpaginated
 request, but the upstream ranks ~500 jobs and takes 10-12 seconds. A background
