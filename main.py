@@ -1370,6 +1370,9 @@ def api_shifts_publish():
                     "part": idx,
                     "part_count": len(chunks),
                     "batch_size": len(normalized[email]),
+                    # Response total, not just job count — auto-refill tops up to
+                    # a comparable amount of work rather than a job count.
+                    "batch_responses": sum(_row_responses(r) for r in normalized[email]),
                 }
                 try:
                     r = internal_api.post(_STORAGE_PATH, json={"data": doc})
@@ -1450,6 +1453,9 @@ def api_shifts_publish():
                 "part": idx,
                 "part_count": len(chunks),
                 "batch_size": len(normalized[email]),
+                # Response total, not just job count — auto-refill tops up to a
+                # comparable amount of work rather than a job count.
+                "batch_responses": sum(_row_responses(r) for r in normalized[email]),
             }
             try:
                 r = internal_api.post(_STORAGE_PATH, json={"data": doc})
@@ -1787,6 +1793,58 @@ def _cleanup_orphaned_refill_locks(max_age_seconds=600):
 # stalled warmer forces a real fetch rather than assigning from a stale ranking.
 _REFILL_MAX_FEED_AGE = 120
 
+# How far a refill may exceed its response budget to fit one more job. Without
+# some slack the last pick is almost always rejected and batches land well under
+# budget; too much and "budget" stops meaning anything.
+_REFILL_OVERSHOOT = 0.25
+
+# Fallback response budget for a legacy snapshot that predates batch_responses
+# and whose rows carry no usable counts.
+_REFILL_DEFAULT_RESPONSE_BUDGET = 120
+
+# Most large jobs one top-up may take. The queue is heavily skewed — typically a
+# few hundred jobs of 1-2 responses and only a handful above 45 — so "biggest
+# first" against a budget alone would let whoever finishes first take every
+# large job at once. This caps that, leaving the rest for the next reviewer to
+# finish, and the batch is filled out with smaller jobs instead.
+_REFILL_MAX_LARGE_JOBS = 2
+
+# A job counts as large at 3x the eligible pool's median, floored so that a
+# queue of 1-2 response jobs doesn't make a 6-response job "large".
+_REFILL_LARGE_MULTIPLE = 3
+_REFILL_LARGE_FLOOR = 10
+
+
+def _large_job_threshold(response_counts):
+    """Response count at or above which a job is "large" for this pool."""
+    if not response_counts:
+        return _REFILL_LARGE_FLOOR
+    ordered = sorted(response_counts)
+    median = ordered[len(ordered) // 2]
+    return max(median * _REFILL_LARGE_MULTIPLE, _REFILL_LARGE_FLOOR)
+
+
+def _row_responses(row):
+    """Reviewable responses on a row — the reviewer's actual workload.
+
+    Deliberately excludes auto-rejected responses: those are cleared on the
+    Responses page, not in My Tasks, so they aren't work this batch represents.
+    It's also the only count that survives _compact_row (stored rows carry no
+    `extras`), so budget and spend stay in the same currency.
+    """
+    return int((row or {}).get("unreviewedCount") or 0)
+
+
+def _refill_tier(row, prioritize_aged):
+    """Outer sort tier, so response ordering doesn't discard the aged-first rule.
+
+    0 = aged (CF-denied work waiting on a human), 1 = everything else. Response
+    size orders jobs *within* a tier, never across one.
+    """
+    if not prioritize_aged:
+        return 0
+    return 0 if int((row.get("extras") or {}).get("old_sub") or 0) > 0 else 1
+
 _SELF_HEAL_COOLDOWN_SECONDS = 120
 _SELF_HEAL_MAX_TRACKED = 500
 _self_heal_attempts = {}  # (snap_id, email) -> time.monotonic() of last attempt
@@ -1890,6 +1948,8 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         touched_keys = set()
         max_part = -1
         batch_size = None
+        batch_responses = None
+        current_queue_responses = 0
         prioritization_flags = {}
 
         # Read snapshot data to get prioritization flags for consistent refilling
@@ -1924,6 +1984,11 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                 bs = data.get("batch_size")
                 if bs:
                     batch_size = bs if batch_size is None else min(batch_size, bs)
+                br = data.get("batch_responses")
+                if br:
+                    batch_responses = br if batch_responses is None else min(batch_responses, br)
+                for row in data.get("rows") or []:
+                    current_queue_responses += _row_responses(row)
 
         # A job is only off-limits while it's actively sitting in someone's queue —
         # once completed, drop it from the exclusion set so fresh unreviewed
@@ -1951,6 +2016,11 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         if count <= 0:
             return []
 
+        # Response budget for this batch, in priority order: the total stamped at
+        # publish, else the responses currently sitting in the reviewer's queue,
+        # else a default for legacy snapshots.
+        budget = batch_responses or current_queue_responses or _REFILL_DEFAULT_RESPONSE_BUDGET
+
         try:
             # Read the background-warmed cache rather than forcing a fresh fetch.
             # The upstream ranks ~500 jobs and takes 10-12s to answer, and this
@@ -1971,10 +2041,9 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             return []
 
         # Reapply prioritization flags to sort pool consistently with initial assignment
+        prioritize_aged = bool(prioritization_flags.get("prioritizeAged", False))
         if prioritization_flags:
-            prioritize_aged = prioritization_flags.get("prioritizeAged", False)
             prioritize_urgency = prioritization_flags.get("prioritizeUrgency", False)
-            prioritize_new = prioritization_flags.get("prioritizeNew", False)
 
             if prioritize_aged:
                 # Separate aged jobs (old_sub > 0) and prioritize them
@@ -2045,7 +2114,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                 pool.sort(key=urgency_score, reverse=True)
                 logging.warning("auto-refill for %s: prioritizeUrgency=True, sorted by urgency", email)
 
-        fresh = []
+        eligible = []
         skipped_reasons = {"no_key": 0, "already_assigned": 0, "excluded_id": 0, "excluded_name": 0, "excluded_client": 0, "no_unreviewed": 0}
         for r in pool:
             k = _job_key(r)
@@ -2085,12 +2154,52 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             total_responses = unreviewable + auto_rejected
             if total_responses <= 0:
                 continue
-            fresh.append(_compact_row(r))
-            assigned_keys.add(k)  # guard against dupes within the same feed
+            eligible.append((r, k, unreviewable))
+
+        # Pick against a RESPONSE budget, biggest jobs first.
+        #
+        # This used to stop at `count` jobs, which made 20 two-response jobs and
+        # 20 forty-response jobs both "a full batch" — one is twenty minutes of
+        # work, the other is a shift. Small jobs vastly outnumber big ones in a
+        # ~500-job queue, so walking the priority feed handed out a long tail of
+        # tiny jobs while the heavy ones sat unassigned.
+        #
+        # The budget is also what stops any single reviewer collecting all the
+        # big jobs: taking the biggest first fills the budget in one or two jobs
+        # and stops, so the next reviewer to finish gets the next-largest ones
+        # rather than the leftovers. `count` stays on as a ceiling so a queue of
+        # tiny jobs can't produce an enormous batch.
+        eligible.sort(key=lambda t: (_refill_tier(t[0], prioritize_aged), -t[2]))
+
+        large_threshold = _large_job_threshold([n for _, _, n in eligible])
+        fresh = []
+        responses_added = 0
+        large_taken = 0
+        for r, k, reviewable in eligible:
             if len(fresh) >= count:
                 break
-        logging.warning("auto-refill for %s: pool=%d, assigned_keys=%d, skipped: %s, fresh=%d",
-                       email, len(pool), len(assigned_keys), skipped_reasons, len(fresh))
+            is_large = reviewable >= large_threshold
+            # Hand out only a couple of large jobs per top-up, so one reviewer
+            # can't take the whole heavy end of a skewed queue.
+            if is_large and large_taken >= _REFILL_MAX_LARGE_JOBS:
+                continue
+            # Always take at least one job, so a reviewer whose previous batch was
+            # small isn't locked out of a queue made only of large jobs.
+            if fresh and responses_added + reviewable > budget * (1 + _REFILL_OVERSHOOT):
+                continue
+            fresh.append(_compact_row(r))
+            assigned_keys.add(k)  # guard against dupes within the same feed
+            responses_added += reviewable
+            if is_large:
+                large_taken += 1
+            if responses_added >= budget:
+                break
+        logging.warning(
+            "auto-refill for %s: pool=%d, eligible=%d, skipped: %s -> %d jobs / %d responses "
+            "(budget=%d, job ceiling=%d, large>=%d taken=%d)",
+            email, len(pool), len(eligible), skipped_reasons, len(fresh), responses_added,
+            budget, count, large_threshold, large_taken,
+        )
         if not fresh:
             logging.warning("auto-refill: no new jobs left for %s (reasons: %s)", email, skipped_reasons)
             return []
@@ -2107,6 +2216,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                     "part": next_part + idx,
                     "part_count": next_part + len(chunks),
                     "batch_size": count,
+                    "batch_responses": budget,
                 }
                 try:
                     r = internal_api.post(_STORAGE_PATH, json={"data": doc})
