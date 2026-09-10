@@ -3176,11 +3176,19 @@ def api_remove_job():
         return jsonify({"error": "reviewer_email and job_id are required"}), 400
 
     try:
+        # Only remove from the current snapshot, not old ones
+        snap_id, _ = _latest_snapshot()
+        if not snap_id:
+            return jsonify({"error": "no shift has been published yet"}), 409
+
         all_shift_docs = roles.list_docs_by_kind("reviewer_shift")
         removed = False
 
         for doc in all_shift_docs:
             doc_data = doc.get("data") or {}
+            # Only process docs for the current snapshot
+            if doc_data.get("shift_snapshot_id") != snap_id:
+                continue
             if (doc_data.get("reviewer_email") or "").strip().lower() != reviewer_email:
                 continue
 
