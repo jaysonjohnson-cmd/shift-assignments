@@ -270,7 +270,12 @@ export default function AssignmentsPage() {
     setBusy(true);
     setError(null);
     try {
-      const result = assignShift(priorityPool, draft, prioritizeFilter, balanceByResponses, prioritizeUrgency, prioritizeAged);
+      // Merge aged submission dates into rows before assigning
+      const poolWithDates = priorityPool.map((r) => ({
+        ...r,
+        oldestSubmission: agedSubDates[String(r.jobId || r.id || "")] || r.oldestSubmission || "",
+      }));
+      const result = assignShift(poolWithDates, draft, prioritizeFilter, balanceByResponses, prioritizeUrgency, prioritizeAged);
       const byEmail = toEmailMap(result.assignments, reviewers);
       const resp = await publishShift(byEmail, {
         prioritizeNew: prioritizeFilter,
