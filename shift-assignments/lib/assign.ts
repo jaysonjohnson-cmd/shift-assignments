@@ -138,20 +138,22 @@ function urgencyScore(row: Row): number {
 export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = false, balanceByResponses = false, prioritizeUrgency = false, prioritizeAged = false): ShiftResult {
   const pins = draft.projectPins ?? {};
 
-  // Guarantee each job is handed to at most one reviewer. The upstream feed
-  // can return more than one record for the same job (e.g. one per group),
-  // which would otherwise let the same jobId land on multiple reviewers and
-  // overlap the team. Collapse duplicates by jobId here. The pool is assumed
-  // pre-sorted highest-priority first, so the first occurrence we keep is the
-  // most urgent one.
+  // Guarantee each job and each project is handed to at most one reviewer.
+  // The upstream feed can return more than one record for the same job or
+  // project, which would otherwise let the same jobId/projectId land on
+  // multiple reviewers and overlap the team. Collapse duplicates by jobId
+  // and projectId here. The pool is assumed pre-sorted highest-priority
+  // first, so the first occurrence we keep is the most urgent one.
   const seenJobKeys = new Set<string>();
+  const seenProjectKeys = new Set<string>();
   const dedupedPool: Row[] = [];
   for (const row of pool) {
-    const key = String(row.jobId || row.id || "");
-    if (key) {
-      if (seenJobKeys.has(key)) continue;
-      seenJobKeys.add(key);
-    }
+    const jobKey = String(row.jobId || row.id || "");
+    const projectKey = String(row.projectId || "");
+    if (jobKey && seenJobKeys.has(jobKey)) continue;
+    if (projectKey && seenProjectKeys.has(projectKey)) continue;
+    if (jobKey) seenJobKeys.add(jobKey);
+    if (projectKey) seenProjectKeys.add(projectKey);
     dedupedPool.push(row);
   }
 
