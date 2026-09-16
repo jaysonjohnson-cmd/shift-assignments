@@ -62,6 +62,7 @@ export default function AssignmentsPage() {
   // actually filtered out for good.
   const [agedLoading, setAgedLoading] = useState(false);
   const [retailPipelineOnly, setRetailPipelineOnly] = useState(false);
+  const [specialJobTypes, setSpecialJobTypes] = useState(false);
   const [showCloseModal, setShowCloseModal] = useState(false);
   const [liveJobs, setLiveJobs] = useState<ShiftJobs | null>(null);
 
@@ -179,6 +180,16 @@ export default function AssignmentsPage() {
     if (prioritizeAged) {
       filtered = filtered.filter((r) => Number(r.extras?.old_sub ?? 0) > 0);
     }
+    if (specialJobTypes) {
+      filtered = filtered.filter((r) => {
+        const name = String(r.name || "").toLowerCase();
+        return (
+          name.includes("ratings & reviews") ||
+          name.includes("part 1") ||
+          name.includes("part 2")
+        );
+      });
+    }
     if (retailPipelineOnly) {
       filtered = filtered.filter(
         (r) =>
@@ -221,7 +232,7 @@ export default function AssignmentsPage() {
       });
     }
     return [...filtered].sort((a, b) => a.priority - b.priority);
-  }, [rows, prioritizeAged, retailPipelineOnly, assignedElsewhereKeys, agedSubDates, agedMinDays]);
+  }, [rows, prioritizeAged, specialJobTypes, retailPipelineOnly, assignedElsewhereKeys, agedSubDates, agedMinDays]);
 
   const cancel = () => {
     setMode({ kind: "menu" });
@@ -351,9 +362,9 @@ export default function AssignmentsPage() {
                 <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3h.2a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8v.2a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
               </svg>
               Options
-              {(prioritizeFilter || balanceByResponses || prioritizeUrgency || prioritizeAged || retailPipelineOnly) && (
+              {(prioritizeFilter || balanceByResponses || prioritizeUrgency || prioritizeAged || retailPipelineOnly || specialJobTypes) && (
                 <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-storesight-primary text-[9px] font-bold text-white dark:bg-storesight-accent-light dark:text-storesight-surface-dark">
-                  {[prioritizeFilter, balanceByResponses, prioritizeUrgency, prioritizeAged, retailPipelineOnly].filter(Boolean).length}
+                  {[prioritizeFilter, balanceByResponses, prioritizeUrgency, prioritizeAged, retailPipelineOnly, specialJobTypes].filter(Boolean).length}
                 </span>
               )}
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden className={`transition-transform ${showOptions ? "rotate-180" : ""}`}>
@@ -446,6 +457,18 @@ export default function AssignmentsPage() {
                     }`}
                   >
                     {retailPipelineOnly ? "✓ " : ""}Storesight / Retail Pipeline only
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSpecialJobTypes(!specialJobTypes)}
+                    title="Only assign Ratings & Reviews, Part 1/2, Part 2/2, and other special job types"
+                    className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                      specialJobTypes
+                        ? "border border-storesight-primary bg-storesight-primary/10 text-storesight-primary dark:border-storesight-accent-light dark:bg-storesight-accent/20 dark:text-storesight-accent-light"
+                        : "border border-storesight-border bg-white text-storesight-ink-muted hover:border-storesight-primary/40 dark:border-storesight-border-dark dark:bg-storesight-surface-dark dark:text-storesight-ink-muted-dark"
+                    }`}
+                  >
+                    {specialJobTypes ? "✓ " : ""}Special job types
                   </button>
                 </div>
               </div>
