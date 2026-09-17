@@ -184,7 +184,7 @@ export default function AssignmentsPage() {
       filtered = filtered.filter((r) => {
         const name = String(r.name || "").toLowerCase();
         return (
-          name.includes("ratings & reviews") ||
+          name.includes("ratings & review") ||
           name.includes("part 1") ||
           name.includes("part 2")
         );
