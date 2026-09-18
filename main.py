@@ -31,9 +31,10 @@ TEAM_SCHEDULER_URL = (
 
 
 # Slack user id DM'd when a reviewer closes out their shift. Defaulted here for
-# the same reason the channel below is: env vars set in cloudbuild.yaml don't
-# reliably reach this service, and both Slack helpers fail silently when their
-# target is empty. SLACK_ADMIN_USER_ID overrides it.
+# the same reason the channel below is: this service's env vars are set by the
+# deploy platform, not by anything in this repo, so a new one can't be added
+# from here — and both Slack helpers fail silently when their target is empty.
+# SLACK_ADMIN_USER_ID still overrides it if the platform ever supplies one.
 _ADMIN_SLACK_USER_ID = "UKTE679RB"  # Jayson Johnson
 
 
@@ -234,8 +235,9 @@ def health():
 def version():
     """Public — returns the git SHA the running instance was built from, so a
     deploy can be confirmed in one check (curl /version) instead of inferring it
-    from behavior. Baked in at build time via GIT_SHA (cloudbuild.yaml); falls
-    back to 'dev' locally."""
+    from behavior. Baked in at build time via GIT_SHA; falls back to 'dev'
+    locally. Note the deployed value has not matched a commit in this repo, so
+    treat it as 'did the running build change', not 'which commit is live'."""
     sha = os.environ.get("GIT_SHA", "") or "dev"
     return jsonify({"sha": sha, "short": sha[:7] if sha != "dev" else "dev"})
 

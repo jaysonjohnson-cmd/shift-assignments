@@ -207,9 +207,16 @@ JWT_SIGNING_SECRET=test-secret pytest -v tests/
 
 ## Deployment
 
-**Trigger:** Push to `main` on GitHub → Cloud Build auto-deploys  
-**Service:** Cloud Run, storesight-internal-tools project  
-**Build config:** `cloudbuild.yaml` (Docker build, push to GCR, deploy with OIDC auth)
+**Trigger:** the internal tools platform's **Publish** action for this tool.
+Pushing to `main` on GitHub does **not** deploy — that was tried repeatedly on
+2026-09-18 and no build ever started. There is no build config in this repo;
+the platform owns the build and supplies the environment.
+
+**Service:** Cloud Run, storesight-internal-tools project
+
+`/version` reports the running build's `GIT_SHA`, but the deployed value has not
+matched any commit in this repo, so use it to tell whether the build *changed*,
+not which commit is live.
 
 **Environment variables (set by Cloud Run):**
 - `JWT_SIGNING_SECRET` — from Secret Manager
@@ -383,7 +390,6 @@ the bot's IM with that person, which is the only DM a bot can send.
 | `shift-assignments/lib/api.ts` | Frontend HTTP client |
 | `requirements.txt` | Python dependencies |
 | `shift-assignments/package.json` | Frontend dependencies and scripts |
-| `cloudbuild.yaml` | Cloud Build deployment pipeline |
 | `setup-scheduler.sh` | Creates/updates the auto-publish Cloud Scheduler jobs |
 
 ---

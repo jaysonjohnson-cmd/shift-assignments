@@ -205,7 +205,7 @@ result = delete(f"/api/storage/qc-shift-assignments/{doc_id}")
 - The `data` field accepts any JSON object — no schema required
 - Documents are returned newest-first by default
 - Your tool can only access its own namespace — the `TOOL_SLUG` environment variable is sent as an `X-Tool-Slug` header and the API rejects requests where the slug doesn't match the namespace
-- `TOOL_SLUG` is set automatically in production via `cloudbuild.yaml` (it matches your service name). For local dev, set it when starting the app: `TOOL_SLUG=qc-shift-assignments LOCAL_DEV=1 python3 main.py`
+- `TOOL_SLUG` is set automatically in production by the deploy platform (it matches your service name). For local dev, set it when starting the app: `TOOL_SLUG=qc-shift-assignments LOCAL_DEV=1 python3 main.py`
 - Do NOT store sensitive data (passwords, tokens, PII) without CTO approval
 - Do NOT use Firestore, Cloud Storage, or any other storage directly — always go through the Storage API
 
@@ -397,9 +397,10 @@ The `JWT_SIGNING_SECRET` env var is required for tests to run. Use any value (e.
 
 ## Deployment
 
-- Deployment triggers automatically on every push to `main`
-- Cloud Build trigger: `qc-shift-assignments-deploy` in project `storesight-internal-tools`
-- The `cloudbuild.yaml` in this repo handles the full build and deploy
+- Deploy with the internal tools platform's **Publish** action for this tool
+- Pushing to `main` does NOT deploy, despite what this file used to say — it was
+  tried repeatedly on 2026-09-18 and no build ever started
+- There is no build config in this repo; the platform owns the build
 - Services are deployed with `--allow-unauthenticated` — authentication is handled by the JWT cookie middleware, not IAP
 - Rollback: use Cloud Run revision traffic splitting in the GCP console
 
