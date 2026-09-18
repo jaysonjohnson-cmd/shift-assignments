@@ -2036,6 +2036,20 @@ _REFILL_MAX_LARGE_JOBS = 2
 # Client behind the composer's "Storesight / Retail Pipeline only" filter.
 _RETAIL_PIPELINE_CLIENT = "retailpipeline@fieldagent.net"
 
+# Name fragments behind the composer's "Special Job Types" filter. Kept in sync
+# with the frontend rule in shift-assignments/app/assignments/page.tsx — a
+# case-insensitive substring match on the job name. "ratings & review" is
+# deliberately singular so it catches both "Ratings & Review" and the plural
+# "Ratings & Reviews"; "part 1"/"part 2" catch the "Part 1/2" and "Part 2/2"
+# split jobs.
+_SPECIAL_JOB_TYPE_FRAGMENTS = ("ratings & review", "part 1", "part 2")
+
+
+def _is_special_job_type(job_name) -> bool:
+    """True if this job name matches the composer's Special Job Types filter."""
+    name = str(job_name or "").lower()
+    return any(frag in name for frag in _SPECIAL_JOB_TYPE_FRAGMENTS)
+
 # A job counts as large at 3x the eligible pool's median, floored so that a
 # queue of 1-2 response jobs doesn't make a 6-response job "large".
 _REFILL_LARGE_MULTIPLE = 3
@@ -2346,16 +2360,18 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         prioritize_aged = bool(prioritization_flags.get("prioritizeAged", False))
         balance_by_responses = bool(prioritization_flags.get("balanceByResponses", False))
         retail_pipeline_only = bool(prioritization_flags.get("retailPipelineOnly", False))
+        special_job_types = bool(prioritization_flags.get("specialJobTypes", False))
         logging.warning(
-            "auto-refill flags for %s: new=%s urgency=%s aged=%s balance=%s retail_only=%s",
+            "auto-refill flags for %s: new=%s urgency=%s aged=%s balance=%s retail_only=%s special=%s",
             email, prioritize_new, prioritize_urgency, prioritize_aged,
-            balance_by_responses, retail_pipeline_only,
+            balance_by_responses, retail_pipeline_only, special_job_types,
         )
 
         eligible = []
         skipped_reasons = {"no_key": 0, "already_assigned": 0, "excluded_id": 0,
                            "excluded_name": 0, "excluded_client": 0,
-                           "not_retail_pipeline": 0, "no_unreviewed": 0}
+                           "not_retail_pipeline": 0, "not_special_job_type": 0,
+                           "no_unreviewed": 0}
         for r in pool:
             k = _job_key(r)
             if not k or k in assigned_keys:
@@ -2383,6 +2399,12 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             # work from every other client.
             if retail_pipeline_only and str((r.get("extras") or {}).get("client") or "").strip().lower() != _RETAIL_PIPELINE_CLIENT:
                 skipped_reasons["not_retail_pipeline"] += 1
+                continue
+            # "Special Job Types" is likewise a hard filter on the pool at publish.
+            # Without it a shift scoped to Ratings & Reviews / Part 1-2 jobs would
+            # top up with everything else in the feed.
+            if special_job_types and not _is_special_job_type(r.get("name")):
+                skipped_reasons["not_special_job_type"] += 1
                 continue
             # Skip jobs with no reviewable work (unreviewedCount == 0). These have
             # only auto-rejected responses, which must be cleared on the Responses page
