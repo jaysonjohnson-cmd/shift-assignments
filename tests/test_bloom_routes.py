@@ -1895,3 +1895,101 @@ def test_reset_completions_wipes_current_snapshot(client, monkeypatch):
     assert resp.status_code == 200
     assert resp.get_json()["data"]["deleted"] == 2
     assert all("snap-OLD" not in p for p in deleted)
+
+
+# ---------------------------------------------------------------------------
+# No job may sit in two reviewers' queues at once.
+#
+# The backend dedup is a safety net behind the composer's own filtering, so it
+# only ever fires when something upstream is already wrong — which is exactly
+# why it needs a test. It was added as a bug fix (32ef0cc) and nothing asserted
+# it afterwards, so a later change could have quietly removed it with the whole
+# suite still green.
+# ---------------------------------------------------------------------------
+
+
+def _publish_capture(monkeypatch):
+    """Publish with storage stubbed; returns the list of written docs."""
+    published_docs = []
+
+    def fake_post(path, json=None):
+        doc_id = f"doc-{len(published_docs) + 1}"
+        published_docs.append({"id": doc_id, "data": json["data"]})
+        return {"data": {"id": doc_id}}
+
+    monkeypatch.setattr(internal_api, "post", fake_post)
+    monkeypatch.setattr(
+        roles, "list_docs_by_kind",
+        lambda kind, force=False: [
+            d for d in reversed(published_docs)
+            if (d["data"] or {}).get("kind") == kind
+        ],
+    )
+    return published_docs
+
+
+def _rows_by_reviewer(published_docs):
+    out = {}
+    for d in published_docs:
+        data = d["data"]
+        if data.get("kind") != "reviewer_shift":
+            continue
+        out.setdefault(data["reviewer_email"], []).extend(
+            str(r.get("jobId") or r.get("id") or "") for r in data.get("rows") or []
+        )
+    return out
+
+
+def test_publish_never_gives_one_job_to_two_reviewers(client, monkeypatch):
+    """The same job sent for two reviewers must land in exactly one queue."""
+    c, token_file = client
+    _as_admin(token_file)
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(roles, "list_reviewers", lambda: [])
+    published_docs = _publish_capture(monkeypatch)
+
+    shared = {"id": "99", "jobId": "99", "projectId": "10", "name": "Shared",
+              "unreviewedCount": 5}
+    resp = c.post("/api/shifts/publish", json={"assignments": {
+        "sam@storesight.com": [shared, {"id": "1", "jobId": "1", "name": "A",
+                                        "unreviewedCount": 1}],
+        "alex@storesight.com": [shared, {"id": "2", "jobId": "2", "name": "B",
+                                         "unreviewedCount": 1}],
+    }})
+    assert resp.status_code == 201, resp.get_json()
+
+    by_reviewer = _rows_by_reviewer(published_docs)
+    holders = [who for who, jobs in by_reviewer.items() if "99" in jobs]
+    assert len(holders) == 1, f"job 99 landed in {len(holders)} queues: {holders}"
+    # Alphabetically first wins, so the outcome is deterministic rather than
+    # depending on dict ordering.
+    assert holders == ["alex@storesight.com"]
+    # Neither reviewer loses the work that was only theirs.
+    assert "1" in by_reviewer["sam@storesight.com"]
+    assert "2" in by_reviewer["alex@storesight.com"]
+
+
+def test_publish_has_no_duplicate_jobs_anywhere(client, monkeypatch):
+    """Across every reviewer, each job key appears exactly once."""
+    c, token_file = client
+    _as_admin(token_file)
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(roles, "list_reviewers", lambda: [])
+    published_docs = _publish_capture(monkeypatch)
+
+    def job(n):
+        return {"id": str(n), "jobId": str(n), "name": f"Job {n}", "unreviewedCount": 2}
+
+    resp = c.post("/api/shifts/publish", json={"assignments": {
+        "sam@storesight.com": [job(1), job(2), job(3)],
+        "alex@storesight.com": [job(3), job(4)],          # 3 overlaps
+        "kim@storesight.com": [job(1), job(4), job(5)],   # 1 and 4 overlap
+    }})
+    assert resp.status_code == 201, resp.get_json()
+
+    all_jobs = [j for jobs in _rows_by_reviewer(published_docs).values() for j in jobs]
+    assert len(all_jobs) == len(set(all_jobs)), (
+        f"duplicate assignments: {sorted(all_jobs)}"
+    )
+    # Nothing is dropped either — all five distinct jobs are still assigned.
+    assert set(all_jobs) == {"1", "2", "3", "4", "5"}
