@@ -71,8 +71,12 @@ def test_takes_big_jobs_before_small_ones(refill):
     added = refill(feed, batch_size=20, batch_responses=100,
                    flags={"balanceByResponses": True})
 
-    # Biggest first, so the heavy jobs lead the batch rather than trailing it.
-    assert [r["jobId"] for r in added][:2] == ["big1", "big2"]
+    # Biggest first, so the heavy job leads the batch rather than trailing it.
+    assert added[0]["jobId"] == "big1"
+    # Only two large jobs exist here, so _REFILL_MAX_LARGE_SHARE allows one of
+    # them and big2 is left for whoever finishes next. Taking both would hand a
+    # single reviewer the entire heavy end of this queue.
+    assert "big2" not in [r["jobId"] for r in added]
 
 
 def test_a_budget_stops_one_reviewer_taking_every_big_job(refill):
@@ -283,3 +287,30 @@ def test_special_job_types_off_leaves_the_pool_alone(refill):
     added = refill(feed, batch_size=20, batch_responses=300, flags={})
 
     assert sorted(r["jobId"] for r in added) == ["ordinary", "special"]
+
+
+def test_a_small_heavy_end_is_never_taken_whole(refill):
+    """One reviewer must never walk off with all the heavy work.
+
+    A fixed cap can't promise this: when the pool holds fewer large jobs than
+    the cap, the cap never binds. _REFILL_MAX_LARGE_SHARE is what holds the
+    line, so the guard scales with the queue instead of a constant.
+    """
+    for heavy in (2, 3, 4, 6, 10):
+        feed = _feed({f"big{i}": 50 for i in range(heavy)},
+                     **{f"tiny{i}": 2 for i in range(50)})
+        added = refill(feed, batch_size=20, batch_responses=400,
+                       flags={"balanceByResponses": True})
+        taken = [r for r in added if int(r["unreviewedCount"]) >= 10]
+        assert len(taken) < heavy, (
+            f"{heavy} large jobs available, one reviewer took all {len(taken)}"
+        )
+
+
+def test_a_lone_large_job_is_not_stranded(refill):
+    """The share must still let a single heavy job through, or it never moves."""
+    feed = _feed({"big": 80, **{f"tiny{i}": 2 for i in range(20)}})
+    added = refill(feed, batch_size=20, batch_responses=200,
+                   flags={"balanceByResponses": True})
+
+    assert "big" in [r["jobId"] for r in added]

@@ -2049,7 +2049,14 @@ _REFILL_DEFAULT_RESPONSE_BUDGET = 120
 # first" against a budget alone would let whoever finishes first take every
 # large job at once. This caps that, leaving the rest for the next reviewer to
 # finish, and the batch is filled out with smaller jobs instead.
-_REFILL_MAX_LARGE_JOBS = 6
+_REFILL_MAX_LARGE_JOBS = 4
+
+# ...and never more than this share of the large jobs actually on offer. A fixed
+# cap alone doesn't balance a small heavy end: when the pool holds fewer large
+# jobs than the cap, the cap never binds and the first reviewer to finish takes
+# every one of them. A share keeps heavy work spread no matter the queue shape.
+# Always lets at least one through, so a lone large job isn't stranded forever.
+_REFILL_MAX_LARGE_SHARE = 0.5
 
 # Scales the response budget for a top-up. Refills of 1-5 jobs left reviewers
 # looking at what reads as an empty queue, so a top-up hands out more work than
@@ -2491,6 +2498,11 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             eligible.sort(key=lambda t: tier_of(t[0]))
 
         large_threshold = _large_job_threshold([n for _, _, n in eligible])
+        available_large = sum(1 for _, _, n in eligible if n >= large_threshold)
+        large_cap = min(
+            _REFILL_MAX_LARGE_JOBS,
+            max(1, int(available_large * _REFILL_MAX_LARGE_SHARE)),
+        )
         fresh = []
         responses_added = 0
         large_taken = 0
@@ -2500,7 +2512,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             is_large = reviewable >= large_threshold
             # Hand out only a couple of large jobs per top-up, so one reviewer
             # can't take the whole heavy end of a skewed queue.
-            if is_large and large_taken >= _REFILL_MAX_LARGE_JOBS:
+            if is_large and large_taken >= large_cap:
                 continue
             # Always take at least one job, so a reviewer whose previous batch was
             # small isn't locked out of a queue made only of large jobs.
@@ -2515,9 +2527,9 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                 break
         logging.warning(
             "auto-refill for %s: pool=%d, eligible=%d, skipped: %s -> %d jobs / %d responses "
-            "(budget=%d, job ceiling=%d, large>=%d taken=%d)",
+            "(budget=%d, job ceiling=%d, large>=%d avail=%d cap=%d taken=%d)",
             email, len(pool), len(eligible), skipped_reasons, len(fresh), responses_added,
-            budget, count, large_threshold, large_taken,
+            budget, count, large_threshold, available_large, large_cap, large_taken,
         )
         if not fresh:
             logging.warning("auto-refill: no new jobs left for %s (reasons: %s)", email, skipped_reasons)

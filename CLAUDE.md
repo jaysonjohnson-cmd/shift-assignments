@@ -280,6 +280,27 @@ via `max_age` rather than forcing a fetch. If you add a caller, prefer
 `fetch_prioritized_jobs()` or a `max_age=` bound; reserve `use_cache=False` for
 an explicit user-driven Refresh.
 
+**How big a top-up is.** Auto-refill is bounded by *responses*, not job count:
+each reviewer's docs carry `batch_responses` (their original batch's total),
+scaled by `_REFILL_BUDGET_MULTIPLE`, and the refill stops once that's met.
+Bounding by response count is deliberate — stopping at a job count made 20
+two-response jobs a "full batch". The reviewer's original `batch_size` stays on
+as a hard ceiling on the job count, so a top-up can't exceed their allotment
+however the budget lands.
+
+Only the unscaled base is stamped onto a refill chunk, so `batch_responses`
+keeps meaning "the original batch's total" rather than drifting upward.
+
+**Keeping the heavy end spread.** Big jobs are capped two ways, and the smaller
+wins: `_REFILL_MAX_LARGE_JOBS` as an absolute ceiling, and
+`_REFILL_MAX_LARGE_SHARE` as a fraction of the large jobs actually on offer
+("large" being 3x the pool median, floored). The share is the one that matters —
+a fixed cap alone silently stops protecting anything once the pool holds fewer
+large jobs than the cap, which is the common case here (a few hundred tiny jobs
+and only a handful of heavy ones). With the share, the first reviewer to finish
+can never take the whole heavy end regardless of queue shape. It always lets at
+least one through, or a lone large job would never be assigned to anyone.
+
 **Rollback:** Use Cloud Run revision traffic splitting in GCP console.
 
 ---
