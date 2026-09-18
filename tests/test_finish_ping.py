@@ -116,7 +116,13 @@ def test_no_refill_or_ping_when_work_remains(client, monkeypatch):
     assert [p for p in posted if p[0].endswith("/api/slack/post")] == []
 
 
-def test_refill_runs_but_no_ping_when_channel_unset(client, monkeypatch):
+def test_ping_falls_back_to_the_default_channel(client, monkeypatch):
+    """An unset env var must not silently swallow the ping.
+
+    SLACK_NOTIFY_CHANNEL never reached the deployed service, and an empty value
+    used to mean "skip the notification" — so these pings went missing in
+    production while the tests passed. The channel is defaulted in code now.
+    """
     c, token_file = client
     token_file.write_text(_make_dev_token("sam@storesight.com", "Sam"))
     posted, refill_calls = [], []
@@ -128,7 +134,9 @@ def test_refill_runs_but_no_ping_when_channel_unset(client, monkeypatch):
     assert resp.status_code == 201, resp.get_json()
 
     assert refill_calls == [("snap1", "sam@storesight.com", 2)]  # still auto-assigns
-    assert [p for p in posted if p[0].endswith("/api/slack/post")] == []  # just no ping
+    slack = [p for p in posted if p[0].endswith("/api/slack/post")]
+    assert len(slack) == 1
+    assert slack[0][1]["channel"] == main._SLACK_CHANNEL
 
 
 def test_finish_check_reads_completions_authoritatively(client, monkeypatch):

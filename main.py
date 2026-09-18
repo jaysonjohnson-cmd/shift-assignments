@@ -37,10 +37,13 @@ TEAM_SCHEDULER_URL = (
 # SLACK_ADMIN_USER_ID still overrides it if the platform ever supplies one.
 _ADMIN_SLACK_USER_ID = "UKTE679RB"  # Jayson Johnson
 
+# Channel for shift-wide notices (publishes, reviewer finish pings).
+_SLACK_CHANNEL = "GKVDB7HNG"  # #todayistheday
+
 
 def _send_slack_notification(text):
     """Send a message to #todayistheday Slack channel."""
-    channel = "GKVDB7HNG"  # #todayistheday
+    channel = _SLACK_CHANNEL
 
     try:
         internal_api.post("/api/slack/post", json={"channel": channel, "text": text})
@@ -2575,24 +2578,20 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
 def _notify_reviewer_finished(email, total_jobs, added_jobs, snap_id=None):
     """Best-effort Slack ping when a reviewer finishes their whole queue.
 
-    Posts to the channel in the SLACK_NOTIFY_CHANNEL env var. No-ops (with a
-    log line) when no channel is configured, and never raises — a failed ping
-    must never break the reviewer's completion.
+    Posts to #todayistheday. The channel is defaulted in code rather than read
+    from SLACK_NOTIFY_CHANNEL: that variable never reached the service, and an
+    empty one meant "skip the ping", so these went missing entirely. The env var
+    still overrides. Never raises — a failed ping must not break the completion.
+
+    Only called when a refill actually found work (see the caller), so there is
+    no "nothing left to assign" case to report here.
     """
-    channel = (os.environ.get("SLACK_NOTIFY_CHANNEL") or "").strip()
-    if not channel:
-        logging.info(
-            "reviewer %s finished all jobs; SLACK_NOTIFY_CHANNEL unset, no ping", email
-        )
-        return
+    channel = (os.environ.get("SLACK_NOTIFY_CHANNEL") or "").strip() or _SLACK_CHANNEL
 
     name = _reviewer_display_name(email)
     plural = "s" if total_jobs != 1 else ""
-    if added_jobs > 0:
-        added_plural = "s" if added_jobs != 1 else ""
-        tail = f"auto-assigned {added_jobs} more job{added_plural}."
-    else:
-        tail = "no more jobs left in the queue to assign."
+    added_plural = "s" if added_jobs != 1 else ""
+    tail = f"auto-assigned {added_jobs} more job{added_plural}."
     text = (
         f":white_check_mark: *{name}* just finished all {total_jobs} "
         f"assignment{plural} — {tail}"
