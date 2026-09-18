@@ -293,6 +293,7 @@ export default function AssignmentsPage() {
         balanceByResponses,
         prioritizeUrgency,
         prioritizeAged,
+        specialJobTypes,
         // Persisted so auto-refill keeps the shift scoped to this client too;
         // without it a Retail-Pipeline-only shift topped up with everyone else's work.
         retailPipelineOnly,
