@@ -240,3 +240,38 @@ def test_no_flags_means_no_tiering(refill):
     feed = _feed({"first": 2, "second": 3})
     added = refill(feed, batch_size=20, batch_responses=10, flags={})
     assert [r["jobId"] for r in added] == ["first", "second"]
+
+
+def test_special_job_types_keeps_the_refill_scoped(refill):
+    """A Special-Job-Types shift must not top up with ordinary work.
+
+    The filter mirrors the composer's rule in app/assignments/page.tsx: a
+    case-insensitive substring match for "ratings & review" (so both the
+    singular and plural job names hit), "part 1" and "part 2".
+    """
+    feed = _feed({"rr_plural": 10, "rr_singular": 10, "p1": 10, "p2": 10, "ordinary": 200})
+    names = {
+        "rr_plural": "Acme Ratings & Reviews - Spring",
+        "rr_singular": "Acme Ratings & Review - Spring",
+        "p1": "Acme Audit Part 1/2",
+        "p2": "Acme Audit Part 2/2",
+        "ordinary": "Acme Shelf Check",
+    }
+    for row in feed:
+        row["name"] = names[row["jobId"]]
+
+    added = refill(feed, batch_size=20, batch_responses=300,
+                   flags={"specialJobTypes": True})
+
+    assert sorted(r["jobId"] for r in added) == ["p1", "p2", "rr_plural", "rr_singular"]
+
+
+def test_special_job_types_off_leaves_the_pool_alone(refill):
+    """Without the flag the filter must not silently scope a normal shift."""
+    feed = _feed({"special": 10, "ordinary": 10})
+    feed[0]["name"] = "Acme Ratings & Reviews"
+    feed[1]["name"] = "Acme Shelf Check"
+
+    added = refill(feed, batch_size=20, batch_responses=300, flags={})
+
+    assert sorted(r["jobId"] for r in added) == ["ordinary", "special"]
