@@ -30,6 +30,13 @@ TEAM_SCHEDULER_URL = (
 )
 
 
+# Slack user id DM'd when a reviewer closes out their shift. Defaulted here for
+# the same reason the channel below is: env vars set in cloudbuild.yaml don't
+# reliably reach this service, and both Slack helpers fail silently when their
+# target is empty. SLACK_ADMIN_USER_ID overrides it.
+_ADMIN_SLACK_USER_ID = "UKTE679RB"  # Jayson Johnson
+
+
 def _send_slack_notification(text):
     """Send a message to #todayistheday Slack channel."""
     channel = "GKVDB7HNG"  # #todayistheday
@@ -2577,16 +2584,14 @@ def _reviewer_display_name(email):
 def _notify_admin_shift_closed(email, done_count, released_count):
     """DM the admin when a reviewer closes out their shift.
 
-    Slack's chat.postMessage treats a user ID in `channel` as a DM, so
-    SLACK_ADMIN_USER_ID holds a `U...` id. No-ops with a log line when unset,
-    and never raises — a failed DM must not fail the close-out.
+    Slack's chat.postMessage treats a user id in `channel` as a DM, so the
+    target is a `U...` id rather than a channel. Defaulted in code, like the
+    channel in _send_slack_notification, rather than left to an env var: an
+    unset var fails silently, and deploys here don't reliably carry one.
+    SLACK_ADMIN_USER_ID still overrides it. Never raises — a failed DM must
+    not fail the close-out.
     """
-    target = (os.environ.get("SLACK_ADMIN_USER_ID") or "").strip()
-    if not target:
-        logging.info(
-            "%s closed out their shift; SLACK_ADMIN_USER_ID unset, no DM sent", email
-        )
-        return
+    target = (os.environ.get("SLACK_ADMIN_USER_ID") or "").strip() or _ADMIN_SLACK_USER_ID
 
     name = _reviewer_display_name(email)
     parts = [f"completed {done_count} job{'' if done_count == 1 else 's'}"]

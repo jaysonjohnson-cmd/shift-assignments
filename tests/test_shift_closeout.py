@@ -134,7 +134,14 @@ def test_closeout_dms_the_admin(client, monkeypatch):
     assert "released 1 unfinished job" in text
 
 
-def test_closeout_succeeds_without_dm_target(client, monkeypatch):
+def test_closeout_dms_the_default_admin_without_the_env_var(client, monkeypatch):
+    """An unset env var must not silently disable the DM.
+
+    Deploys here don't reliably carry SLACK_ADMIN_USER_ID, and an empty target
+    used to mean "skip the notification" — so the alert would have gone missing
+    in production while every local test passed. The admin id is defaulted in
+    code, the same way _send_slack_notification hardcodes its channel.
+    """
     c, token_file = client
     token_file.write_text(_make_dev_token("sam@storesight.com", "Sam"))
     deleted, posted = [], []
@@ -144,7 +151,10 @@ def test_closeout_succeeds_without_dm_target(client, monkeypatch):
     resp = c.post("/api/shifts/my/close")
     assert resp.status_code == 200, resp.get_json()
     assert "rs-sam" in deleted  # rows still released
-    assert [p for p in posted if p[0].endswith("/api/slack/post")] == []
+
+    slack = [p for p in posted if p[0].endswith("/api/slack/post")]
+    assert len(slack) == 1
+    assert slack[0][1]["channel"] == main._ADMIN_SLACK_USER_ID
 
 
 def test_closeout_is_idempotent(client, monkeypatch):
