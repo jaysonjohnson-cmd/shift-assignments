@@ -35,6 +35,8 @@ export type MyTasksResponse = {
   /** Signed-in reviewer's assigned color, if any. */
   color?: string | null;
   rows: Row[];
+  /** True once the reviewer has closed out this shift. */
+  closed_out?: boolean;
 };
 
 export type Reviewer = {

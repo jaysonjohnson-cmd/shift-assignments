@@ -861,11 +861,16 @@ def api_shifts_auto_clear():
                 continue
             _try_delete(doc.get("id"))
             cleared_completions += 1
+        for doc in roles.list_docs_by_kind("shift_closeout"):
+            if ((doc.get("data") or {}).get("shift_snapshot_id")) == snap_id:
+                _try_delete(doc.get("id"))
         _try_delete(snap_id)
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e)
 
-    roles.invalidate_doc_cache("shift_snapshot", "reviewer_shift", "completion")
+    roles.invalidate_doc_cache(
+        "shift_snapshot", "reviewer_shift", "completion", "shift_closeout"
+    )
     logging.info(
         "POST /api/shifts/auto-clear by=%s snapshot=%s rows=%d completions=%d",
         g.user.get("email"), snap_id, cleared_rows, cleared_completions,
@@ -1678,11 +1683,16 @@ def _purge_stale_shift_docs():
         if ((doc.get("data") or {}).get("shift_snapshot_id")) in stale_ids:
             _try_delete(doc.get("id"))
             comps += 1
+    for doc in roles.list_docs_by_kind("shift_closeout"):
+        if ((doc.get("data") or {}).get("shift_snapshot_id")) in stale_ids:
+            _try_delete(doc.get("id"))
     for sid in stale_ids:
         _try_delete(sid)
         snaps += 1
 
-    roles.invalidate_doc_cache("shift_snapshot", "reviewer_shift", "completion")
+    roles.invalidate_doc_cache(
+        "shift_snapshot", "reviewer_shift", "completion", "shift_closeout"
+    )
     logging.info("purged stale shift docs: snapshots=%d rows=%d completions=%d",
                  snaps, rows, comps)
     return snaps, rows, comps
@@ -1952,6 +1962,7 @@ def api_shifts_my():
             "published_at": snap_data.get("published_at"),
             "color": color,
             "rows": enriched,
+            "closed_out": _is_closed_out(snap_id, email),
         }
     })
 
@@ -2501,14 +2512,7 @@ def _notify_reviewer_finished(email, total_jobs, added_jobs, snap_id=None):
         )
         return
 
-    name = email
-    try:
-        for r in roles.list_reviewers():
-            if r.get("email") == email:
-                name = r.get("name") or email
-                break
-    except Exception as exc:  # noqa: BLE001 — name lookup is best-effort
-        logging.warning("finish-ping name lookup failed for %s: %s", email, exc)
+    name = _reviewer_display_name(email)
     plural = "s" if total_jobs != 1 else ""
     if added_jobs > 0:
         added_plural = "s" if added_jobs != 1 else ""
@@ -2524,6 +2528,48 @@ def _notify_reviewer_finished(email, total_jobs, added_jobs, snap_id=None):
         logging.info("sent finish ping for %s to channel %s", email, channel)
     except Exception as exc:  # noqa: BLE001 — ping is best-effort
         logging.warning("failed to send finish ping for %s: %s", email, exc)
+
+
+def _reviewer_display_name(email):
+    """Roster name for an email, falling back to the email itself."""
+    try:
+        for r in roles.list_reviewers():
+            if r.get("email") == email:
+                return r.get("name") or email
+    except Exception as exc:  # noqa: BLE001 — name lookup is best-effort
+        logging.warning("name lookup failed for %s: %s", email, exc)
+    return email
+
+
+def _notify_admin_shift_closed(email, done_count, released_count):
+    """DM the admin when a reviewer closes out their shift.
+
+    Slack's chat.postMessage treats a user ID in `channel` as a DM, so
+    SLACK_ADMIN_USER_ID holds a `U...` id. No-ops with a log line when unset,
+    and never raises — a failed DM must not fail the close-out.
+    """
+    target = (os.environ.get("SLACK_ADMIN_USER_ID") or "").strip()
+    if not target:
+        logging.info(
+            "%s closed out their shift; SLACK_ADMIN_USER_ID unset, no DM sent", email
+        )
+        return
+
+    name = _reviewer_display_name(email)
+    parts = [f"completed {done_count} job{'' if done_count == 1 else 's'}"]
+    if released_count:
+        parts.append(
+            f"released {released_count} unfinished job"
+            f"{'' if released_count == 1 else 's'} back to the queue"
+        )
+    text = (
+        f":lock: *{name}* closed out their shift — {', '.join(parts)}."
+    )
+    try:
+        internal_api.post("/api/slack/post", json={"channel": target, "text": text})
+        logging.info("sent shift close-out DM for %s", email)
+    except Exception as exc:  # noqa: BLE001 — DM is best-effort
+        logging.warning("failed to send shift close-out DM for %s: %s", email, exc)
 
 
 def _live_unreviewed_count(job_id, force=False):
@@ -2902,6 +2948,98 @@ def api_shifts_my_uncomplete(job_id):
     return jsonify({"data": {"job_id": str(job_id)}})
 
 
+def _is_closed_out(snap_id, email, force=False):
+    """True when this reviewer has closed out the given shift."""
+    norm = (email or "").strip().lower()
+    for doc in roles.list_docs_by_kind("shift_closeout", force=force):
+        data = doc.get("data") or {}
+        if (data.get("shift_snapshot_id") == snap_id
+                and (data.get("reviewer_email") or "").strip().lower() == norm):
+            return True
+    return False
+
+
+@app.route("/api/shifts/my/close", methods=["POST"])
+def api_shifts_my_close():
+    """Close out the signed-in reviewer's shift. Idempotent.
+
+    Deletes their reviewer_shift docs, which is what actually returns any
+    unfinished jobs to the assignable pool: _auto_refill_reviewer builds its
+    exclusion set from the rows sitting in every reviewer_shift doc, so a job
+    with no doc holding it becomes eligible for the rest of the team again.
+
+    Completion docs are deliberately left in place — the Progress Tracker and
+    the weekly leaderboard both read them, and deleting them would erase credit
+    for work that was actually done.
+    """
+    email = (g.user.get("email") or "").strip().lower()
+    try:
+        snap_id, _ = _latest_snapshot()
+    except requests.exceptions.HTTPError as e:
+        return _http_error_response(e)
+    if not snap_id:
+        return jsonify({"error": "no shift has been published yet"}), 409
+
+    if _is_closed_out(snap_id, email):
+        return jsonify({"data": {"snapshot_id": snap_id, "already_closed": True,
+                                 "completed": 0, "released": 0}})
+
+    try:
+        rows = _rows_for_reviewer(snap_id, email, force=True) or []
+        completions = _list_completions_for_snapshot(
+            snap_id, reviewer_email=email, force=True
+        )
+    except requests.exceptions.HTTPError as e:
+        return _http_error_response(e)
+
+    done_keys = {_completion_job_key(c) for c in completions if _completion_job_key(c)}
+    released = [r for r in rows if _row_job_key(r) not in done_keys]
+
+    # Drop the reviewer's rows for this snapshot. This both empties My Tasks and
+    # frees the unfinished jobs; it also stops the two refill triggers, since the
+    # completion finish-check has nothing left to fire on and the self-heal path
+    # in /api/shifts/my guards on the reviewer having rows.
+    deleted_docs = 0
+    for doc in roles.list_docs_by_kind("reviewer_shift", force=True):
+        data = doc.get("data") or {}
+        if data.get("shift_snapshot_id") != snap_id:
+            continue
+        if (data.get("reviewer_email") or "").strip().lower() != email:
+            continue
+        _try_delete(doc.get("id"))
+        deleted_docs += 1
+
+    closeout = {
+        "kind": "shift_closeout",
+        "reviewer_email": email,
+        "shift_snapshot_id": snap_id,
+        "closed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "completed": len(done_keys),
+        "released": len(released),
+    }
+    try:
+        resp = internal_api.post(_STORAGE_PATH, json={"data": closeout})
+    except requests.exceptions.HTTPError as e:
+        return _http_error_response(e)
+    roles.cache_upsert_doc(
+        "shift_closeout", {"id": (resp.get("data") or {}).get("id"), "data": closeout}
+    )
+    roles.invalidate_doc_cache("reviewer_shift")
+
+    logging.warning(
+        "POST /api/shifts/my/close by=%s snapshot_id=%s docs=%d completed=%d released=%d",
+        email, snap_id, deleted_docs, len(done_keys), len(released),
+    )
+    _notify_admin_shift_closed(email, len(done_keys), len(released))
+
+    return jsonify({"data": {
+        "snapshot_id": snap_id,
+        "already_closed": False,
+        "completed": len(done_keys),
+        "released": len(released),
+    }})
+
+
 @app.route("/api/shifts/completions", methods=["GET"])
 def api_shifts_list_completions():
     """Admin: return all completion docs for the latest snapshot."""
@@ -3259,7 +3397,11 @@ def api_shifts_clear():
         for doc in roles.list_docs_by_kind("shift_snapshot"):
             _try_delete(doc.get("id"))
             cleared_snapshots += 1
-        roles.invalidate_doc_cache("shift_snapshot", "reviewer_shift", "completion")
+        for doc in roles.list_docs_by_kind("shift_closeout"):
+            _try_delete(doc.get("id"))
+        roles.invalidate_doc_cache(
+            "shift_snapshot", "reviewer_shift", "completion", "shift_closeout"
+        )
         logging.info(
             "POST /api/shifts/clear mode=reset by=%s snapshots=%d rows=%d completions=%d",
             g.user.get("email"), cleared_snapshots, cleared_rows, cleared_completions,
@@ -3322,6 +3464,16 @@ def api_shifts_clear():
                 cleared_completions += 1
             except requests.exceptions.HTTPError:
                 pass
+        # Drop close-out marks too, so a cleared reviewer is reopened for work
+        # rather than staying closed out with no rows.
+        for doc in roles.list_docs_by_kind("shift_closeout"):
+            data = doc.get("data") or {}
+            if data.get("shift_snapshot_id") != snap_id:
+                continue
+            if (reviewer_email is not None
+                    and (data.get("reviewer_email") or "").strip().lower() != reviewer_email):
+                continue
+            _try_delete(doc.get("id"))
         # Only end the whole shift on a global clear. A per-reviewer clear must
         # leave the snapshot intact so the shift stays live for everyone else.
         if reviewer_email is None:
@@ -3372,7 +3524,9 @@ def api_shifts_clear():
         except requests.exceptions.HTTPError:
             pass  # best-effort cleanup; the zombie is harmless to a re-publish
 
-    roles.invalidate_doc_cache("shift_snapshot", "reviewer_shift", "completion")
+    roles.invalidate_doc_cache(
+        "shift_snapshot", "reviewer_shift", "completion", "shift_closeout"
+    )
     logging.info(
         "POST /api/shifts/clear by=%s mode=%s reviewer=%s snapshot_id=%s rows=%d completions=%d",
         g.user.get("email"), mode, reviewer_email or "*", snap_id, cleared_rows, cleared_completions,

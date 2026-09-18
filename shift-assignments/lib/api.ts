@@ -178,6 +178,7 @@ export async function publishShift(
     balanceByResponses?: boolean;
     prioritizeUrgency?: boolean;
     prioritizeAged?: boolean;
+    specialJobTypes?: boolean;
     retailPipelineOnly?: boolean;
   },
 ): Promise<{ id: string; published_at: string }> {
@@ -257,6 +258,21 @@ export async function markTaskDone(
     note,
     ...(override ? { override: true } : {}),
   });
+}
+
+export type CloseShiftResult = {
+  snapshot_id: string;
+  already_closed: boolean;
+  completed: number;
+  released: number;
+};
+
+export async function closeMyShift(): Promise<CloseShiftResult> {
+  const resp = await call<{ data: CloseShiftResult }>(
+    "POST",
+    "/api/shifts/my/close",
+  );
+  return resp.data;
 }
 
 export async function unmarkTaskDone(jobId: string): Promise<void> {

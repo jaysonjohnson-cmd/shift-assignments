@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { getMyTasks, markTaskDone } from "@/lib/api";
+import { closeMyShift, getMyTasks, markTaskDone } from "@/lib/api";
 import { useUser } from "@/lib/useUser";
 import { reviewerColor, type Row } from "@/lib/types";
 import { OpenInReviewButton } from "@/components/OpenInReviewButton";
@@ -17,6 +17,7 @@ type State = {
   publishedAt?: string;
   color?: string | null;
   rows: Row[];
+  closedOut: boolean;
 };
 
 type Density = "comfortable" | "compact";
@@ -177,7 +178,9 @@ export default function MyTasksPage() {
     error: null,
     snapshotId: null,
     rows: [],
+    closedOut: false,
   });
+  const [closing, setClosing] = useState(false);
   const [density, setDensity] = useState<Density>("comfortable");
   const [viewByPid, setViewByPid] = useState(false);
   const [emptyMsgIdx, setEmptyMsgIdx] = useState(() => pickRandomMessageIndex());
@@ -226,6 +229,7 @@ export default function MyTasksPage() {
         publishedAt: data.published_at,
         color: data.color,
         rows: data.rows,
+        closedOut: !!data.closed_out,
       });
     } catch (e) {
       setState((s) => ({
@@ -239,6 +243,21 @@ export default function MyTasksPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  const handleCloseShift = async () => {
+    setClosing(true);
+    try {
+      await closeMyShift();
+      setState((s) => ({ ...s, rows: [], closedOut: true, error: null }));
+    } catch (e) {
+      setState((s) => ({
+        ...s,
+        error: e instanceof Error ? e.message : "Failed to close out shift",
+      }));
+    } finally {
+      setClosing(false);
+    }
+  };
 
   const handleRowChange = (jobId: string, completedAt: string | null) => {
     setState((s) => ({
@@ -274,8 +293,13 @@ export default function MyTasksPage() {
   const isCelebrating = total > 0 && todo.length === 0;
   const pollDelay = isCelebrating ? 8000 : 4000;
 
-  // When the queue empties, poll to get auto-refilled assignments.
-  const queueEmpty = !state.loading && state.snapshotId !== null && todo.length === 0;
+  // When the queue empties, poll to get auto-refilled assignments. A closed-out
+  // shift is never refilled, so polling would just spin.
+  const queueEmpty =
+    !state.loading &&
+    state.snapshotId !== null &&
+    todo.length === 0 &&
+    !state.closedOut;
   useEffect(() => {
     if (!queueEmpty) return;
     const t = window.setTimeout(() => load(), pollDelay);
@@ -327,6 +351,17 @@ export default function MyTasksPage() {
           >
             {state.loading ? "Refreshing…" : "Refresh"}
           </button>
+          {state.snapshotId && !state.closedOut && (
+            <button
+              type="button"
+              onClick={handleCloseShift}
+              disabled={closing}
+              title="End your shift. Anything you haven't checked off goes back to the queue for the rest of the team."
+              className="rounded-lg bg-storesight-primary px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-storesight-primary-dark disabled:opacity-50 dark:bg-storesight-accent dark:hover:bg-storesight-accent-light"
+            >
+              {closing ? "Closing…" : "Done for the shift"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -351,7 +386,21 @@ export default function MyTasksPage() {
         </div>
       )}
 
-      {state.snapshotId && state.rows.length === 0 && !state.loading && (
+      {state.closedOut && !state.loading && (
+        <div className="mt-8 flex min-h-[50vh] items-center justify-center px-4 text-center">
+          <div>
+            <h2 className="max-w-3xl bg-gradient-to-r from-storesight-primary via-storesight-accent to-storesight-accent-light bg-clip-text text-lg font-black leading-snug tracking-tight text-transparent sm:text-xl md:text-2xl">
+              You&rsquo;re closed out for the shift.
+            </h2>
+            <p className="mt-4 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+              Anything you didn&rsquo;t finish went back to the queue for the rest
+              of the team. Jayson has been notified.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {state.snapshotId && !state.closedOut && state.rows.length === 0 && !state.loading && (
         <div className="mt-8 flex min-h-[50vh] items-center justify-center px-4 text-center">
           <div>
             <h2 className="max-w-3xl bg-gradient-to-r from-storesight-primary via-storesight-accent to-storesight-accent-light bg-clip-text text-lg font-black leading-snug tracking-tight text-transparent sm:text-xl md:text-2xl">

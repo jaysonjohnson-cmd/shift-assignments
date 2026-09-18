@@ -219,6 +219,8 @@ JWT_SIGNING_SECRET=test-secret pytest -v tests/
   to call the auto-publish path with an OIDC token. Both must be set or that path
   stays cookie-only (see Automatic shift assignment below).
 - `BLOOM_WARMER=0` — opt out of the background Bloom cache warmer (tests set this)
+- `SLACK_ADMIN_USER_ID` — Slack *user* id (`U...`) DM'd when a reviewer closes
+  out their shift. Unset = close-out still works, it just doesn't notify.
 
 ---
 
@@ -311,6 +313,40 @@ tests broke this way. Use a helper that returns today (see `_today_published_at`
 in `tests/test_bloom_routes.py`).
 
 ---
+
+## Closing out a shift
+
+A reviewer ends their own shift from My Tasks ("Done for the shift" →
+`POST /api/shifts/my/close`). It takes no parameters and only ever touches the
+caller's own data.
+
+**Deleting their `reviewer_shift` docs is the whole mechanism.** It's not just
+cleanup — `_auto_refill_reviewer` builds its exclusion set from the rows held in
+*every* `reviewer_shift` doc (`assigned_keys = touched_keys - completed_keys`),
+so a job no doc is holding becomes assignable to the rest of the team again.
+That same deletion also stops both refill triggers for the person leaving: the
+completion finish-check has no job left to fire on, and the self-heal path in
+`/api/shifts/my` guards on the reviewer having rows.
+
+**Completion docs are deliberately kept.** The Progress Tracker and the weekly
+leaderboard both read them; deleting them would erase credit for work that was
+actually done. Only the unfinished rows go back.
+
+A `shift_closeout` marker doc records the state, surfaces as `closed_out` on
+`/api/shifts/my`, and makes the endpoint idempotent. The marker is keyed to the
+snapshot, so the next published shift reopens the reviewer automatically — and
+a clear (`mode="all"`) drops it so an admin can reopen someone mid-shift.
+
+There is intentionally **no confirmation prompt** and no block on unfinished
+work: ending the shift is always allowed, and whatever isn't checked off is
+released rather than lost.
+
+Each close-out sends **one DM per reviewer** to `SLACK_ADMIN_USER_ID` — a
+deliberate choice over batching them into an end-of-day digest, so the admin
+sees people finish in real time. Nothing is posted to a shared channel, and the
+reviewer closing out isn't messaged. Note the Slack proxy (`/api/slack/post`)
+is channel-only by spec; passing a *user* id works because Slack routes it to
+the bot's IM with that person, which is the only DM a bot can send.
 
 ## Key Files and Their Roles
 
