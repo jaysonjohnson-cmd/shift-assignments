@@ -175,3 +175,74 @@ def test_closeout_requires_a_published_shift(client, monkeypatch):
     resp = c.post("/api/shifts/my/close")
     assert resp.status_code == 409
     assert deleted == []
+
+
+def _setup_my_tasks(monkeypatch, rows, deleted, closeouts):
+    """Wire GET /api/shifts/my with a close-out mark already in storage."""
+    monkeypatch.setattr(main, "_latest_snapshot", lambda: ("snap1", {}))
+    monkeypatch.setattr(
+        main, "_rows_for_reviewer", lambda snap, email, force=False: list(rows)
+    )
+    monkeypatch.setattr(
+        main, "_list_completions_for_snapshot",
+        lambda snap, reviewer_email=None, force=False: [],
+    )
+    monkeypatch.setattr(main.roles, "list_reviewers", lambda: [
+        {"id": "r1", "name": "Sam", "email": "sam@storesight.com"},
+    ])
+    monkeypatch.setattr(
+        main.bloom, "fetch_prioritized_jobs",
+        lambda *a, **k: [
+            {"jobId": r["jobId"], "unreviewedCount": 5, "extras": {"newCount": 5}}
+            for r in rows
+        ],
+    )
+    monkeypatch.setattr(
+        main.roles, "list_docs_by_kind",
+        lambda kind, force=False: list(closeouts) if kind == "shift_closeout" else [],
+    )
+    monkeypatch.setattr(main, "_try_delete", lambda doc_id: deleted.append(doc_id))
+    monkeypatch.setattr(main.roles, "cache_remove_doc", lambda *a, **k: None)
+    monkeypatch.setattr(main, "_auto_refill_reviewer",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("refill must not fire here")))
+
+
+_CLOSEOUT_DOC = [{"id": "co-1", "data": {"kind": "shift_closeout",
+                                         "shift_snapshot_id": "snap1",
+                                         "reviewer_email": "sam@storesight.com"}}]
+
+
+def test_reassigned_work_clears_the_closeout(client, monkeypatch):
+    """Rows landing after a close-out mean the reviewer is back on shift.
+
+    Close-out deletes every row they had, so rows existing again is only
+    possible if someone reassigned work. The banner must not sit above a live
+    task list, and the stale mark should be dropped rather than left to
+    re-trigger later.
+    """
+    c, token_file = client
+    token_file.write_text(_make_dev_token("sam@storesight.com", "Sam"))
+    deleted = []
+    _setup_my_tasks(monkeypatch, [{"jobId": "A", "name": "Job A"}],
+                    deleted, _CLOSEOUT_DOC)
+
+    resp = c.get("/api/shifts/my")
+    assert resp.status_code == 200, resp.get_json()
+    data = resp.get_json()["data"]
+    assert data["closed_out"] is False
+    assert len(data["rows"]) == 1
+    assert "co-1" in deleted  # stale mark cleaned up
+
+
+def test_closeout_survives_with_no_rows(client, monkeypatch):
+    """With no work assigned the mark stands and the banner stays."""
+    c, token_file = client
+    token_file.write_text(_make_dev_token("sam@storesight.com", "Sam"))
+    deleted = []
+    _setup_my_tasks(monkeypatch, [], deleted, _CLOSEOUT_DOC)
+
+    resp = c.get("/api/shifts/my")
+    assert resp.status_code == 200, resp.get_json()
+    assert resp.get_json()["data"]["closed_out"] is True
+    assert deleted == []

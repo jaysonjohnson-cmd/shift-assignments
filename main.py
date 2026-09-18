@@ -1956,13 +1956,24 @@ def api_shifts_my():
         )
     except Exception:  # noqa: BLE001 — color lookup is best-effort
         color = None
+    # Close-out deletes every row the reviewer had, so rows existing again means
+    # someone put them back to work (an admin reassigned, or a new batch landed
+    # on this snapshot). Having work outranks the mark: drop it so they get a
+    # normal task list instead of a "you're done" banner sitting above live jobs.
+    closed_out = _is_closed_out(snap_id, email)
+    if closed_out and rows:
+        try:
+            _clear_closeout(snap_id, email)
+        except Exception as exc:  # noqa: BLE001 — a read must not fail on cleanup
+            logging.warning("failed clearing stale close-out for %s: %s", email, exc)
+        closed_out = False
     return jsonify({
         "data": {
             "snapshot_id": snap_id,
             "published_at": snap_data.get("published_at"),
             "color": color,
             "rows": enriched,
-            "closed_out": _is_closed_out(snap_id, email),
+            "closed_out": closed_out,
         }
     })
 
@@ -2979,6 +2990,20 @@ def _is_closed_out(snap_id, email, force=False):
                 and (data.get("reviewer_email") or "").strip().lower() == norm):
             return True
     return False
+
+
+def _clear_closeout(snap_id, email):
+    """Drop this reviewer's close-out mark for a snapshot. Best-effort."""
+    norm = (email or "").strip().lower()
+    cleared = 0
+    for doc in roles.list_docs_by_kind("shift_closeout"):
+        data = doc.get("data") or {}
+        if (data.get("shift_snapshot_id") == snap_id
+                and (data.get("reviewer_email") or "").strip().lower() == norm):
+            _try_delete(doc.get("id"))
+            roles.cache_remove_doc("shift_closeout", doc.get("id"))
+            cleared += 1
+    return cleared
 
 
 @app.route("/api/shifts/my/close", methods=["POST"])

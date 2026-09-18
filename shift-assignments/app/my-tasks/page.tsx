@@ -386,7 +386,7 @@ export default function MyTasksPage() {
         </div>
       )}
 
-      {state.closedOut && !state.loading && (
+      {state.closedOut && todo.length === 0 && !state.loading && (
         <div className="mt-8 flex min-h-[50vh] items-center justify-center px-4 text-center">
           <div>
             <h2 className="max-w-3xl bg-gradient-to-r from-storesight-primary via-storesight-accent to-storesight-accent-light bg-clip-text text-lg font-black leading-snug tracking-tight text-transparent sm:text-xl md:text-2xl">
