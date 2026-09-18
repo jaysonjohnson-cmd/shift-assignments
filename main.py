@@ -2049,7 +2049,23 @@ _REFILL_DEFAULT_RESPONSE_BUDGET = 120
 # first" against a budget alone would let whoever finishes first take every
 # large job at once. This caps that, leaving the rest for the next reviewer to
 # finish, and the batch is filled out with smaller jobs instead.
-_REFILL_MAX_LARGE_JOBS = 2
+_REFILL_MAX_LARGE_JOBS = 6
+
+# Scales the response budget for a top-up. Refills of 1-5 jobs left reviewers
+# looking at what reads as an empty queue, so a top-up hands out more work than
+# the original batch rather than exactly matching it.
+#
+# Applied only when selecting; the UNSCALED base is what gets stamped onto the
+# new chunk, so `batch_responses` keeps meaning "the original batch's total".
+#
+# In normal operation storing the scaled value would be harmless — the budget is
+# read back as a min() across all of the reviewer's docs, and the publish doc
+# survives the shift, so the base always wins. It matters in one case: a
+# surgical clear deletes a doc whose rows are all filtered out, so a reviewer
+# can be left holding only refill chunks, and a scaled value stamped on those
+# would then be re-scaled. The job ceiling still bounds the batch either way, so
+# the cost would be a heavier top-up, not an unbounded one.
+_REFILL_BUDGET_MULTIPLE = 1.5
 
 # Client behind the composer's "Storesight / Retail Pipeline only" filter.
 _RETAIL_PIPELINE_CLIENT = "retailpipeline@fieldagent.net"
@@ -2347,7 +2363,10 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         # Response budget for this batch, in priority order: the total stamped at
         # publish, else the responses currently sitting in the reviewer's queue,
         # else a default for legacy snapshots.
-        budget = batch_responses or current_queue_responses or _REFILL_DEFAULT_RESPONSE_BUDGET
+        base_budget = (
+            batch_responses or current_queue_responses or _REFILL_DEFAULT_RESPONSE_BUDGET
+        )
+        budget = int(base_budget * _REFILL_BUDGET_MULTIPLE)
 
         try:
             # Read the background-warmed cache rather than forcing a fresh fetch.
@@ -2516,7 +2535,8 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                     "part": next_part + idx,
                     "part_count": next_part + len(chunks),
                     "batch_size": count,
-                    "batch_responses": budget,
+                    # The base, never `budget` — see _REFILL_BUDGET_MULTIPLE.
+                    "batch_responses": base_budget,
                 }
                 try:
                     r = internal_api.post(_STORAGE_PATH, json={"data": doc})

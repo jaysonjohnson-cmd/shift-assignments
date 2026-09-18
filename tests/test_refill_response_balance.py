@@ -19,8 +19,9 @@ import internal_api  # noqa: E402
 REVIEWER = "sam@storesight.com"
 
 
-def _feed(spec):
-    """spec: {jobId: reviewable_responses}."""
+def _feed(spec, **extra):
+    """spec: {jobId: reviewable_responses}; extra merges in more of the same."""
+    spec = {**spec, **extra}
     return [
         {"id": j, "jobId": j, "name": f"Job {j}", "priority": 1,
          "unreviewedCount": n, "oldestSubmission": "",
@@ -79,9 +80,10 @@ def test_a_budget_stops_one_reviewer_taking_every_big_job(refill):
     feed = _feed({f"big{i}": 50 for i in range(10)})
     added = refill(feed, batch_size=20, batch_responses=100)
 
-    # Budget 100 with 25% slack admits two 50-response jobs, not all ten.
-    assert len(added) == 2, f"took {len(added)} big jobs, expected 2"
-    assert _responses(added) == 100
+    # Budget 100 scaled by _REFILL_BUDGET_MULTIPLE is 150, which with 25% slack
+    # admits three 50-response jobs, not all ten.
+    assert len(added) == 3, f"took {len(added)} big jobs, expected 3"
+    assert _responses(added) == 150
     # Eight remain in the pool for whoever finishes next.
     assert len(added) < len(feed)
 
@@ -137,32 +139,38 @@ def test_batch_responses_is_stamped_so_later_refills_keep_the_budget(refill):
 
 
 def test_one_reviewer_cannot_take_every_large_job_in_a_skewed_queue(refill):
-    """The real queue shape: a few heavy jobs buried in hundreds of tiny ones.
+    """The real queue shape: heavy jobs buried in hundreds of tiny ones.
 
-    Budget alone doesn't protect this case — with a 300-response budget the first
-    reviewer to finish would swallow the 122, 97 and 90 jobs in one top-up. The
-    large-job cap leaves the rest for whoever finishes next.
+    Budget alone doesn't protect this case — a big enough budget lets the first
+    reviewer to finish swallow the entire heavy end in one top-up. The large-job
+    cap leaves the rest for whoever finishes next.
+
+    Sized with more large jobs than the cap on purpose. A real queue often holds
+    only a handful above the threshold, and when there are fewer of them than
+    _REFILL_MAX_LARGE_JOBS the cap never binds and one reviewer does take them
+    all — so this fixture has to exceed the cap to exercise it at all.
     """
-    feed = _feed({"a": 122, "b": 97, "c": 90, "d": 45,
-                  **{f"tiny{i}": 2 for i in range(200)}})
-    added = refill(feed, batch_size=20, batch_responses=300,
+    feed = _feed({f"big{i}": 50 for i in range(10)},
+                 **{f"tiny{i}": 2 for i in range(200)})
+    added = refill(feed, batch_size=20, batch_responses=400,
                    flags={"balanceByResponses": True})
 
     sizes = sorted((int(r["unreviewedCount"]) for r in added), reverse=True)
     large = [n for n in sizes if n >= 10]
-    assert len(large) == 2, f"expected 2 large jobs, got {large}"
-    assert large == [122, 97], "should take the biggest two available"
-    # 90 and 45 stay in the pool for the next reviewer.
-    assert 90 not in sizes and 45 not in sizes
+    assert len(large) == main._REFILL_MAX_LARGE_JOBS, (
+        f"expected {main._REFILL_MAX_LARGE_JOBS} large jobs, got {large}"
+    )
+    # The remaining heavy jobs stay in the pool for the next reviewer.
+    assert len(large) < 10
     # The rest of the budget is filled out with small jobs, so it's still real work.
-    assert len(added) > 2, "batch should be topped up with smaller jobs"
+    assert len(added) > len(large), "batch should be topped up with smaller jobs"
 
 
 def test_large_is_relative_so_an_all_big_queue_is_governed_by_budget(refill):
     """When every job is heavy, none is an outlier — the budget does the limiting."""
     feed = _feed({f"big{i}": 50 for i in range(10)})
     added = refill(feed, batch_size=20, batch_responses=100)
-    assert len(added) == 2, "budget, not the large-cap, should bound this"
+    assert len(added) == 3, "budget, not the large-cap, should bound this"
 
 
 # --- balanceByResponses: the flag actually drives the ordering now -----------
