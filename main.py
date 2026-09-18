@@ -2044,13 +2044,6 @@ _REFILL_OVERSHOOT = 0.25
 # and whose rows carry no usable counts.
 _REFILL_DEFAULT_RESPONSE_BUDGET = 120
 
-# Floor on how many jobs a top-up hands out. The response budget alone could
-# satisfy a whole batch with 2-3 heavy jobs, which reads as an empty queue to a
-# reviewer even though the workload matches. Below this floor nothing blocks a
-# pick — neither the budget nor the large-job cap — so a reviewer always gets a
-# workable queue; past it the budget governs again.
-_REFILL_MIN_JOBS = 10
-
 # Most large jobs one top-up may take. The queue is heavily skewed — typically a
 # few hundred jobs of 1-2 responses and only a handful above 45 — so "biggest
 # first" against a budget alone would let whoever finishes first take every
@@ -2482,13 +2475,8 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         fresh = []
         responses_added = 0
         large_taken = 0
-        # The floor outranks the reviewer's original job count too, so a small
-        # first batch doesn't cap every later top-up below it.
-        # The floor outranks the reviewer's original job count too, so a small
-        # first batch doesn't cap every later top-up below it.
-        ceiling = max(count, _REFILL_MIN_JOBS)
         for r, k, reviewable in eligible:
-            if len(fresh) >= ceiling:
+            if len(fresh) >= count:
                 break
             is_large = reviewable >= large_threshold
             # Hand out only a couple of large jobs per top-up, so one reviewer
@@ -2506,27 +2494,6 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                 large_taken += 1
             if responses_added >= budget:
                 break
-
-        # Second pass to the floor. The budget and the large-job cap together can
-        # hand back a queue of 2-3 heavy jobs, which reads as empty to a reviewer
-        # even though the workload matches — so top up from whatever is left,
-        # ignoring both limits.
-        #
-        # Deliberately a SECOND pass rather than relaxing the rules inside the
-        # first: with "biggest first" ordering, letting the cap yield up front
-        # would hand the earliest finisher the ten heaviest jobs in the queue,
-        # which is the exact thing the cap exists to prevent. Running it after
-        # means the normal case is still shaped by the cap, and only a genuinely
-        # short batch reaches past it.
-        if len(fresh) < _REFILL_MIN_JOBS:
-            for r, k, reviewable in eligible:
-                if len(fresh) >= _REFILL_MIN_JOBS:
-                    break
-                if k in assigned_keys:
-                    continue
-                fresh.append(_compact_row(r))
-                assigned_keys.add(k)
-                responses_added += reviewable
         logging.warning(
             "auto-refill for %s: pool=%d, eligible=%d, skipped: %s -> %d jobs / %d responses "
             "(budget=%d, job ceiling=%d, large>=%d taken=%d)",

@@ -280,24 +280,6 @@ via `max_age` rather than forcing a fetch. If you add a caller, prefer
 `fetch_prioritized_jobs()` or a `max_age=` bound; reserve `use_cache=False` for
 an explicit user-driven Refresh.
 
-**How big a top-up is.** Auto-refill is bounded by *responses*, not job count:
-each reviewer's docs carry `batch_responses` (their original batch's total) and
-the refill stops once it's met. That's deliberate — stopping at a job count made
-20 two-response jobs a "full batch".
-
-Two guards shape what gets picked: at most `_REFILL_MAX_LARGE_JOBS` jobs at or
-above 3x the pool median, so the first reviewer to finish can't drain the heavy
-end, and `_REFILL_MIN_JOBS` as a floor on the job count.
-
-The floor runs as a **second pass**, after the budget and large-job cap have had
-their say, and it outranks both — plus the reviewer's original `batch_size`, so
-a small first batch doesn't cap every later top-up. Order matters here: with
-"biggest first" ordering, relaxing the cap inside the main loop instead would
-hand the earliest finisher the ten heaviest jobs in the queue, which is the
-exact thing the cap exists to prevent. The cost is that a pool of nothing but
-large jobs can top someone up well past their usual load — accepted, because a
-2-job queue reads as empty and the reviewer goes idle.
-
 **Rollback:** Use Cloud Run revision traffic splitting in GCP console.
 
 ---

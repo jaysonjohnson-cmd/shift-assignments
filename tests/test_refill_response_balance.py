@@ -74,22 +74,16 @@ def test_takes_big_jobs_before_small_ones(refill):
     assert [r["jobId"] for r in added][:2] == ["big1", "big2"]
 
 
-def test_floor_overrides_the_budget_when_only_big_jobs_are_left(refill):
-    """An all-heavy pool must still yield a workable queue, not two jobs.
-
-    The budget alone admits two 50-response jobs. A reviewer opening a 2-job
-    queue reads it as empty and goes idle, so the floor takes precedence.
-
-    The cost is real and accepted: this hands out 500 responses against a 100
-    budget, so a pool of nothing but large jobs tops people up well past their
-    usual load. That only happens when small jobs have run out — the pass that
-    fills to the floor runs after the budget and large-job cap have had theirs.
-    """
+def test_a_budget_stops_one_reviewer_taking_every_big_job(refill):
+    """Big-first must not mean one reviewer drains the entire heavy end."""
     feed = _feed({f"big{i}": 50 for i in range(10)})
     added = refill(feed, batch_size=20, batch_responses=100)
 
-    assert len(added) == main._REFILL_MIN_JOBS
-    assert _responses(added) == 500
+    # Budget 100 with 25% slack admits two 50-response jobs, not all ten.
+    assert len(added) == 2, f"took {len(added)} big jobs, expected 2"
+    assert _responses(added) == 100
+    # Eight remain in the pool for whoever finishes next.
+    assert len(added) < len(feed)
 
 
 def test_small_jobs_yield_more_of_them_not_less_work(refill):
@@ -164,14 +158,11 @@ def test_one_reviewer_cannot_take_every_large_job_in_a_skewed_queue(refill):
     assert len(added) > 2, "batch should be topped up with smaller jobs"
 
 
-def test_floor_is_a_floor_not_take_everything(refill):
-    """Reaching the minimum stops the top-up; the surplus stays for the team."""
-    feed = _feed({f"big{i}": 50 for i in range(25)})
+def test_large_is_relative_so_an_all_big_queue_is_governed_by_budget(refill):
+    """When every job is heavy, none is an outlier — the budget does the limiting."""
+    feed = _feed({f"big{i}": 50 for i in range(10)})
     added = refill(feed, batch_size=20, batch_responses=100)
-
-    assert len(added) == main._REFILL_MIN_JOBS
-    # The other 15 are left in the pool for whoever finishes next.
-    assert len(added) < len(feed)
+    assert len(added) == 2, "budget, not the large-cap, should bound this"
 
 
 # --- balanceByResponses: the flag actually drives the ordering now -----------
@@ -284,26 +275,3 @@ def test_special_job_types_off_leaves_the_pool_alone(refill):
     added = refill(feed, batch_size=20, batch_responses=300, flags={})
 
     assert sorted(r["jobId"] for r in added) == ["ordinary", "special"]
-
-
-def test_a_small_budget_still_yields_a_workable_queue(refill):
-    """The reported complaint: top-ups of 1-5 jobs while the feed is full.
-
-    A reviewer whose original batch was light gets a small response budget, and
-    heavy jobs then fill it almost immediately — a 60-response budget is spent
-    after two 30-response jobs even though hundreds of jobs are available. The
-    floor makes the top-up a usable queue regardless of how the budget lands.
-    """
-    feed = _feed({"h1": 30, "h2": 30, **{f"s{i}": 3 for i in range(50)}})
-    added = refill(feed, batch_size=20, batch_responses=60,
-                   flags={"balanceByResponses": True})
-
-    assert len(added) >= main._REFILL_MIN_JOBS, (
-        f"expected at least {main._REFILL_MIN_JOBS} jobs, got {len(added)}"
-    )
-
-
-def test_the_floor_does_not_override_an_empty_pool(refill):
-    """Nothing eligible still means nothing — the floor can't invent work."""
-    added = refill(_feed({}), batch_size=20, batch_responses=100)
-    assert added == []

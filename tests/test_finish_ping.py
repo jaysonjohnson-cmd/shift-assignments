@@ -204,35 +204,30 @@ def test_auto_refill_excludes_already_assigned(monkeypatch):
 
     added = main._auto_refill_reviewer("snap1", "sam@storesight.com", 2)
 
-    # J1-J3 are on someone's queue, so only J4-J6 are reachable. The job floor
-    # takes all three; the point here is that the assigned ones stay excluded.
-    assert [r["jobId"] for r in added] == ["J4", "J5", "J6"]
+    # J1-J3 are taken; the next two unassigned are J4, J5.
+    assert [r["jobId"] for r in added] == ["J4", "J5"]
     # Stored includes lock doc + reviewer_shift chunk. Filter for reviewer_shift docs.
     shift_docs_stored = [s for s in stored if s.get("data", {}).get("kind") == "reviewer_shift"]
     assert len(shift_docs_stored) == 1
     doc = shift_docs_stored[0]["data"]
     assert doc["reviewer_email"] == "sam@storesight.com"
     assert doc["part"] == 1
-    assert [r["jobId"] for r in doc["rows"]] == ["J4", "J5", "J6"]
+    assert [r["jobId"] for r in doc["rows"]] == ["J4", "J5"]
 
 
 def test_auto_refill_uses_stored_batch_size_not_grown_queue(monkeypatch):
     """The refill batch is the original allotment (batch_size), not the
     accumulated queue — so finishing never doubles the next refill. Sam started
-    with a batch of 12 but has grown to 24 assigned jobs; the refill must add 12.
-
-    Sized above _REFILL_MIN_JOBS on purpose: below the floor the allotment is
-    not what bounds the batch, so a smaller fixture would pass without
-    exercising this invariant at all."""
+    with a batch of 2 but has grown to 4 assigned jobs; the refill must add 2."""
     shift_docs = [
         {"id": "d0", "data": {"kind": "reviewer_shift", "shift_snapshot_id": "snap1",
                               "reviewer_email": "sam@storesight.com",
-                              "rows": [{"jobId": f"J{i}"} for i in range(1, 13)],
-                              "part": 0, "batch_size": 12}},
+                              "rows": [{"jobId": "J1"}, {"jobId": "J2"}],
+                              "part": 0, "batch_size": 2}},
         {"id": "d1", "data": {"kind": "reviewer_shift", "shift_snapshot_id": "snap1",
                               "reviewer_email": "sam@storesight.com",
-                              "rows": [{"jobId": f"J{i}"} for i in range(13, 25)],
-                              "part": 1, "batch_size": 12}},
+                              "rows": [{"jobId": "J3"}, {"jobId": "J4"}],
+                              "part": 1, "batch_size": 2}},
     ]
     def mock_list_docs(kind, force=False):
         return shift_docs if kind == "reviewer_shift" else []
@@ -240,23 +235,21 @@ def test_auto_refill_uses_stored_batch_size_not_grown_queue(monkeypatch):
     feed = [
         {"id": j, "jobId": j, "projectId": f"p{j}", "priority": 1, "name": j,
          "unreviewedCount": 3, "oldestSubmission": ""}
-        for j in [f"J{i}" for i in range(1, 61)]
+        for j in ["J1", "J2", "J3", "J4", "J5", "J6", "J7"]
     ]
     monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda *a, **k: feed)
     stored = []
     monkeypatch.setattr(internal_api, "post", lambda path, json=None: stored.append(json) or {"data": {"id": "new"}})
 
-    # fallback_count is 24 (grown queue) — but stored batch_size=12 must win.
-    added = main._auto_refill_reviewer("snap1", "sam@storesight.com", 24)
+    # fallback_count is 4 (grown queue) — but stored batch_size=2 must win.
+    added = main._auto_refill_reviewer("snap1", "sam@storesight.com", 4)
 
-    assert len(added) == 12, f"expected the stored allotment of 12, got {len(added)}"
-    # J1-J24 are already assigned, so the fresh ones start at J25.
-    assert [r["jobId"] for r in added] == [f"J{i}" for i in range(25, 37)]
+    assert [r["jobId"] for r in added] == ["J5", "J6"]  # 2 fresh, not 4
     # Filter for reviewer_shift docs (skip lock doc).
     shift_docs_stored = [s for s in stored if s.get("data", {}).get("kind") == "reviewer_shift"]
     doc = shift_docs_stored[0]["data"]
     assert doc["part"] == 2
-    assert doc["batch_size"] == 12  # persisted onto the refill chunk
+    assert doc["batch_size"] == 2  # persisted onto the refill chunk
 
 
 def test_auto_refill_returns_empty_when_feed_exhausted(monkeypatch):
