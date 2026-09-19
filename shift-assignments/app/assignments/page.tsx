@@ -68,19 +68,17 @@ export default function AssignmentsPage() {
 
   useReviewerSync();
 
-  // Deep links in: ?aged=1 from Old Submissions opens the composer with the aged
-  // filter on, ?view=overview from the home tile jumps straight to Current
-  // Assignments. This view isn't its own route, so a query param is how the
-  // menu gets skipped.
+  // Auto-open the composer with the aged filter when arriving from Old
+  // Submissions. Safe as a mount-only effect because ?aged=1 always comes from
+  // a different route, so this component is genuinely remounted. Don't add a
+  // same-route deep link here — Current Assignments was one, and navigating
+  // back to plain /assignments left `mode` stuck, hiding the assign menu.
+  // Give it its own route instead, the way /assignments/overview does.
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("aged") === "1") {
+    if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("aged") === "1") {
       setPrioritizeAged(true);
       setShowOptions(true);
       setMode({ kind: "shift", draft: emptyShiftDraft() });
-    } else if (params.get("view") === "overview") {
-      setMode({ kind: "overview" });
     }
   }, []);
 

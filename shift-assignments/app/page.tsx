@@ -41,7 +41,7 @@ const tiles: Tile[] = [
     ),
   },
   {
-    href: "/assignments?view=overview",
+    href: "/assignments/overview",
     title: "Current Assignments",
     description:
       "Live check-in — who's on shift right now and how far they've gotten.",
