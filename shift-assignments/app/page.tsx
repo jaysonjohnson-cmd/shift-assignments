@@ -60,6 +60,30 @@ const tiles: Tile[] = [
     ),
   },
   {
+    href: "/assignments?view=overview",
+    title: "Current Assignments",
+    description:
+      "Live check-in — who's on shift right now and how far they've gotten.",
+    accent: "from-storesight-sky/20 to-storesight-violet/10",
+    enabledFor: ["admin"],
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" className={ICON_CLASS} aria-hidden>
+        <path
+          d="M3 20h18"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+        />
+        <path
+          d="M7 20v-6M12 20V6M17 20v-9"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+        />
+      </svg>
+    ),
+  },
+  {
     href: "/settings",
     title: "Settings",
     description:

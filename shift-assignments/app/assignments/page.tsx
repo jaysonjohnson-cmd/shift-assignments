@@ -68,12 +68,19 @@ export default function AssignmentsPage() {
 
   useReviewerSync();
 
-  // Auto-open composer with aged filter when coming from the Old Submissions page
+  // Deep links in: ?aged=1 from Old Submissions opens the composer with the aged
+  // filter on, ?view=overview from the home tile jumps straight to Current
+  // Assignments. This view isn't its own route, so a query param is how the
+  // menu gets skipped.
   useEffect(() => {
-    if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("aged") === "1") {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("aged") === "1") {
       setPrioritizeAged(true);
       setShowOptions(true);
       setMode({ kind: "shift", draft: emptyShiftDraft() });
+    } else if (params.get("view") === "overview") {
+      setMode({ kind: "overview" });
     }
   }, []);
 
