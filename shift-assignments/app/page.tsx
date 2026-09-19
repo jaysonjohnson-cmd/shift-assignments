@@ -41,25 +41,6 @@ const tiles: Tile[] = [
     ),
   },
   {
-    href: "/team-assignments",
-    title: "Team Assignments",
-    description:
-      "View all jobs assigned to the team in the current shift with detailed status.",
-    accent: "from-storesight-violet/15 to-storesight-lilac/15",
-    enabledFor: ["admin", "lead", "viewer"],
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" className={ICON_CLASS} aria-hidden>
-        <path
-          d="M17 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2Z"
-          stroke="currentColor"
-          strokeWidth="1.6"
-          strokeLinejoin="round"
-        />
-        <path d="M9 10h6M9 14h6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-      </svg>
-    ),
-  },
-  {
     href: "/assignments?view=overview",
     title: "Current Assignments",
     description:
@@ -84,21 +65,21 @@ const tiles: Tile[] = [
     ),
   },
   {
-    href: "/settings",
-    title: "Settings",
+    href: "/team-assignments",
+    title: "Team Assignments",
     description:
-      "Manage the roster of reviewers and admins who can sign in and be assigned shifts.",
-    accent: "from-storesight-lilac/15 to-storesight-violet/15",
-    enabledFor: ["admin", "lead", "reviewer", "viewer"],
+      "View all jobs assigned to the team in the current shift with detailed status.",
+    accent: "from-storesight-violet/15 to-storesight-lilac/15",
+    enabledFor: ["admin", "lead", "viewer"],
     icon: (
       <svg viewBox="0 0 24 24" fill="none" className={ICON_CLASS} aria-hidden>
-        <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.6" />
         <path
-          d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3h.2a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8v.2a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z"
+          d="M17 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2Z"
           stroke="currentColor"
-          strokeWidth="1.4"
+          strokeWidth="1.6"
           strokeLinejoin="round"
         />
+        <path d="M9 10h6M9 14h6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
       </svg>
     ),
   },
@@ -135,6 +116,25 @@ const tiles: Tile[] = [
       </svg>
     ),
   },
+  {
+    href: "/settings",
+    title: "Settings",
+    description:
+      "Manage the roster of reviewers and admins who can sign in and be assigned shifts.",
+    accent: "from-storesight-lilac/15 to-storesight-violet/15",
+    enabledFor: ["admin", "lead", "reviewer", "viewer"],
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" className={ICON_CLASS} aria-hidden>
+        <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.6" />
+        <path
+          d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3h.2a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8v.2a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinejoin="round"
+        />
+      </svg>
+    ),
+  },
 ];
 
 export default function HomePage() {
@@ -148,6 +148,50 @@ export default function HomePage() {
   })();
 
   const visibleTiles = tiles.filter((t) => t.enabledFor.includes(role));
+  // Settings sits last, after Progress & Leaderboard. The tracker isn't a plain
+  // link tile so it can't live in the `tiles` array — pulling Settings out is
+  // what lets the tracker sit ahead of it in the grid.
+  const settingsTile = visibleTiles.find((t) => t.href === "/settings");
+  const leadingTiles = visibleTiles.filter((t) => t !== settingsTile);
+  const showTracker = (role === "admin" || role === "lead") && !loading;
+
+  const renderTile = (tile: Tile) => {
+    const content = (
+      <div
+        className={`group relative flex h-full flex-col overflow-hidden rounded-2xl border border-storesight-border bg-gradient-to-br ${tile.accent} p-5 transition dark:border-storesight-border-dark ${
+          tile.comingSoon
+            ? "opacity-70"
+            : "hover:-translate-y-0.5 hover:border-storesight-accent/60 hover:shadow-lg"
+        }`}
+      >
+        <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-storesight-surface text-storesight-primary shadow-sm dark:bg-storesight-surface-raised-dark dark:text-storesight-accent-light">
+          {tile.icon}
+        </div>
+        <div className="flex items-center gap-2">
+          <h2 className="text-base font-semibold text-storesight-ink dark:text-storesight-ink-dark">
+            {tile.title}
+          </h2>
+          {tile.comingSoon && (
+            <span className="rounded-full bg-storesight-bg-tint px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-storesight-primary dark:bg-storesight-accent/25 dark:text-storesight-accent-light">
+              Soon
+            </span>
+          )}
+        </div>
+        <p className="mt-2 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+          {tile.description}
+        </p>
+      </div>
+    );
+    return tile.comingSoon ? (
+      <div key={tile.href} aria-disabled>
+        {content}
+      </div>
+    ) : (
+      <Link key={tile.href} href={tile.href}>
+        {content}
+      </Link>
+    );
+  };
 
   return (
     <div className="mx-auto w-full max-w-6xl flex-1 px-6 py-10">
@@ -161,44 +205,8 @@ export default function HomePage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {visibleTiles.map((tile) => {
-          const content = (
-            <div
-              className={`group relative flex h-full flex-col overflow-hidden rounded-2xl border border-storesight-border bg-gradient-to-br ${tile.accent} p-5 transition dark:border-storesight-border-dark ${
-                tile.comingSoon
-                  ? "opacity-70"
-                  : "hover:-translate-y-0.5 hover:border-storesight-accent/60 hover:shadow-lg"
-              }`}
-            >
-              <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-storesight-surface text-storesight-primary shadow-sm dark:bg-storesight-surface-raised-dark dark:text-storesight-accent-light">
-                {tile.icon}
-              </div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-base font-semibold text-storesight-ink dark:text-storesight-ink-dark">
-                  {tile.title}
-                </h2>
-                {tile.comingSoon && (
-                  <span className="rounded-full bg-storesight-bg-tint px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-storesight-primary dark:bg-storesight-accent/25 dark:text-storesight-accent-light">
-                    Soon
-                  </span>
-                )}
-              </div>
-              <p className="mt-2 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-                {tile.description}
-              </p>
-            </div>
-          );
-          return tile.comingSoon ? (
-            <div key={tile.href} aria-disabled>
-              {content}
-            </div>
-          ) : (
-            <Link key={tile.href} href={tile.href}>
-              {content}
-            </Link>
-          );
-        })}
-        {(role === "admin" || role === "lead") && !loading && (
+        {leadingTiles.map(renderTile)}
+        {showTracker && (
           <div className={trackerExpanded ? "sm:col-span-2 lg:col-span-3" : ""}>
             <ProgressTrackerTile
               expanded={trackerExpanded}
@@ -206,6 +214,7 @@ export default function HomePage() {
             />
           </div>
         )}
+        {settingsTile && renderTile(settingsTile)}
       </div>
 
       {role === "viewer" && !loading && (
