@@ -292,16 +292,16 @@ via `max_age` rather than forcing a fetch. If you add a caller, prefer
 `fetch_prioritized_jobs()` or a `max_age=` bound; reserve `use_cache=False` for
 an explicit user-driven Refresh.
 
-**How big a top-up is.** Auto-refill is bounded by *responses*, not job count:
-each reviewer's docs carry `batch_responses` (their original batch's total),
-scaled by `_REFILL_BUDGET_MULTIPLE`, and the refill stops once that's met.
-Bounding by response count is deliberate — stopping at a job count made 20
-two-response jobs a "full batch". The reviewer's original `batch_size` stays on
-as a hard ceiling on the job count, so a top-up can't exceed their allotment
-however the budget lands.
+**How big a top-up is.** A refill fills to the reviewer's own allotment —
+`batch_size`, the job count they were given at publish. Heaviest first (when
+"Balance by responses" is on), then progressively smaller until the count is
+met.
 
-Only the unscaled base is stamped onto a refill chunk, so `batch_responses`
-keeps meaning "the original batch's total" rather than drifting upward.
+It used to fill to a *response* budget instead, sized from the original batch's
+total. That reads well in theory and failed in practice: two heavy jobs spent
+the whole budget, so reviewers were topped up with 2 jobs while the feed still
+held hundreds, and a 2-job queue reads as empty. `batch_responses` is still
+stamped on the docs but no longer bounds anything.
 
 **Keeping the heavy end spread.** Big jobs are capped two ways, and the smaller
 wins: `_REFILL_MAX_LARGE_JOBS` as an absolute ceiling, and
@@ -312,6 +312,10 @@ large jobs than the cap, which is the common case here (a few hundred tiny jobs
 and only a handful of heavy ones). With the share, the first reviewer to finish
 can never take the whole heavy end regardless of queue shape. It always lets at
 least one through, or a lone large job would never be assigned to anyone.
+
+Note these two interact: the batch always reaches its job count, but the share
+decides how much of it is heavy work. With three big jobs in the pool a 0.5
+share admits one, and the other nineteen slots fill with small jobs.
 
 **Rollback:** Use Cloud Run revision traffic splitting in GCP console.
 

@@ -2040,15 +2040,6 @@ def _cleanup_orphaned_refill_locks(max_age_seconds=600):
 # stalled warmer forces a real fetch rather than assigning from a stale ranking.
 _REFILL_MAX_FEED_AGE = 120
 
-# How far a refill may exceed its response budget to fit one more job. Without
-# some slack the last pick is almost always rejected and batches land well under
-# budget; too much and "budget" stops meaning anything.
-_REFILL_OVERSHOOT = 0.25
-
-# Fallback response budget for a legacy snapshot that predates batch_responses
-# and whose rows carry no usable counts.
-_REFILL_DEFAULT_RESPONSE_BUDGET = 120
-
 # Most large jobs one top-up may take. The queue is heavily skewed — typically a
 # few hundred jobs of 1-2 responses and only a handful above 45 — so "biggest
 # first" against a budget alone would let whoever finishes first take every
@@ -2062,22 +2053,6 @@ _REFILL_MAX_LARGE_JOBS = 4
 # every one of them. A share keeps heavy work spread no matter the queue shape.
 # Always lets at least one through, so a lone large job isn't stranded forever.
 _REFILL_MAX_LARGE_SHARE = 0.5
-
-# Scales the response budget for a top-up. Refills of 1-5 jobs left reviewers
-# looking at what reads as an empty queue, so a top-up hands out more work than
-# the original batch rather than exactly matching it.
-#
-# Applied only when selecting; the UNSCALED base is what gets stamped onto the
-# new chunk, so `batch_responses` keeps meaning "the original batch's total".
-#
-# In normal operation storing the scaled value would be harmless — the budget is
-# read back as a min() across all of the reviewer's docs, and the publish doc
-# survives the shift, so the base always wins. It matters in one case: a
-# surgical clear deletes a doc whose rows are all filtered out, so a reviewer
-# can be left holding only refill chunks, and a scaled value stamped on those
-# would then be re-scaled. The job ceiling still bounds the batch either way, so
-# the cost would be a heavier top-up, not an unbounded one.
-_REFILL_BUDGET_MULTIPLE = 1.5
 
 # Client behind the composer's "Storesight / Retail Pipeline only" filter.
 _RETAIL_PIPELINE_CLIENT = "retailpipeline@fieldagent.net"
@@ -2372,13 +2347,11 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         if count <= 0:
             return []
 
-        # Response budget for this batch, in priority order: the total stamped at
-        # publish, else the responses currently sitting in the reviewer's queue,
-        # else a default for legacy snapshots.
-        base_budget = (
-            batch_responses or current_queue_responses or _REFILL_DEFAULT_RESPONSE_BUDGET
-        )
-        budget = int(base_budget * _REFILL_BUDGET_MULTIPLE)
+        # Recorded on the new chunk for continuity; it no longer bounds the
+        # batch. A response budget used to, and a couple of heavy jobs would
+        # spend it immediately — reviewers were topped up with 2 jobs while the
+        # feed still held hundreds. The job count is the target now.
+        base_responses = batch_responses or current_queue_responses or 0
 
         try:
             # Read the background-warmed cache rather than forcing a fresh fetch.
@@ -2519,22 +2492,16 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             # can't take the whole heavy end of a skewed queue.
             if is_large and large_taken >= large_cap:
                 continue
-            # Always take at least one job, so a reviewer whose previous batch was
-            # small isn't locked out of a queue made only of large jobs.
-            if fresh and responses_added + reviewable > budget * (1 + _REFILL_OVERSHOOT):
-                continue
             fresh.append(_compact_row(r))
             assigned_keys.add(k)  # guard against dupes within the same feed
             responses_added += reviewable
             if is_large:
                 large_taken += 1
-            if responses_added >= budget:
-                break
         logging.warning(
             "auto-refill for %s: pool=%d, eligible=%d, skipped: %s -> %d jobs / %d responses "
-            "(budget=%d, job ceiling=%d, large>=%d avail=%d cap=%d taken=%d)",
+            "(target=%d, large>=%d avail=%d cap=%d taken=%d)",
             email, len(pool), len(eligible), skipped_reasons, len(fresh), responses_added,
-            budget, count, large_threshold, available_large, large_cap, large_taken,
+            count, large_threshold, available_large, large_cap, large_taken,
         )
         if not fresh:
             logging.warning("auto-refill: no new jobs left for %s (reasons: %s)", email, skipped_reasons)
@@ -2552,8 +2519,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                     "part": next_part + idx,
                     "part_count": next_part + len(chunks),
                     "batch_size": count,
-                    # The base, never `budget` — see _REFILL_BUDGET_MULTIPLE.
-                    "batch_responses": base_budget,
+                    "batch_responses": base_responses,
                 }
                 try:
                     r = internal_api.post(_STORAGE_PATH, json={"data": doc})

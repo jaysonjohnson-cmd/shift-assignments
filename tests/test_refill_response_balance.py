@@ -79,17 +79,25 @@ def test_takes_big_jobs_before_small_ones(refill):
     assert "big2" not in [r["jobId"] for r in added]
 
 
-def test_a_budget_stops_one_reviewer_taking_every_big_job(refill):
-    """Big-first must not mean one reviewer drains the entire heavy end."""
-    feed = _feed({f"big{i}": 50 for i in range(10)})
-    added = refill(feed, batch_size=20, batch_responses=100)
+def test_refill_fills_to_the_job_target(refill):
+    """The reported complaint: top-ups of ~2 jobs while the feed was full.
 
-    # Budget 100 scaled by _REFILL_BUDGET_MULTIPLE is 150, which with 25% slack
-    # admits three 50-response jobs, not all ten.
-    assert len(added) == 3, f"took {len(added)} big jobs, expected 3"
-    assert _responses(added) == 150
-    # Eight remain in the pool for whoever finishes next.
-    assert len(added) < len(feed)
+    A response budget used to stop the loop, and two heavy jobs spent it
+    outright. The reviewer's own allotment is the target now — heaviest first,
+    then progressively smaller, until the count is met.
+    """
+    feed = _feed({"h1": 80, "h2": 70, "h3": 60,
+                  **{f"s{i}": 3 for i in range(40)}})
+    added = refill(feed, batch_size=20, batch_responses=100,
+                   flags={"balanceByResponses": True})
+
+    assert len(added) == 20, f"expected a full batch of 20, got {len(added)}"
+    # Heaviest first, so the big work leads rather than trails.
+    assert added[0]["jobId"] == "h1"
+    # The rest is filled out with smaller jobs to reach the count. How many of
+    # the heavy three get in is _REFILL_MAX_LARGE_SHARE's call, not the
+    # batch size's — the point here is that the batch fills either way.
+    assert len(added) > sum(1 for r in added if int(r["unreviewedCount"]) >= 60)
 
 
 def test_small_jobs_yield_more_of_them_not_less_work(refill):
@@ -170,11 +178,17 @@ def test_one_reviewer_cannot_take_every_large_job_in_a_skewed_queue(refill):
     assert len(added) > len(large), "batch should be topped up with smaller jobs"
 
 
-def test_large_is_relative_so_an_all_big_queue_is_governed_by_budget(refill):
-    """When every job is heavy, none is an outlier — the budget does the limiting."""
+def test_a_short_pool_gives_what_it_has(refill):
+    """Fewer jobs available than the target means take them all, not a fraction.
+
+    Every job here is the same size, so none is an outlier and the large-job
+    cap never engages — "large" is relative to the pool median. With no budget
+    left to stop it, the batch is bounded only by what exists.
+    """
     feed = _feed({f"big{i}": 50 for i in range(10)})
     added = refill(feed, batch_size=20, batch_responses=100)
-    assert len(added) == 3, "budget, not the large-cap, should bound this"
+
+    assert len(added) == len(feed) == 10
 
 
 # --- balanceByResponses: the flag actually drives the ordering now -----------
