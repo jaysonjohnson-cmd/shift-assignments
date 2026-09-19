@@ -7,7 +7,7 @@ import { formatRelative } from "@/lib/relativeTime";
 import { TeamProgressDashboard } from "./TeamProgressDashboard";
 import { ProgressTrackerTile } from "./ProgressTrackerTile";
 
-type StartMode = { kind: "shift" } | { kind: "overview" };
+type StartMode = { kind: "shift" };
 
 const ICON_CLASS = "h-6 w-6";
 
@@ -27,18 +27,6 @@ const RefreshIcon = (
   <svg viewBox="0 0 24 24" fill="none" className={ICON_CLASS} aria-hidden>
     <path
       d="M4 10a8 8 0 0 1 14-4M20 14a8 8 0 0 1-14 4M20 4v6h-6M4 20v-6h6"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-  </svg>
-);
-
-const ChartIcon = (
-  <svg viewBox="0 0 24 24" fill="none" className={ICON_CLASS} aria-hidden>
-    <path
-      d="M4 20V10M10 20V4M16 20v-7M22 20H2"
       stroke="currentColor"
       strokeWidth="1.6"
       strokeLinecap="round"
@@ -275,13 +263,6 @@ export function AssignMenu({
             </div>
           </div>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <Tile
-              title="View Current Assignments"
-              description="Live check-in — who's on shift and how far they've gotten."
-              icon={ChartIcon}
-              accent="from-storesight-sky/40 to-storesight-sky/15"
-              onClick={() => onStart({ kind: "overview" })}
-            />
             <ProgressTrackerTile onClick={handleProgressClick} disabled={busy} />
             <Tile
               title="Clear tasks"

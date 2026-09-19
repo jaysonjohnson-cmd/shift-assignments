@@ -8,7 +8,6 @@ import {
   summarizeShift,
   type SummaryLine,
 } from "@/components/assign/AssignSummary";
-import { AssignmentsOverview } from "@/components/assign/AssignmentsOverview";
 import { useStore } from "@/lib/store";
 import { useUser } from "@/lib/useUser";
 import { useReviewerSync } from "@/lib/useReviewerSync";
@@ -32,7 +31,6 @@ type Mode =
       lines: SummaryLine[];
       overflow: number;
     }
-  | { kind: "overview" };
 
 export default function AssignmentsPage() {
   const rows = useStore((s) => s.rows);
@@ -259,16 +257,10 @@ export default function AssignmentsPage() {
         onStart={(m) => {
           if (m.kind === "shift") {
             setMode({ kind: "shift", draft: emptyShiftDraft() });
-          } else if (m.kind === "overview") {
-            setMode({ kind: "overview" });
           }
         }}
       />
     );
-  }
-
-  if (mode.kind === "overview") {
-    return <AssignmentsOverview onBack={cancel} />;
   }
 
   if (mode.kind === "summary") {
