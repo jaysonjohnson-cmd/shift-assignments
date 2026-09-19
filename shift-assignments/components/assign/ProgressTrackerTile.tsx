@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { getShiftOverview, getShiftJobs, getLeaderboard, type ReviewerJobs, type ShiftJob, type Leaderboard } from "@/lib/api";
 import { reviewerColor } from "@/lib/types";
+import { Podium } from "@/components/leaderboard/Podium";
 
 type TileProps = {
   /** Controlled expand state. When `onToggle` is provided the tile expands in place. */
@@ -111,7 +112,7 @@ export function ProgressTrackerTile({ expanded = false, onToggle, onClick, disab
 
           {/* Title */}
           <h3 className="text-lg font-semibold text-storesight-ink dark:text-storesight-ink-dark">
-            Progress Tracker
+            Progress &amp; Leaderboard
           </h3>
 
           {/* Description */}
@@ -160,6 +161,20 @@ export function ProgressTrackerTile({ expanded = false, onToggle, onClick, disab
                   Full leaderboard →
                 </Link>
               </div>
+              {leaders.reviewers.length >= 3 && (
+                <div className="mb-4">
+                  <Podium
+                    compact
+                    entries={leaders.reviewers.slice(0, 3).map((r) => ({
+                      email: r.email,
+                      name: r.name,
+                      color: r.color,
+                      count: r.total,
+                      responses: r.responses,
+                    }))}
+                  />
+                </div>
+              )}
               <div className="flex flex-col gap-2">
                 {leaders.reviewers.slice(0, 5).map((r, i) => {
                   const c = reviewerColor({ color: r.color ?? undefined, email: r.email });

@@ -5,16 +5,7 @@ import Link from "next/link";
 import { getLeaderboard, type Leaderboard, type LeaderboardReviewer } from "@/lib/api";
 import { useUser } from "@/lib/useUser";
 import { reviewerColor } from "@/lib/types";
-
-function initials(name: string): string {
-  return name
-    .split(" ")
-    .map((w) => w[0])
-    .filter(Boolean)
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-}
+import { MedalIcon, Podium, initials } from "@/components/leaderboard/Podium";
 
 function colorFor(r: LeaderboardReviewer): string {
   return reviewerColor({ color: r.color ?? undefined, email: r.email });
@@ -100,10 +91,6 @@ export default function LeaderboardPage() {
   const leader = reviewers[0];
   // Day highlighted in the daily chart: the selected day, else the best day.
   const highlightDay = view === "week" ? data?.best_day ?? -1 : view;
-  // Podium display order: 2nd, 1st, 3rd. barHeights is indexed by RANK
-  // (0 = winner → tallest), not by display position.
-  const podiumOrder = [1, 0, 2].filter((i) => top3[i]);
-  const barHeights = [130, 88, 66];
 
   return (
     <div className="mx-auto w-full max-w-4xl flex-1 px-6 py-8">
@@ -177,41 +164,15 @@ export default function LeaderboardPage() {
               <div className="mb-4 text-xs font-medium uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
                 Top of the board
               </div>
-              <div className="flex items-end justify-center gap-3" style={{ height: 190 }}>
-                {podiumOrder.map((idx) => {
-                  const r = top3[idx];
-                  const c = colorFor(r);
-                  return (
-                    <div key={r.email} className="flex w-20 flex-col items-center gap-1.5">
-                      <MedalIcon className="h-5 w-5" style={{ color: c }} rank={idx + 1} />
-                      <div
-                        className="flex h-10 w-10 items-center justify-center rounded-full text-sm font-medium text-white"
-                        style={{ backgroundColor: c }}
-                      >
-                        {initials(r.name)}
-                      </div>
-                      <div className="text-center text-xs leading-tight text-storesight-ink dark:text-storesight-ink-dark">
-                        {r.name.split(" ")[0]}
-                      </div>
-                      <div className="text-lg font-semibold leading-tight text-storesight-ink dark:text-storesight-ink-dark">
-                        {metric(r)}
-                      </div>
-                      <div className="text-[11px] leading-tight text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-                        {respMetric(r).toLocaleString()} resp
-                      </div>
-                      <div
-                        className="w-full rounded-t-lg"
-                        style={{
-                          height: barHeights[idx],
-                          backgroundColor: c,
-                          opacity: 0.18,
-                          borderBottom: `3px solid ${c}`,
-                        }}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
+              <Podium
+                entries={top3.map((r) => ({
+                  email: r.email,
+                  name: r.name,
+                  color: r.color,
+                  count: metric(r),
+                  responses: respMetric(r),
+                }))}
+              />
             </div>
 
             <div className="rounded-2xl border border-storesight-border bg-white p-5 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark">
@@ -333,34 +294,6 @@ function TrophyIcon({ className }: { className?: string }) {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-    </svg>
-  );
-}
-
-function MedalIcon({
-  className,
-  style,
-  rank,
-}: {
-  className?: string;
-  style?: React.CSSProperties;
-  rank: number;
-}) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className={className} style={style} aria-label={`rank ${rank}`} role="img">
-      <path d="M8 3 5 9 M16 3l3 6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-      <circle cx="12" cy="15" r="6" stroke="currentColor" strokeWidth="1.6" />
-      <text
-        x="12"
-        y="15"
-        textAnchor="middle"
-        dominantBaseline="central"
-        fontSize="7"
-        fontWeight="600"
-        fill="currentColor"
-      >
-        {rank}
-      </text>
     </svg>
   );
 }
