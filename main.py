@@ -2045,14 +2045,17 @@ _REFILL_MAX_FEED_AGE = 120
 # first" against a budget alone would let whoever finishes first take every
 # large job at once. This caps that, leaving the rest for the next reviewer to
 # finish, and the batch is filled out with smaller jobs instead.
-_REFILL_MAX_LARGE_JOBS = 4
+_REFILL_MAX_LARGE_JOBS = 3
 
-# ...and never more than this share of the large jobs actually on offer. A fixed
-# cap alone doesn't balance a small heavy end: when the pool holds fewer large
-# jobs than the cap, the cap never binds and the first reviewer to finish takes
-# every one of them. A share keeps heavy work spread no matter the queue shape.
-# Always lets at least one through, so a lone large job isn't stranded forever.
-_REFILL_MAX_LARGE_SHARE = 0.5
+# ...and never the last one on offer. A fixed cap alone doesn't balance a small
+# heavy end: when the pool holds fewer large jobs than the cap it never binds,
+# and the first reviewer to finish takes every one of them. Leaving one behind
+# keeps heavy work moving to the next person whatever the queue shape. A share
+# of the pool was tried first and cut too deep — with three heavy jobs on offer
+# a half-share admitted one, so batches were nearly all small work.
+#
+# The exception is a pool of exactly one: take it, or a lone large job sits
+# unassigned forever.
 
 # Client behind the composer's "Storesight / Retail Pipeline only" filter.
 _RETAIL_PIPELINE_CLIENT = "retailpipeline@fieldagent.net"
@@ -2477,10 +2480,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
 
         large_threshold = _large_job_threshold([n for _, _, n in eligible])
         available_large = sum(1 for _, _, n in eligible if n >= large_threshold)
-        large_cap = min(
-            _REFILL_MAX_LARGE_JOBS,
-            max(1, int(available_large * _REFILL_MAX_LARGE_SHARE)),
-        )
+        large_cap = min(_REFILL_MAX_LARGE_JOBS, max(1, available_large - 1))
         fresh = []
         responses_added = 0
         large_taken = 0

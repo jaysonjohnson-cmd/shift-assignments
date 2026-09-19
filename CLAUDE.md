@@ -303,19 +303,23 @@ the whole budget, so reviewers were topped up with 2 jobs while the feed still
 held hundreds, and a 2-job queue reads as empty. `batch_responses` is still
 stamped on the docs but no longer bounds anything.
 
-**Keeping the heavy end spread.** Big jobs are capped two ways, and the smaller
-wins: `_REFILL_MAX_LARGE_JOBS` as an absolute ceiling, and
-`_REFILL_MAX_LARGE_SHARE` as a fraction of the large jobs actually on offer
-("large" being 3x the pool median, floored). The share is the one that matters —
-a fixed cap alone silently stops protecting anything once the pool holds fewer
-large jobs than the cap, which is the common case here (a few hundred tiny jobs
-and only a handful of heavy ones). With the share, the first reviewer to finish
-can never take the whole heavy end regardless of queue shape. It always lets at
-least one through, or a lone large job would never be assigned to anyone.
+**Keeping the heavy end spread.** A top-up takes at most
+`_REFILL_MAX_LARGE_JOBS` big jobs ("large" being 3x the pool median, floored),
+and never the last one on offer. So three heavy jobs available means two go out
+and one waits for whoever finishes next; ten available still means three.
 
-Note these two interact: the batch always reaches its job count, but the share
-decides how much of it is heavy work. With three big jobs in the pool a 0.5
-share admits one, and the other nineteen slots fill with small jobs.
+The leave-one rule matters more than the constant. A fixed cap alone stops
+protecting anything once the pool holds fewer large jobs than the cap — the
+common shape here is a few hundred tiny jobs and only a handful of heavy ones,
+so the cap would never bind and the first reviewer to finish would take the lot.
+
+A *share* of the pool was tried instead and cut too deep: with three heavy jobs
+on offer a half-share admitted one, so batches came out nearly all small work.
+Leaving exactly one behind keeps heavy work moving without starving anyone. The
+exception is a pool of exactly one, which is taken rather than stranded.
+
+The job count always fills regardless — this only decides how much of the batch
+is heavy work.
 
 **Rollback:** Use Cloud Run revision traffic splitting in GCP console.
 
