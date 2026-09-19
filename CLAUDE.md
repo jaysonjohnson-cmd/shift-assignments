@@ -208,9 +208,14 @@ JWT_SIGNING_SECRET=test-secret pytest -v tests/
 ## Deployment
 
 **Trigger:** the internal tools platform's **Publish** action for this tool.
-Pushing to `main` on GitHub does **not** deploy — that was tried repeatedly on
-2026-09-18 and no build ever started. There is no build config in this repo;
-the platform owns the build and supplies the environment.
+Pushing to `main` on GitHub does **not** deploy on its own — that was tried
+repeatedly on 2026-09-18 and no build ever started. Commit and push as normal,
+then Publish.
+
+**`cloudbuild.yaml` must stay in the repo.** Publish refuses to run without it.
+It was deleted on 2026-09-18 on the assumption the platform owned the build;
+publishing broke immediately and restoring the file fixed it. Don't remove it
+again, however unused it looks from in here.
 
 **Service:** Cloud Run, storesight-internal-tools project
 
