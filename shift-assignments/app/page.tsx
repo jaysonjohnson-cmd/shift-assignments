@@ -148,11 +148,6 @@ export default function HomePage() {
   })();
 
   const visibleTiles = tiles.filter((t) => t.enabledFor.includes(role));
-  // Settings sits last, after Progress & Leaderboard. The tracker isn't a plain
-  // link tile so it can't live in the `tiles` array — pulling Settings out is
-  // what lets the tracker sit ahead of it in the grid.
-  const settingsTile = visibleTiles.find((t) => t.href === "/settings");
-  const leadingTiles = visibleTiles.filter((t) => t !== settingsTile);
   const showTracker = (role === "admin" || role === "lead") && !loading;
 
   const renderTile = (tile: Tile) => {
@@ -205,7 +200,9 @@ export default function HomePage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {leadingTiles.map(renderTile)}
+        {visibleTiles.map(renderTile)}
+        {/* Last on purpose: expanded it spans the full row and runs long, so
+            anything after it would be pushed well down the page. */}
         {showTracker && (
           <div className={trackerExpanded ? "sm:col-span-2 lg:col-span-3" : ""}>
             <ProgressTrackerTile
@@ -214,7 +211,6 @@ export default function HomePage() {
             />
           </div>
         )}
-        {settingsTile && renderTile(settingsTile)}
       </div>
 
       {role === "viewer" && !loading && (
