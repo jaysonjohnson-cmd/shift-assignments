@@ -303,20 +303,22 @@ the whole budget, so reviewers were topped up with 2 jobs while the feed still
 held hundreds, and a 2-job queue reads as empty. `batch_responses` is still
 stamped on the docs but no longer bounds anything.
 
-**Keeping the heavy end spread.** A top-up takes at most
-`_REFILL_MAX_LARGE_JOBS` big jobs ("large" being 3x the pool median, floored),
-and never the last one on offer. So three heavy jobs available means two go out
-and one waits for whoever finishes next; ten available still means three.
+**Keeping the heavy end spread.** A top-up takes at most the heavy jobs on
+offer divided by the reviewers on shift, capped at `_REFILL_MAX_LARGE_JOBS`
+("large" being 3x the pool median, floored). Ten heavy jobs across five
+reviewers is two each; six across three is two each; a lone reviewer gets the
+ceiling. At least one always gets through, or a single large job would sit
+unassigned forever.
 
-The leave-one rule matters more than the constant. A fixed cap alone stops
-protecting anything once the pool holds fewer large jobs than the cap — the
-common shape here is a few hundred tiny jobs and only a handful of heavy ones,
-so the cap would never bind and the first reviewer to finish would take the lot.
+The division is the part that matters. Refills run independently, one reviewer
+at a time, so a flat per-reviewer cap hands the early finishers everything heavy
+— measured at 3/3/3/1/0 across five reviewers with ten heavy jobs, a 3.4x
+workload spread. Dividing by the team brings that to 2/1/1/1/1.
 
-A *share* of the pool was tried instead and cut too deep: with three heavy jobs
-on offer a half-share admitted one, so batches came out nearly all small work.
-Leaving exactly one behind keeps heavy work moving without starving anyone. The
-exception is a pool of exactly one, which is taken rather than stranded.
+It isn't perfectly even: each refill divides the pool *remaining* at that
+moment, so the first finisher sees the fullest pool and takes slightly more, and
+some heavy jobs wait for the next round rather than going out immediately. That
+is the cost of refills being independent rather than planned as a batch.
 
 The job count always fills regardless — this only decides how much of the batch
 is heavy work.

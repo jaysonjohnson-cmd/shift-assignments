@@ -2045,17 +2045,16 @@ _REFILL_MAX_FEED_AGE = 120
 # first" against a budget alone would let whoever finishes first take every
 # large job at once. This caps that, leaving the rest for the next reviewer to
 # finish, and the batch is filled out with smaller jobs instead.
-_REFILL_MAX_LARGE_JOBS = 3
-
-# ...and never the last one on offer. A fixed cap alone doesn't balance a small
-# heavy end: when the pool holds fewer large jobs than the cap it never binds,
-# and the first reviewer to finish takes every one of them. Leaving one behind
-# keeps heavy work moving to the next person whatever the queue shape. A share
-# of the pool was tried first and cut too deep — with three heavy jobs on offer
-# a half-share admitted one, so batches were nearly all small work.
+# Ceiling on the large jobs one top-up may take. The actual cap is usually
+# lower: the heavy jobs on offer divided by the reviewers on shift, so the heavy
+# end is split across the team rather than going to whoever finishes first.
 #
-# The exception is a pool of exactly one: take it, or a lone large job sits
-# unassigned forever.
+# Refills run independently, one reviewer at a time, so without the division the
+# early finishers take every heavy job and the last reviewer gets an all-small
+# batch — measured at 3/3/3/1/0 across five reviewers with ten heavy jobs.
+#
+# Always lets at least one through, or a lone large job sits unassigned forever.
+_REFILL_MAX_LARGE_JOBS = 3
 
 # Client behind the composer's "Storesight / Retail Pipeline only" filter.
 _RETAIL_PIPELINE_CLIENT = "retailpipeline@fieldagent.net"
@@ -2280,6 +2279,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             return []  # Can't proceed safely without lock
 
         touched_keys = set()
+        shift_reviewers = set()
         max_part = -1
         batch_size = None
         batch_responses = None
@@ -2309,6 +2309,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             data = doc.get("data") or {}
             if data.get("shift_snapshot_id") != snap_id:
                 continue
+            shift_reviewers.add((data.get("reviewer_email") or "").strip().lower())
             for r in data.get("rows") or []:
                 k = _job_key(r)
                 if k:
@@ -2480,7 +2481,8 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
 
         large_threshold = _large_job_threshold([n for _, _, n in eligible])
         available_large = sum(1 for _, _, n in eligible if n >= large_threshold)
-        large_cap = min(_REFILL_MAX_LARGE_JOBS, max(1, available_large - 1))
+        on_shift = max(1, len(shift_reviewers))
+        large_cap = min(_REFILL_MAX_LARGE_JOBS, max(1, available_large // on_shift))
         fresh = []
         responses_added = 0
         large_taken = 0
@@ -2499,9 +2501,9 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                 large_taken += 1
         logging.warning(
             "auto-refill for %s: pool=%d, eligible=%d, skipped: %s -> %d jobs / %d responses "
-            "(target=%d, large>=%d avail=%d cap=%d taken=%d)",
+            "(target=%d, large>=%d avail=%d on_shift=%d cap=%d taken=%d)",
             email, len(pool), len(eligible), skipped_reasons, len(fresh), responses_added,
-            count, large_threshold, available_large, large_cap, large_taken,
+            count, large_threshold, available_large, on_shift, large_cap, large_taken,
         )
         if not fresh:
             logging.warning("auto-refill: no new jobs left for %s (reasons: %s)", email, skipped_reasons)

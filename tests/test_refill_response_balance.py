@@ -35,18 +35,24 @@ def refill(monkeypatch):
     """Wire up a reviewer with a stamped batch, returning the stored rows."""
     stored = []
 
-    def setup(feed, batch_size, batch_responses, flags=None):
+    def setup(feed, batch_size, batch_responses, flags=None, teammates=0):
+        """`teammates` puts others on shift; the large-job cap divides by that."""
         setup.stored = stored
-        shift_doc = {"id": "rs-0", "data": {
+        shift_docs = [{"id": "rs-0", "data": {
             "kind": "reviewer_shift", "shift_snapshot_id": "snap1",
             "reviewer_email": REVIEWER, "rows": [], "part": 0,
             "batch_size": batch_size, "batch_responses": batch_responses,
-        }}
+        }}]
+        shift_docs += [{"id": f"rs-mate{i}", "data": {
+            "kind": "reviewer_shift", "shift_snapshot_id": "snap1",
+            "reviewer_email": f"mate{i}@storesight.com", "rows": [], "part": 0,
+            "batch_size": batch_size, "batch_responses": batch_responses,
+        }} for i in range(teammates)]
         snap = {"id": "snap1", "data": {
             "kind": "shift_snapshot", "prioritization_flags": flags or {}}}
 
         monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind, force=False: {
-            "reviewer_shift": [shift_doc], "shift_snapshot": [snap],
+            "reviewer_shift": shift_docs, "shift_snapshot": [snap],
         }.get(kind, []))
         monkeypatch.setattr(main, "_list_completions_for_snapshot",
                             lambda *a, **k: [])
@@ -69,13 +75,12 @@ def test_takes_big_jobs_before_small_ones(refill):
     """The whole complaint: heavy jobs should be picked over a tail of tiny ones."""
     feed = _feed({"tiny1": 1, "tiny2": 2, "big1": 60, "tiny3": 1, "big2": 55})
     added = refill(feed, batch_size=20, batch_responses=100,
-                   flags={"balanceByResponses": True})
+                   flags={"balanceByResponses": True}, teammates=1)
 
     # Biggest first, so the heavy job leads the batch rather than trailing it.
     assert added[0]["jobId"] == "big1"
-    # Only two large jobs exist here, so _REFILL_MAX_LARGE_SHARE allows one of
-    # them and big2 is left for whoever finishes next. Taking both would hand a
-    # single reviewer the entire heavy end of this queue.
+    # Two heavy jobs and two reviewers on shift is one each, so big2 waits for
+    # the teammate. Taking both would hand one reviewer the whole heavy end.
     assert "big2" not in [r["jobId"] for r in added]
 
 
@@ -307,14 +312,17 @@ def test_a_small_heavy_end_is_never_taken_whole(refill):
     """One reviewer must never walk off with all the heavy work.
 
     A fixed cap can't promise this: when the pool holds fewer large jobs than
-    the cap, the cap never binds. _REFILL_MAX_LARGE_SHARE is what holds the
-    line, so the guard scales with the queue instead of a constant.
+    the cap, the cap never binds. Dividing by the reviewers on shift is what
+    holds the line, so the guard scales with both the queue and the team.
+
+    Needs teammates on shift to mean anything — a lone reviewer has nobody to
+    share with, and taking every heavy job is then the right answer.
     """
     for heavy in (2, 3, 4, 6, 10):
         feed = _feed({f"big{i}": 50 for i in range(heavy)},
                      **{f"tiny{i}": 2 for i in range(50)})
         added = refill(feed, batch_size=20, batch_responses=400,
-                       flags={"balanceByResponses": True})
+                       flags={"balanceByResponses": True}, teammates=2)
         taken = [r for r in added if int(r["unreviewedCount"]) >= 10]
         assert len(taken) < heavy, (
             f"{heavy} large jobs available, one reviewer took all {len(taken)}"
@@ -328,3 +336,26 @@ def test_a_lone_large_job_is_not_stranded(refill):
                    flags={"balanceByResponses": True})
 
     assert "big" in [r["jobId"] for r in added]
+
+
+def test_heavy_jobs_divide_by_the_team_on_shift(refill):
+    """The heavy end is split across the team, not taken by whoever finishes first.
+
+    Refills run independently, one reviewer at a time, so a per-reviewer cap
+    alone hands the early finishers everything heavy and leaves the last one an
+    all-small batch. Dividing by the reviewers on shift is what evens it out.
+    """
+    feed = _feed({f"big{i}": 50 for i in range(6)},
+                 **{f"tiny{i}": 2 for i in range(50)})
+
+    def heavy_taken(teammates):
+        added = refill(feed, batch_size=20, batch_responses=400,
+                       flags={"balanceByResponses": True}, teammates=teammates)
+        return sum(1 for r in added if int(r["unreviewedCount"]) >= 50)
+
+    # Alone: nobody to share with, so the ceiling is the only limit.
+    assert heavy_taken(0) == main._REFILL_MAX_LARGE_JOBS
+    # Three on shift over six heavy jobs is two each.
+    assert heavy_taken(2) == 2
+    # Six on shift over six is one each.
+    assert heavy_taken(5) == 1
