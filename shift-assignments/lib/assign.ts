@@ -271,11 +271,18 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
       // project they have room for; the whole project then costs them what
       // they had budgeted.
       const projectOwner = new Map<string, string>();
+      // Refilled per pass from the jobs that pass is actually placing. Sizing
+      // it from every unpinned job over-charged: a 16-job project with 2 jobs
+      // in the pass still reserved 16, so capacity was spent on jobs that were
+      // never handed out — 59 of 100 requested, with 222 left in overflow.
       const projectSizes = new Map<string, number>();
-      for (const row of unpinned) {
-        const key = String(row.projectId || "");
-        if (key) projectSizes.set(key, (projectSizes.get(key) ?? 0) + 1);
-      }
+      const sizeProjects = (rows: Row[]) => {
+        projectSizes.clear();
+        for (const row of rows) {
+          const key = String(row.projectId || "");
+          if (key) projectSizes.set(key, (projectSizes.get(key) ?? 0) + 1);
+        }
+      };
 
       const placeRow = (row: Row) => {
         const projectKey = String(row.projectId || "");
@@ -354,15 +361,47 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
         // high-response jobs in a later group were even considered, so every
         // one of those dumped onto whoever still had open slots.
         const totalCapacity = Object.values(unpinnedNeeded).reduce((a, b) => a + b, 0);
-        const byPriority = [...sortedJobs].sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999));
-        const toPlace = new Set(byPriority.slice(0, totalCapacity));
+        // Select whole projects, best priority first, until capacity is used.
+        // Slicing loose jobs took part of a project while the claim reserved
+        // all of it, so the rest of that project was paid for and never placed.
+        const byProject = new Map<string, Row[]>();
         for (const row of sortedJobs) {
-          if (toPlace.has(row)) placeRow(row);
+          const key = String(row.projectId || row.id || "");
+          const list = byProject.get(key);
+          if (list) list.push(row);
+          else byProject.set(key, [row]);
+        }
+        const bestPriority = (rows: Row[]) =>
+          rows.reduce((m, r) => Math.min(m, r.priority ?? 999), 999);
+        const projectsByPriority = [...byProject.values()].sort(
+          (a, b) => bestPriority(a) - bestPriority(b),
+        );
+        const toPlace = new Set<Row>();
+        let budget = totalCapacity;
+        for (const rows of projectsByPriority) {
+          if (budget <= 0) break;
+          for (const r of rows) toPlace.add(r);
+          budget -= rows.length;
+        }
+        sizeProjects([...toPlace]);
+        // Place the biggest projects first. Projects are indivisible, so a late
+        // 9-job project landing on whoever has 5 slots left swings their count;
+        // packing large-to-small lets the small ones fill the gaps. Priority
+        // already decided *which* projects are in `toPlace` — this only orders
+        // how they're handed out. Measured on the live feed: every reviewer
+        // lands exactly on their number, against a spread of 10 in priority
+        // order.
+        const selected = projectsByPriority
+          .filter((rows) => rows.some((r) => toPlace.has(r)))
+          .sort((a, b) => b.length - a.length);
+        for (const rows of selected) {
+          for (const row of rows) placeRow(row);
         }
       } else {
         // Group jobs by priority (lower number = more urgent) and process
         // each level in order, so higher-priority jobs are the last to be
         // left over when this tier doesn't fully fit.
+        sizeProjects(sortedJobs);
         const jobsByPriority: Record<number, Row[]> = {};
         for (const row of sortedJobs) {
           const priority = row.priority ?? 999;
@@ -372,7 +411,19 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
           .map(Number)
           .sort((a, b) => a - b);
         for (const priority of priorityLevels) {
-          for (const row of jobsByPriority[priority]) placeRow(row);
+          // Same packing within a level: priority still decides which jobs get
+          // a slot when capacity is short, size only orders them inside it.
+          const levelProjects = new Map<string, Row[]>();
+          for (const row of jobsByPriority[priority]) {
+            const key = String(row.projectId || row.id || "");
+            const list = levelProjects.get(key);
+            if (list) list.push(row);
+            else levelProjects.set(key, [row]);
+          }
+          const biggestFirst = [...levelProjects.values()].sort((a, b) => b.length - a.length);
+          for (const rows of biggestFirst) {
+            for (const row of rows) placeRow(row);
+          }
         }
       }
     };

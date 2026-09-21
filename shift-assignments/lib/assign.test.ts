@@ -61,6 +61,38 @@ describe("assignShift", () => {
     expect(assignedJids.length).toBeGreaterThan(2);
   });
 
+  it("fills each reviewer's count despite indivisible projects", () => {
+    // Projects can only be handed out whole, so the order they're placed in
+    // decides how well they pack. Placing in priority order left a late 9-job
+    // project for whoever had 5 slots and swung the counts; against the live
+    // feed that was 16/23/22/25/15 for five reviewers asking 20 each.
+    // Biggest-first lets the small projects fill the gaps.
+    const pool: Row[] = [];
+    let jid = 0;
+    // sizes 4, 3, 2, 2, 1 = 12 jobs for two reviewers wanting 6 each
+    [4, 3, 2, 2, 1].forEach((size, p) => {
+      for (let i = 0; i < size; i++) {
+        pool.push(mockRow(String(++jid), `PID-${p}`, `JID-${jid}`, p + 1));
+      }
+    });
+
+    const draft = mockShift(["Saylor", "Laurel"]);
+    draft.slots.forEach((slot) => (slot.count = 6));
+    const result = assignShift(pool, draft);
+
+    expect(result.assignments["Saylor"].length).toBe(6);
+    expect(result.assignments["Laurel"].length).toBe(6);
+
+    // ...and no project was torn apart to get there.
+    for (const rows of Object.values(result.assignments)) {
+      for (const pid of new Set(rows.map((r) => r.projectId))) {
+        const mine = rows.filter((r) => r.projectId === pid).length;
+        const total = pool.filter((r) => r.projectId === pid).length;
+        expect(mine).toBe(total);
+      }
+    }
+  });
+
   it("reserves a whole project's capacity when it is claimed", () => {
     // A project's jobs are scattered through the pool by priority, not grouped.
     // Charging capacity per job leaves a reviewer looking free long enough to
