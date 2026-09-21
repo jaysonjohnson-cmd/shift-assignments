@@ -1,13 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import type { Reviewer, Row } from "@/lib/types";
+import type { Reviewer, Row, ShiftDraft } from "@/lib/types";
 
 export type SummaryLine = {
   reviewerId: string;
   reviewerName: string;
   shiftLabel: string;
   count: number;
+  /** What the composer was asked for, when known — `count` can be lower. */
+  requested?: number;
   firstPriority?: number;
   lastPriority?: number;
 };
@@ -23,6 +25,12 @@ export function AssignSummary({
   overflow: number;
   onBack: () => void;
 }) {
+  // Only lines that know what was asked for can be short; older callers that
+  // don't pass `requested` simply never trigger the banner.
+  const requestedTotal = lines.reduce((s, l) => s + (l.requested ?? l.count), 0);
+  const assignedTotal = lines.reduce((s, l) => s + l.count, 0);
+  const shortfall = Math.max(0, requestedTotal - assignedTotal);
+
   return (
     <div className="px-6 py-10">
       <h1 className="text-2xl font-semibold tracking-tight text-storesight-ink dark:text-storesight-ink-dark">
@@ -32,6 +40,18 @@ export function AssignSummary({
         {lines.length} reviewer assignment{lines.length === 1 ? "" : "s"} · {overflow} task
         {overflow === 1 ? "" : "s"} in overflow
       </p>
+
+      {shortfall > 0 && (
+        <div className="mt-4 rounded-xl border border-[#FFA500]/40 bg-[#FFA500]/10 px-4 py-3">
+          <p className="text-sm font-semibold text-[#B26A00] dark:text-[#FFA500]">
+            {assignedTotal} of {requestedTotal} requested jobs were assigned
+          </p>
+          <p className="mt-0.5 text-[12px] leading-snug text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+            {shortfall} short — the eligible pool ran out. Refresh from the
+            Priority Page for more work, or lower the per-reviewer counts.
+          </p>
+        </div>
+      )}
 
       <div className="mt-6 overflow-hidden rounded-2xl border border-storesight-border bg-white dark:border-storesight-border-dark dark:bg-storesight-surface-dark">
         <table className="w-full text-sm">
@@ -65,7 +85,15 @@ export function AssignSummary({
                   <td className="px-4 py-2 text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
                     {l.shiftLabel}
                   </td>
-                  <td className="px-4 py-2 text-right tabular-nums">{l.count}</td>
+                  <td className="px-4 py-2 text-right tabular-nums">
+                    {l.requested != null && l.count < l.requested ? (
+                      <span className="text-[#B26A00] dark:text-[#FFA500]">
+                        {l.count} / {l.requested}
+                      </span>
+                    ) : (
+                      l.count
+                    )}
+                  </td>
                   <td className="px-4 py-2 text-right tabular-nums text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
                     {l.firstPriority != null && l.lastPriority != null
                       ? `#${l.firstPriority}–${l.lastPriority}`
@@ -101,17 +129,27 @@ export function summarizeShift(
   shiftLabel: string,
   assignments: Record<string, Row[]>,
   reviewers: Reviewer[],
+  draft?: ShiftDraft,
 ): SummaryLine[] {
   const reviewerById = new Map(reviewers.map((r) => [r.id, r]));
+  const requestedById = new Map(
+    (draft?.slots ?? [])
+      .filter((s) => s.reviewerId)
+      .map((s) => [s.reviewerId, Math.floor(s.count)] as const),
+  );
   const lines: SummaryLine[] = [];
   for (const [reviewerId, rows] of Object.entries(assignments)) {
-    if (rows.length === 0) continue;
+    const requested = requestedById.get(reviewerId);
+    // A reviewer who got nothing used to be dropped from the summary entirely,
+    // which is exactly the case worth seeing.
+    if (rows.length === 0 && !requested) continue;
     const r = reviewerById.get(reviewerId);
     lines.push({
       reviewerId,
       reviewerName: r?.name ?? reviewerId,
       shiftLabel,
       count: rows.length,
+      requested,
       firstPriority: rows[0]?.priority,
       lastPriority: rows[rows.length - 1]?.priority,
     });

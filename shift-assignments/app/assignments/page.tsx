@@ -297,7 +297,7 @@ export default function AssignmentsPage() {
       });
       setLastPublishedAt(resp.published_at);
       refreshLiveJobs();
-      const lines = summarizeShift("Shift", result.assignments, reviewers);
+      const lines = summarizeShift("Shift", result.assignments, reviewers, draft);
       setMode({
         kind: "summary",
         title: "Shift published",
