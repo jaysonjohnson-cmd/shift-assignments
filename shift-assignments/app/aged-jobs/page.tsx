@@ -248,8 +248,11 @@ export default function AgedJobsPage() {
   const waiting14 = rows.filter((r) => r.daysOld !== null && r.daysOld >= 14).length;
   const totalUnreviewed = rows.reduce((s, r) => s + (r.unreviewedCount || 0), 0);
 
+  // max-w-7xl, matching team-assignments: this table needs ~1130px and was
+  // being clipped inside a 1024px container, hiding the Urgency column behind
+  // a scrollbar while ~870px of the page sat empty.
   return (
-    <div className="mx-auto w-full max-w-5xl flex-1 px-6 py-8">
+    <div className="mx-auto w-full max-w-7xl flex-1 px-6 py-8">
       <header className="mb-6 flex flex-wrap items-start justify-between gap-3">
         <div>
           <Link
@@ -295,7 +298,10 @@ export default function AgedJobsPage() {
         </div>
       )}
 
-      <div className="mb-5 grid grid-cols-3 gap-3">
+      {/* Capped rather than full-width: three cards holding one number each
+          read as empty space when stretched across the wider container.
+          Stacks on mobile, where three across were unreadably narrow. */}
+      <div className="mb-5 grid max-w-3xl grid-cols-1 gap-3 sm:grid-cols-3">
         <StatCard label="Closing ≤7d with backlog" value={closingWithBacklog} danger={closingWithBacklog > 0} />
         <StatCard label="Waiting ≥14 days" value={waiting14} />
         <StatCard label="Unreviewed (aged)" value={totalUnreviewed} />
@@ -334,6 +340,13 @@ export default function AgedJobsPage() {
             </button>
           ))}
         </div>
+        {agesLoading && (
+          <span className="text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark animate-pulse">
+            Fetching submission dates…
+          </span>
+        )}
+        {/* ml-auto: this is an action, not a filter — keep it off the end of
+            the sort/threshold pill groups it was crowding. */}
         <button
           type="button"
           disabled={filtered.length === 0}
@@ -344,15 +357,10 @@ export default function AgedJobsPage() {
               setTimeout(() => setCopied(false), 2000);
             });
           }}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-storesight-border bg-white px-3 py-1.5 text-xs font-medium text-storesight-ink-muted transition hover:border-storesight-accent hover:text-storesight-primary disabled:opacity-40 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
+          className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-storesight-border bg-white px-3 py-1.5 text-xs font-medium text-storesight-ink-muted transition hover:border-storesight-accent hover:text-storesight-primary disabled:opacity-40 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark"
         >
           {copied ? "Copied!" : `Copy ${filtered.length} job ID${filtered.length !== 1 ? "s" : ""}`}
         </button>
-        {agesLoading && (
-          <span className="text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark animate-pulse">
-            Fetching submission dates…
-          </span>
-        )}
       </div>
 
       {loading ? (
@@ -366,14 +374,26 @@ export default function AgedJobsPage() {
       ) : (
         <div className="overflow-x-auto rounded-xl border border-storesight-border dark:border-storesight-border-dark">
           <table className="w-full text-sm">
+            {/* Job takes the remainder; the metric columns are pinned so the
+                name can't squeeze them (it was eating 59% of the table). */}
+            <colgroup>
+              <col />
+              <col className="w-[108px]" />
+              <col className="w-[104px]" />
+              <col className="w-[88px]" />
+              <col className="w-[132px]" />
+              <col className="w-[112px]" />
+            </colgroup>
             <thead className="border-b border-storesight-border bg-storesight-bg-tint dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark">
               <tr>
+                {/* Every metric column right-aligns, so the numbers form one
+                    clean edge instead of the previous left/left/right/left. */}
                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Job</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Waiting</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Closes</th>
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Waiting</th>
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Closes</th>
                 <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Unrev.</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Pending</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Urgency</th>
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Pending</th>
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Urgency</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-storesight-border dark:divide-storesight-border-dark">
@@ -421,7 +441,7 @@ export default function AgedJobsPage() {
                         )}
                       </div>
                     </td>
-                    <td className={`px-4 py-3 font-semibold tabular-nums ${waitingColor(r.daysOld)}`}>
+                    <td className={`whitespace-nowrap px-4 py-3 text-right font-semibold tabular-nums ${waitingColor(r.daysOld)}`}>
                       {r.daysOld === null ? (
                         agesLoading ? (
                           <span className="inline-block h-3 w-10 animate-pulse rounded bg-storesight-bg-tint dark:bg-storesight-surface-raised-dark" />
@@ -439,14 +459,14 @@ export default function AgedJobsPage() {
                         </>
                       )}
                     </td>
-                    <td className={`px-4 py-3 tabular-nums ${closesColor(dClose)}`}>
+                    <td className={`whitespace-nowrap px-4 py-3 text-right tabular-nums ${closesColor(dClose)}`}>
                       {closesLabel(dClose)}
                     </td>
                     <td className="px-4 py-3 text-right font-semibold tabular-nums text-storesight-ink dark:text-storesight-ink-dark">
                       {r.unreviewedCount}
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center justify-end gap-2">
                         <div className="h-1.5 w-16 overflow-hidden rounded-full bg-storesight-bg-tint dark:bg-storesight-surface-raised-dark">
                           <div className="h-full rounded-full bg-[#FFA500]" style={{ width: `${Math.min(100, pending)}%` }} />
                         </div>
@@ -455,7 +475,7 @@ export default function AgedJobsPage() {
                         </span>
                       </div>
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 text-right">
                       <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-semibold ${URGENCY_STYLE[level]}`}>
                         {level}
                       </span>
