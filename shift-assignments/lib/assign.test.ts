@@ -33,6 +33,75 @@ function mockShift(reviewers: string[]): ShiftDraft {
 }
 
 describe("assignShift", () => {
+  it("never splits a project across two reviewers", () => {
+    // My Tasks' "By PID" card opens the whole project in Collection Review, so
+    // a split project would show each reviewer the other's responses.
+    const pool: Row[] = [
+      mockRow("1", "PID-1", "JID-1", 1),
+      mockRow("2", "PID-1", "JID-2", 2),
+      mockRow("3", "PID-1", "JID-3", 3),
+      mockRow("4", "PID-2", "JID-4", 4),
+      mockRow("5", "PID-2", "JID-5", 5),
+      mockRow("6", "PID-3", "JID-6", 6),
+    ];
+
+    const result = assignShift(pool, mockShift(["Saylor", "Laurel"]));
+
+    const ownerOf = new Map<string, string>();
+    for (const [reviewer, rows] of Object.entries(result.assignments)) {
+      for (const row of rows) {
+        const prev = ownerOf.get(row.projectId);
+        expect(prev ?? reviewer).toBe(reviewer);
+        ownerOf.set(row.projectId, reviewer);
+      }
+    }
+
+    // ...and the jobs aren't discarded to achieve that.
+    const assignedJids = Object.values(result.assignments).flat().map((r) => r.jobId);
+    expect(assignedJids.length).toBeGreaterThan(2);
+  });
+
+  it("reserves a whole project's capacity when it is claimed", () => {
+    // A project's jobs are scattered through the pool by priority, not grouped.
+    // Charging capacity per job leaves a reviewer looking free long enough to
+    // claim several big projects, and the counts blow out — 177 handed out
+    // against 95 requested when this was measured against the live feed.
+    const pool: Row[] = [
+      // three 4-job projects, interleaved the way priority ordering leaves them
+      mockRow("1", "PID-A", "JID-A1", 1),
+      mockRow("2", "PID-B", "JID-B1", 2),
+      mockRow("3", "PID-C", "JID-C1", 3),
+      mockRow("4", "PID-A", "JID-A2", 4),
+      mockRow("5", "PID-B", "JID-B2", 5),
+      mockRow("6", "PID-C", "JID-C2", 6),
+      mockRow("7", "PID-A", "JID-A3", 7),
+      mockRow("8", "PID-B", "JID-B3", 8),
+      mockRow("9", "PID-C", "JID-C3", 9),
+      mockRow("10", "PID-A", "JID-A4", 10),
+      mockRow("11", "PID-B", "JID-B4", 11),
+      mockRow("12", "PID-C", "JID-C4", 12),
+    ];
+
+    // Two reviewers wanting 4 each: room for two of the three projects.
+    const draft = mockShift(["Saylor", "Laurel"]);
+    draft.slots.forEach((slot) => (slot.count = 4));
+    const result = assignShift(pool, draft);
+
+    const total = Object.values(result.assignments).flat().length;
+    // 8 requested. Without reservation both reviewers claim every project and
+    // all 12 land.
+    expect(total).toBeLessThanOrEqual(8);
+    expect(result.leftover.length).toBeGreaterThan(0);
+
+    // Whichever projects went out went out whole.
+    for (const rows of Object.values(result.assignments)) {
+      const pids = new Set(rows.map((r) => r.projectId));
+      for (const pid of pids) {
+        expect(rows.filter((r) => r.projectId === pid).length).toBe(4);
+      }
+    }
+  });
+
   it("keeps every job in a project, deduping only by jobId", () => {
     // Projects used to be deduped too, so only one job per PID was assignable.
     // The feed averages ~3 jobs per project, so that discarded most of the

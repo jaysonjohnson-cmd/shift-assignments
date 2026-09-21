@@ -144,13 +144,17 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
   // pre-sorted highest-priority first, so the first occurrence kept is the most
   // urgent one.
   //
-  // Projects are deliberately NOT deduped. They used to be, to stop two
-  // reviewers landing in the same project in Collection Review — but the feed
-  // averages ~3 jobs per project, so it discarded roughly two thirds of the
-  // available work (367 jobs collapsed to 101) and reviewers' counts silently
-  // came up short: 15 requested, 9 delivered. The collision it guarded against
-  // is handled at the link instead — "Open in Review" is scoped to the exact
-  // job, not the project.
+  // Projects are no longer deduped away. They used to be, to stop two reviewers
+  // landing in the same project in Collection Review — but the feed averages ~3
+  // jobs per project, so it discarded roughly two thirds of the available work
+  // (367 jobs collapsed to 101) and reviewers' counts silently came up short:
+  // 15 requested, 9 delivered.
+  //
+  // A project still only ever goes to ONE reviewer; every job in it now goes
+  // there too, rather than all but the first being thrown away. See
+  // projectOwner below. That keeps Collection Review safe either way: a
+  // My Tasks "By PID" card opens the whole project, so a project split across
+  // two reviewers would show each of them the other's responses.
   const seenJobKeys = new Set<string>();
   const dedupedPool: Row[] = [];
   for (const row of pool) {
@@ -256,43 +260,79 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
         responseCountByReviewer.set(slot.reviewerId, pinnedCount);
       }
 
+      // A project belongs to whoever gets its first job; the rest follow, so a
+      // project is never split across reviewers.
+      //
+      // The claim is what bounds the count. A project's jobs are scattered
+      // through the pool by priority rather than sitting together, so an
+      // unbounded claim keeps pulling jobs onto a reviewer long after they are
+      // full — measured at 177 jobs handed out against 95 requested, one
+      // reviewer taking 49 for a 20 request. So a reviewer only claims a
+      // project they have room for; the whole project then costs them what
+      // they had budgeted.
+      const projectOwner = new Map<string, string>();
+      const projectSizes = new Map<string, number>();
+      for (const row of unpinned) {
+        const key = String(row.projectId || "");
+        if (key) projectSizes.set(key, (projectSizes.get(key) ?? 0) + 1);
+      }
+
       const placeRow = (row: Row) => {
+        const projectKey = String(row.projectId || "");
+        const owner = projectKey ? projectOwner.get(projectKey) : undefined;
+        if (owner) {
+          // Capacity for the whole project was reserved when it was claimed,
+          // so the remaining jobs are already paid for.
+          assignments[owner].push(row);
+          if (balanceByResponses) {
+            const current = responseCountByReviewer.get(owner) ?? 0;
+            responseCountByReviewer.set(owner, current + (row.unreviewedCount ?? 0));
+          }
+          return;
+        }
+
+        const projectSize = projectKey ? (projectSizes.get(projectKey) ?? 1) : 1;
         let bestReviewer: string | null = null;
         // balanceByResponses picks the lowest metric (start high); the
         // default path picks the highest remaining/capacity ratio (start
         // low). A single Infinity init left the default path dead — no
         // ratio is > Infinity — so it never assigned unpinned jobs.
         let bestMetric = balanceByResponses ? Infinity : -Infinity;
+        // Room for the entire project beats a better balance score. Without
+        // this the project still lands somewhere, just on someone who then
+        // overshoots by the rest of it.
+        let bestFits = false;
 
         for (const slot of activeSlots) {
           const remaining = unpinnedNeeded[slot.reviewerId] ?? 0;
           if (remaining <= 0) continue;
 
           const capacity = capacityWeights.get(slot.reviewerId) ?? 1;
+          const fits = remaining >= projectSize;
 
-          if (balanceByResponses) {
-            // Response-aware: balance by total unreviewedCount, not just job count
-            // Assign to reviewer with lowest current response load relative to capacity
-            const currentResponseCount = responseCountByReviewer.get(slot.reviewerId) ?? 0;
-            const metric = currentResponseCount / capacity;
+          const metric = balanceByResponses
+            // Response-aware: balance by total unreviewedCount, not just job
+            // count — lowest current load relative to capacity wins.
+            ? (responseCountByReviewer.get(slot.reviewerId) ?? 0) / capacity
+            // Original: balance by job count and capacity ratio.
+            : remaining / capacity;
+          const better = balanceByResponses ? metric < bestMetric : metric > bestMetric;
 
-            if (metric < bestMetric) {
-              bestMetric = metric;
-              bestReviewer = slot.reviewerId;
-            }
-          } else {
-            // Original: balance by job count and capacity ratio
-            const capacityRatio = remaining / capacity;
-            if (capacityRatio > bestMetric) {
-              bestMetric = capacityRatio;
-              bestReviewer = slot.reviewerId;
-            }
+          if (bestReviewer === null || (fits && !bestFits) || (fits === bestFits && better)) {
+            bestMetric = metric;
+            bestReviewer = slot.reviewerId;
+            bestFits = fits;
           }
         }
 
         if (bestReviewer) {
           assignments[bestReviewer].push(row);
-          unpinnedNeeded[bestReviewer]--;
+          // Reserve the entire project now, not one job at a time. Its jobs are
+          // scattered through the pool by priority, so charging per job leaves
+          // the reviewer looking free and they claim several big projects
+          // before any of them is paid for.
+          unpinnedNeeded[bestReviewer] -= projectSize;
+          if (projectKey) projectOwner.set(projectKey, bestReviewer);
 
           // Update response count tracker if balancing by responses
           if (balanceByResponses) {
