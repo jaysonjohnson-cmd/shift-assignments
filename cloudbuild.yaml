@@ -1,0 +1,40 @@
+substitutions:
+    _SERVICE_NAME: qc-shift-assignments
+    _REGION: us-central1
+    # Slack channel ID that receives "reviewer finished all assignments" pings.
+    # Set this to your channel id (e.g. C0XXXXXXX). Empty = pings disabled.
+    _SLACK_NOTIFY_CHANNEL: "GKVDB7HNG"
+    # Slack USER id (U...) that receives a DM when a reviewer closes out their
+    # shift. A user id in the channel field makes chat.postMessage a DM.
+    # Empty = close-out still works, it just doesn't notify.
+    _SLACK_ADMIN_USER_ID: "UKTE679RB"
+    # Service account allowed to trigger /api/shifts/auto-publish with an OIDC
+    # token (Cloud Scheduler), and the audience its token must carry. BOTH must
+    # be set or that path stays cookie-only. Created by setup-scheduler.sh.
+    _SCHEDULER_SERVICE_ACCOUNTS: "qc-shift-scheduler@storesight-internal-tools.iam.gserviceaccount.com"
+    _SCHEDULER_OIDC_AUDIENCE: "https://qc-shift-assignments.storesight.org"
+
+steps:
+    - name: "gcr.io/cloud-builders/docker"
+      args: ["build", "-t", "gcr.io/$PROJECT_ID/$_SERVICE_NAME:$COMMIT_SHA", "."]
+    - name: "gcr.io/cloud-builders/docker"
+      args: ["push", "gcr.io/$PROJECT_ID/$_SERVICE_NAME:$COMMIT_SHA"]
+    - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+      entrypoint: gcloud
+      args:
+          - run
+          - deploy
+          - $_SERVICE_NAME
+          - --image=gcr.io/$PROJECT_ID/$_SERVICE_NAME:$COMMIT_SHA
+          - --region=$_REGION
+          - --platform=managed
+          - --allow-unauthenticated
+          - --service-account=tools-runner@storesight-internal-tools.iam.gserviceaccount.com
+          - --clear-vpc-connector
+          - --network=default
+          - --subnet=default
+          - --set-secrets=JWT_SIGNING_SECRET=JWT_SIGNING_SECRET:latest
+          - --set-env-vars=INTERNAL_API_BASE=https://internal-tool-api.storesight.org,TOOL_SLUG=$_SERVICE_NAME,SLACK_NOTIFY_CHANNEL=$_SLACK_NOTIFY_CHANNEL,SLACK_ADMIN_USER_ID=$_SLACK_ADMIN_USER_ID,GIT_SHA=$COMMIT_SHA,SCHEDULER_SERVICE_ACCOUNTS=$_SCHEDULER_SERVICE_ACCOUNTS,SCHEDULER_OIDC_AUDIENCE=$_SCHEDULER_OIDC_AUDIENCE
+options:
+    logging: CLOUD_LOGGING_ONLY
+    machineType: E2_HIGHCPU_8

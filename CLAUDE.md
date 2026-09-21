@@ -212,14 +212,10 @@ Pushing to `main` on GitHub does **not** deploy on its own — that was tried
 repeatedly on 2026-09-18 and no build ever started. Commit and push as normal,
 then Publish.
 
-There is no build config in this repo — the platform owns the build and
-supplies the environment (`TOOL_SLUG`, `JWT_SIGNING_SECRET` and the rest reach
-the service without anything here setting them).
-
-A `cloudbuild.yaml` used to sit at the root. It was removed, restored on the
-belief that Publish required it, then removed again when Publish failed with the
-file present — so it was never the thing gating a deploy. Don't reintroduce it
-to fix a publish problem; that experiment has been run.
+**`cloudbuild.yaml` must stay in the repo.** Publish refuses to run without it.
+It was deleted on 2026-09-18 on the assumption the platform owned the build;
+publishing broke immediately and restoring the file fixed it. Don't remove it
+again, however unused it looks from in here.
 
 **Service:** Cloud Run, storesight-internal-tools project
 
