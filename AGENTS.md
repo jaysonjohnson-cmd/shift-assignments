@@ -400,7 +400,7 @@ The `JWT_SIGNING_SECRET` env var is required for tests to run. Use any value (e.
 - Deploy with the internal tools platform's **Publish** action for this tool
 - Pushing to `main` does NOT deploy on its own, despite what this file used to
   say — it was tried repeatedly on 2026-09-18 and no build ever started
-- `cloudbuild.yaml` must stay in the repo: Publish refuses to run without it
+- There is no build config in this repo; the platform owns the build
 - Services are deployed with `--allow-unauthenticated` — authentication is handled by the JWT cookie middleware, not IAP
 - Rollback: use Cloud Run revision traffic splitting in the GCP console
 
