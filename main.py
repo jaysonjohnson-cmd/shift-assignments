@@ -1189,88 +1189,45 @@ def api_bloom_projects():
     return jsonify({"data": summaries})
 
 
-_SUB_AGES_CACHE: dict = {"data": {}, "fetched_at": 0.0, "loading": False}
-_SUB_AGES_LOCK = threading.Lock()
-_SUB_AGES_TTL = 600  # 10 minutes
-
-
-def _refresh_sub_ages_bg():
-    """Background: fetch oldest unreviewed submission for all aged jobs via responsegroups.
-
-    Submissions are never older than 20 days, so per-job responsegroups calls are fast
-    (0.15s each). Paced at 1 call/sec to stay under the 60 req/min rate limit.
-    All aged jobs processed; results cached for 10 minutes.
-    """
-    with _SUB_AGES_LOCK:
-        if _SUB_AGES_CACHE["loading"]:
-            return
-        _SUB_AGES_CACHE["loading"] = True
-
-    try:
-        rows = bloom.fetch_prioritized_jobs()
-        aged = sorted(
-            [r for r in rows if (r.get("extras") or {}).get("old_sub", 0) > 0],
-            key=lambda r: int(r.get("priority") or 9999),
-        )
-
-        for row in aged:
-            job_id = row.get("jobId") or row.get("id") or ""
-            if not job_id:
-                continue
-            try:
-                resp = internal_api.get(
-                    "/api/responsegroups",
-                    params={"job_id": job_id, "status": "N", "sort": "submission_date", "per_page": 1},
-                )
-                rg_rows = resp.get("data", []) if isinstance(resp, dict) else []
-                if rg_rows:
-                    sub_date = rg_rows[0].get("submission_date", "")
-                    if sub_date:
-                        # Bloom returns GMT (UTC) timestamps. Keep the full instant —
-                        # truncating to a bare date here and re-anchoring it to
-                        # midnight on the frontend was making "days old" drift by
-                        # up to a day depending on what time it is when you look.
-                        parsed = datetime.datetime.strptime(
-                            sub_date, "%a, %d %b %Y %H:%M:%S %Z"
-                        ).replace(tzinfo=datetime.timezone.utc)
-                        with _SUB_AGES_LOCK:
-                            _SUB_AGES_CACHE["data"][str(job_id)] = parsed.isoformat()
-            except Exception as exc:
-                logging.debug("submission-ages: job %s failed: %s", job_id, exc)
-            time.sleep(1.1)  # ~54 calls/min — safely under 60 req/min limit
-
-        with _SUB_AGES_LOCK:
-            _SUB_AGES_CACHE["fetched_at"] = time.time()
-        logging.info("submission-ages: cached %d aged jobs", len(_SUB_AGES_CACHE["data"]))
-    except Exception as exc:
-        logging.warning("submission-ages background refresh failed: %s", exc)
-    finally:
-        with _SUB_AGES_LOCK:
-            _SUB_AGES_CACHE["loading"] = False
-
-
 @app.route("/api/bloom/submission-ages", methods=["GET"])
 def api_bloom_submission_ages():
-    """Return oldest unreviewed submission date per job_id, served from cache.
+    """Return oldest aged pending submission date per job_id.
 
-    Returns: {data: {"<job_id>": "YYYY-MM-DD", ...}, loading: bool}
+    Returns: {data: {"<job_id>": "<iso8601>", ...}, loading: bool}
+
+    Served straight off the job feed, which now carries `extras.oldestAged`
+    from one date-bounded `/api/responsegroups` query (see
+    `bloom.fetch_aged_submissions`). `loading` is always False and is kept
+    only so the frontend's existing poll keeps working — there is nothing
+    left to wait for.
+
+    This replaced a background thread that walked every job with
+    `old_sub > 0` and issued one `/api/responsegroups` call per job, paced at
+    1.1s to stay under the rate limit. That scan could not work: `old_sub` is
+    zero on every row upstream returns, so it always iterated an empty list
+    and the cache it filled stayed empty — which is why Old Submissions and
+    the "older than N days" filter showed nothing while aged work sat in the
+    queue. Even with a working seed it cost ~300 sequential calls per refresh.
     """
     denied = _require_admin_or_lead()
     if denied is not None:
         return denied
 
-    now = time.time()
-    with _SUB_AGES_LOCK:
-        fetched_at = _SUB_AGES_CACHE["fetched_at"]
-        data = dict(_SUB_AGES_CACHE["data"])
-        loading = _SUB_AGES_CACHE["loading"]
+    try:
+        rows = bloom.fetch_prioritized_jobs()
+    except requests.exceptions.HTTPError as e:
+        return _http_error_response(e, source="bloom api")
 
-    if (now - fetched_at) > _SUB_AGES_TTL and not loading:
-        t = threading.Thread(target=_refresh_sub_ages_bg, daemon=True, name="sub-ages-refresh")
-        t.start()
-        loading = True
+    data = {}
+    for r in rows:
+        oldest = str((r.get("extras") or {}).get("oldestAged") or "")
+        if not oldest:
+            continue
+        jid = str(r.get("jobId") or r.get("id") or "")
+        if jid:
+            data[jid] = oldest
 
-    return jsonify({"data": data, "loading": loading})
+    return jsonify({"data": data, "loading": False})
 
 
 @app.route("/api/shifts/latest", methods=["GET"])
@@ -1812,7 +1769,7 @@ def _list_completions_for_snapshot(snapshot_id, reviewer_email=None, force=False
 
 
 def _live_counts_by_job():
-    """{jobId: {"reviewable", "new"}} from the live feed, or None if unavailable.
+    """{jobId: {"reviewable", "new", "aged"}} from the live feed, or None.
 
     None is meaningful and must be propagated: it means "no live data", and a
     caller has to fall back to the stored snapshot counts. Treating an empty
@@ -1826,6 +1783,7 @@ def _live_counts_by_job():
         str(j.get("jobId")): {
             "reviewable": int(j.get("unreviewedCount") or 0),
             "new": int((j.get("extras") or {}).get("newCount") or 0),
+            "aged": int((j.get("extras") or {}).get("agedCount") or 0),
         }
         for j in feed
         if j.get("jobId")
@@ -1843,6 +1801,18 @@ def _is_unactionable_row(row, live_by_job):
     reviewer holding one otherwise never reaches is_complete, so their queue is
     never topped up and they sit idle with an apparently empty task list. Both
     callers share this predicate so the two views can't drift apart again.
+
+    Exception: once the auto-rejected pile is *aged*, it stops being noise and
+    becomes the only thing keeping the job open. Nothing will ever clear it on
+    its own — that was the point of hiding it — so it sat for days precisely
+    because no one could see it. Aged rows are therefore actionable: they show
+    in My Tasks as clear-only work ("N to auto-reject" + the Responses link),
+    and the checkmark closes them out.
+
+    This narrows, but does not undo, the 2026-07-16 decision to hide
+    auto-rejected-only rows. Fresh ones stay hidden: they have no urgency and
+    usually pick up reviewable work on their own. Only rows that have aged
+    past the threshold surface.
     """
     if live_by_job is None:
         return False
@@ -1851,6 +1821,8 @@ def _is_unactionable_row(row, live_by_job):
         return False
     live = live_by_job.get(jid)
     if live is None:
+        return False
+    if live.get("aged", 0) > 0:
         return False
     return live["reviewable"] == 0 and live["new"] > 0
 
@@ -2174,7 +2146,7 @@ def _refill_tier(row, prioritize_new, prioritize_urgency, prioritize_aged):
         return 0
     if prioritize_urgency and _urgency_score(row) >= _URGENCY_TIER_THRESHOLD:
         return 1
-    if prioritize_aged and int((row.get("extras") or {}).get("old_sub") or 0) > 0:
+    if prioritize_aged and int((row.get("extras") or {}).get("agedCount") or 0) > 0:
         return 2
     return 3
 
@@ -2432,15 +2404,17 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             if special_job_types and not _is_special_job_type(r.get("name")):
                 skipped_reasons["not_special_job_type"] += 1
                 continue
-            # Skip jobs with no reviewable work (unreviewedCount == 0). These have
-            # only auto-rejected responses, which must be cleared on the Responses page
-            # (not in My Tasks), so assigning them to a reviewer would show them as
-            # blocked when trying to mark done. Let the reviewer encounter them via the
-            # completion block, not via auto-refill. (Checked first so we skip even if
-            # auto-rejected > 0, preventing auto-refill from assigning jobs that will
-            # immediately be hidden from My Tasks.)
+            # Skip jobs with no reviewable work (unreviewedCount == 0). These hold
+            # only auto-rejected responses, cleared on the Responses page rather than
+            # in My Tasks, and My Tasks hides them — so refilling with one would hand
+            # a reviewer a job they never see.
             unreviewable = int(r.get("unreviewedCount") or 0)
-            if unreviewable <= 0:
+            aged_count = int((r.get("extras") or {}).get("agedCount") or 0)
+            # Aged auto-rejected-only jobs are the exception: they carry no
+            # reviewable work but are visible and completable in My Tasks (see
+            # _is_unactionable_row), so a reviewer can clear them down on the
+            # Responses page and check them off.
+            if unreviewable <= 0 and aged_count <= 0:
                 skipped_reasons["no_unreviewed"] += 1
                 continue
             total_new = int((r.get("extras") or {}).get("newCount") or 0)

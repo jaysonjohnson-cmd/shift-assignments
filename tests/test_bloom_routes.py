@@ -64,6 +64,135 @@ def test_fetch_prioritized_jobs_maps_api_rows(monkeypatch):
     assert rows[0]["jobId"] == "10"
 
 
+def _feed_with_responsegroups(jobs, aged_rows):
+    """Fake internal_api.get serving both the job feed and /api/responsegroups."""
+    def _get(path, params=None):
+        if path == "/api/prioritized-jobs":
+            return {"data": jobs}
+        if path == "/api/responsegroups":
+            params = params or {}
+            # The aged query is date-bounded and pending-only; anything else
+            # (e.g. the CF-denied lookup) gets nothing.
+            if params.get("status") == "N" and params.get("submission_date_to"):
+                page = int(params.get("page") or 1)
+                return {"data": aged_rows if page == 1 else []}
+            return {"data": []}
+        return {"data": []}
+    return _get
+
+
+def _rg(job_id, date, tp_status=""):
+    return {"job_id": job_id, "submission_date": date, "status": "N",
+            "tp_review_status": tp_status}
+
+
+def test_aged_submissions_group_by_job_with_oldest_first(monkeypatch):
+    """One date-bounded query yields per-job aged counts and the oldest date."""
+    bloom.clear_cache()
+    monkeypatch.setattr(internal_api, "get", _feed_with_responsegroups([], [
+        _rg(10, "Fri, 18 Sep 2026 20:00:00 GMT"),
+        _rg(10, "Thu, 17 Sep 2026 08:00:00 GMT"),   # older — should win
+        _rg(20, "Fri, 18 Sep 2026 12:00:00 GMT"),
+    ]))
+
+    aged = bloom.fetch_aged_submissions()
+    assert aged["10"]["count"] == 2
+    assert aged["10"]["oldest"].startswith("2026-09-17T08:00:00")
+    assert aged["20"]["count"] == 1
+
+
+def test_aged_submissions_skip_work_checked_out_to_a_third_party(monkeypatch):
+    """tp_review_status "N" is out at a third party — not ours to review yet.
+
+    "X" is the third party handing it back flagged (e.g. "CF: [Q4] invalid
+    product"); it is still status="N" precisely because a human must look.
+    """
+    bloom.clear_cache()
+    monkeypatch.setattr(internal_api, "get", _feed_with_responsegroups([], [
+        _rg(10, "Fri, 18 Sep 2026 20:00:00 GMT", tp_status="N"),   # excluded
+        _rg(20, "Fri, 18 Sep 2026 20:00:00 GMT", tp_status="X"),   # kept
+        _rg(30, "Fri, 18 Sep 2026 20:00:00 GMT"),                  # kept
+    ]))
+
+    aged = bloom.fetch_aged_submissions()
+    assert "10" not in aged, "work still at a third party must not be assignable"
+    assert aged["20"]["count"] == 1
+    assert aged["30"]["count"] == 1
+
+
+def test_aged_submissions_survive_an_unparseable_date(monkeypatch):
+    """A bad timestamp must not drop the row or sink the batch."""
+    bloom.clear_cache()
+    monkeypatch.setattr(internal_api, "get", _feed_with_responsegroups([], [
+        _rg(10, "not a date"),
+        _rg(10, "Thu, 17 Sep 2026 08:00:00 GMT"),
+    ]))
+
+    aged = bloom.fetch_aged_submissions()
+    assert aged["10"]["count"] == 2, "both rows still count as aged work"
+    assert aged["10"]["oldest"].startswith("2026-09-17")
+
+
+def test_rows_carry_measured_aged_counts(monkeypatch):
+    """extras.agedCount / oldestAged come from responsegroups, not the feed."""
+    bloom.clear_cache()
+    jobs = [
+        {"id": 10, "project_id": 110, "priority": 1, "name": "A", "new": 3},
+        {"id": 20, "project_id": 120, "priority": 2, "name": "B", "new": 2},
+    ]
+    monkeypatch.setattr(internal_api, "get", _feed_with_responsegroups(jobs, [
+        _rg(10, "Thu, 17 Sep 2026 08:00:00 GMT"),
+    ]))
+
+    rows = {r["id"]: r for r in bloom.fetch_prioritized_jobs(use_cache=False)}
+    assert rows["10"]["extras"]["agedCount"] == 1
+    assert rows["10"]["extras"]["oldestAged"].startswith("2026-09-17")
+    assert rows["20"]["extras"]["agedCount"] == 0
+    assert rows["20"]["extras"]["oldestAged"] == ""
+
+
+def test_aged_count_is_not_taken_from_the_feeds_old_sub_score(monkeypatch):
+    """`priority_details.old_sub` is points, not a count — it must not leak in.
+
+    It reads 0 on every row upstream returns even for jobs with real aged
+    work, so anything keying off it silently finds nothing.
+    """
+    bloom.clear_cache()
+    jobs = [{"id": 10, "project_id": 110, "priority": 1, "name": "A", "new": 3,
+             "priority_details": {"old_sub": 250}}]
+    monkeypatch.setattr(internal_api, "get", _feed_with_responsegroups(jobs, []))
+
+    row = bloom.fetch_prioritized_jobs(use_cache=False)[0]
+    assert row["extras"]["old_sub"] == 250, "raw value still passed through"
+    assert row["extras"]["agedCount"] == 0, "but it must not become an aged count"
+
+
+def test_jobs_with_no_new_responses_stay_excluded(monkeypatch):
+    """`new == 0` is filtered out, whatever old_sub says, top-level or nested.
+
+    A reviewer handed one of these finds nothing in Review. The feed filter
+    briefly read a top-level `old_sub` that does not exist on the raw row
+    (it lives under `priority_details`), so the clause was always false;
+    this pins the behaviour that clause was silently not changing.
+    """
+    bloom.clear_cache()
+    jobs = [
+        {"id": 10, "project_id": 110, "priority": 1, "name": "keep", "new": 2},
+        {"id": 20, "project_id": 120, "priority": 2, "name": "drop", "new": 0,
+         "old_sub": 7},
+        {"id": 30, "project_id": 130, "priority": 3, "name": "drop2", "new": 0,
+         "priority_details": {"old_sub": 7}},
+        # Parked at Cloud Factory: massReview is nonzero but nothing is here.
+        {"id": 40, "project_id": 140, "priority": 4, "name": "drop3", "new": 0,
+         "massReview": 9},
+    ]
+    monkeypatch.setattr(internal_api, "get", _feed_with_responsegroups(jobs, [
+        _rg(20, "Thu, 17 Sep 2026 08:00:00 GMT"),   # aged, but still not actionable
+    ]))
+
+    assert [r["id"] for r in bloom.fetch_prioritized_jobs(use_cache=False)] == ["10"]
+
+
 def test_unreviewed_count_uses_mass_review_not_new(monkeypatch):
     """unreviewedCount tracks the REVIEWABLE count ("massReview"), not raw "New"
     — so auto-rejected responses (new > massReview) don't count as actionable."""
@@ -863,6 +992,59 @@ def test_shifts_my_reports_auto_rejected_count(client, monkeypatch):
     # Auto-reject-only job (B) is now hidden — zero reviewable responses means
     # no actionable work, so it shouldn't appear on My Tasks.
     assert "B" not in rows
+
+
+def test_shifts_my_shows_aged_auto_reject_only_jobs(client, monkeypatch):
+    """An auto-reject-only job that has AGED becomes visible clear-only work.
+
+    Fresh ones stay hidden (nothing actionable, and they usually pick up
+    reviewable work on their own). Aged ones are hidden *because* nobody could
+    see them, which is exactly why they are the oldest thing in the queue — so
+    they surface with their AR count and the reviewer clears them down on the
+    Responses page and checks the job off.
+    """
+    c, token_file = client
+    _as_reviewer(token_file, "sam@storesight.com")
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(
+        roles, "list_reviewers",
+        lambda: [{"id": "r", "name": "Sam", "email": "sam@storesight.com"}],
+    )
+    snapshot = {"id": "snap-1", "data": {"kind": "shift_snapshot",
+                "reviewer_emails": ["sam@storesight.com"]}}
+    reviewer_shift = {"id": "rs-1", "data": {"kind": "reviewer_shift",
+                      "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
+                      "rows": [
+                          {"jobId": "FRESH_AR", "projectId": "10", "unreviewedCount": 4},
+                          {"jobId": "AGED_AR", "projectId": "20", "unreviewedCount": 9},
+                      ]}}
+
+    def fake_list(kind, force=False):
+        if kind == "shift_snapshot":
+            return [snapshot]
+        if kind == "reviewer_shift":
+            return [reviewer_shift]
+        return []
+
+    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
+    monkeypatch.setattr(
+        main.bloom, "fetch_prioritized_jobs",
+        lambda *a, **k: [
+            # Both are auto-reject-only (0 reviewable). Only the aged one shows.
+            {"jobId": "FRESH_AR", "unreviewedCount": 0,
+             "extras": {"newCount": 4, "agedCount": 0}},
+            {"jobId": "AGED_AR", "unreviewedCount": 0,
+             "extras": {"newCount": 9, "agedCount": 9}},
+        ],
+    )
+
+    resp = c.get("/api/shifts/my")
+    assert resp.status_code == 200
+    rows = {r["jobId"]: r for r in resp.get_json()["data"]["rows"]}
+    assert "FRESH_AR" not in rows, "fresh auto-reject-only work stays hidden"
+    assert "AGED_AR" in rows, "aged auto-reject-only work must be visible"
+    assert rows["AGED_AR"]["unreviewedCount"] == 0
+    assert rows["AGED_AR"]["autoRejected"] == 9, "shown as clear-only work"
 
 
 def test_shifts_my_keeps_stored_count_when_feed_unavailable(client, monkeypatch):

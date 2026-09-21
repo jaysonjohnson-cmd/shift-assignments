@@ -131,14 +131,61 @@ def test_one_job_is_always_offered_even_if_it_busts_the_budget(refill):
 
 
 def test_aged_jobs_still_come_first_when_that_flag_is_set(refill):
-    """Response ordering sorts within the aged tier, never across it."""
+    """Response ordering sorts within the aged tier, never across it.
+
+    `balanceByResponses` is on so the assertion actually discriminates: without
+    the aged tier, size ordering puts fresh_huge (400) ahead of aged_small (3).
+    The earlier version of this test left it off, so feed order alone satisfied
+    the assertion and it passed even with the aged tier removed entirely.
+    """
     feed = _feed({"aged_small": 3, "fresh_huge": 400})
-    feed[0]["extras"]["old_sub"] = 5   # aged_small is CF-denied work
+    feed[0]["extras"]["agedCount"] = 5   # aged_small holds aged pending work
+    feed[1]["extras"]["agedCount"] = 0
+
+    added = refill(feed, batch_size=20, batch_responses=50,
+                   flags={"prioritizeAged": True, "balanceByResponses": True})
+    assert added[0]["jobId"] == "aged_small", "aged tier must outrank raw size"
+
+
+def test_aged_tier_ignores_the_feeds_own_old_sub_score(refill):
+    """`old_sub` must not drive the aged tier.
+
+    It is a priority *score* ("points for submissions older than 3 days"), not
+    a count, and it reads 0 on every row the upstream returns — so a job whose
+    only aged signal is old_sub has no aged work as far as we can tell, and
+    must not jump the queue.
+    """
+    feed = _feed({"scored_small": 3, "fresh_huge": 400})
+    feed[0]["extras"]["old_sub"] = 250   # score only, no measured aged rows
     feed[1]["extras"]["old_sub"] = 0
 
     added = refill(feed, batch_size=20, batch_responses=50,
-                   flags={"prioritizeAged": True})
-    assert added[0]["jobId"] == "aged_small", "aged tier must outrank raw size"
+                   flags={"prioritizeAged": True, "balanceByResponses": True})
+    assert added[0]["jobId"] == "fresh_huge", "old_sub must not promote a job"
+
+
+def test_refill_skips_fresh_auto_reject_only_jobs(refill):
+    """0 reviewable and not aged → My Tasks hides it, so never refill with it."""
+    feed = _feed({"normal": 5, "fresh_ar": 0})
+    feed[1]["extras"]["newCount"] = 6   # 6 responses, none reviewable
+
+    added = refill(feed, batch_size=20, batch_responses=100)
+    assert [r["jobId"] for r in added] == ["normal"]
+
+
+def test_refill_takes_aged_auto_reject_only_jobs(refill):
+    """Once aged, clear-only work is visible in My Tasks — so it is refillable.
+
+    Without this the job can never be worked: the composer and auto-refill both
+    passed over it for having 0 reviewable responses, which is why it aged in
+    the first place.
+    """
+    feed = _feed({"normal": 5, "aged_ar": 0})
+    feed[1]["extras"]["newCount"] = 6
+    feed[1]["extras"]["agedCount"] = 6
+
+    added = refill(feed, batch_size=20, batch_responses=100)
+    assert sorted(r["jobId"] for r in added) == ["aged_ar", "normal"]
 
 
 def test_batch_responses_is_stamped_so_later_refills_keep_the_budget(refill):

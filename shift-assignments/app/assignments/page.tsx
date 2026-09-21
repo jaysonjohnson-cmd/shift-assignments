@@ -175,13 +175,18 @@ export default function AssignmentsPage() {
     // unreviewed responses left. Empty jobs in the feed would otherwise land in
     // reviewers' queues as "old" JIDs with nothing to review. Also exclude
     // third-party (Cloud Factory) clients — those can't be approved here.
+    //
+    // A job with aged work counts as active even at 0 reviewable: everything
+    // left on it was auto-rejected, and clearing that down on the Responses
+    // page is the work. Nothing else will ever pick it up, which is why those
+    // jobs are the oldest things in the queue.
     let filtered = (rows as Row[]).filter(
       (r) =>
-        (r.unreviewedCount || 0) > 0 &&
+        ((r.unreviewedCount || 0) > 0 || Number(r.extras?.agedCount ?? 0) > 0) &&
         !EXCLUDED_CLIENTS.has(String(r.extras?.client ?? "").trim().toLowerCase()),
     );
     if (prioritizeAged) {
-      filtered = filtered.filter((r) => Number(r.extras?.old_sub ?? 0) > 0);
+      filtered = filtered.filter((r) => Number(r.extras?.agedCount ?? 0) > 0);
     }
     if (specialJobTypes) {
       filtered = filtered.filter((r) => {
@@ -213,7 +218,8 @@ export default function AssignmentsPage() {
     // a positive threshold only ever assigns confirmed-old work).
     if (prioritizeAged) {
       const dateOf = (r: Row) =>
-        agedSubDates[String(r.jobId || r.id || "")] || "";
+        agedSubDates[String(r.jobId || r.id || "")] ||
+        String(r.extras?.oldestAged ?? "");
       const daysOf = (r: Row) => {
         const iso = dateOf(r);
         if (!iso) return -1; // unknown age

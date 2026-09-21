@@ -100,6 +100,15 @@ _CF_DENIED_CACHE = {"fetched_at": 0.0, "min_date": None, "counts": {}}
 _CF_DENIED_CACHE_TTL_SECONDS = 300
 MAX_CF_DENIED_PAGES = 10
 
+# "Old submission" threshold, in days. Matches what FA-web's own `old_sub`
+# priority component claims to measure ("submissions older than 3 days"), so
+# the Old Submissions view keeps meaning the same thing it always advertised.
+AGED_SUBMISSION_DAYS = 3
+
+_AGED_CACHE = {"fetched_at": 0.0, "min_days": None, "by_job": {}}
+_AGED_CACHE_TTL_SECONDS = 300
+MAX_AGED_PAGES = 10
+
 
 def _g(d, *keys):
     """Return the first non-empty value from `d` among `keys`, else ''."""
@@ -128,7 +137,7 @@ def _safe_int(value):
         return None
 
 
-def _row_from_api(job, cf_denied_count=0):
+def _row_from_api(job, cf_denied_count=0, aged=None):
     """Map a job from /api/prioritized-jobs to the Row shape the UI expects.
 
     /api/prioritized-jobs already includes:
@@ -140,6 +149,11 @@ def _row_from_api(job, cf_denied_count=0):
     no longer surfaced in assignments — jobs with new==0 are filtered out
     entirely, so cf_denied responses (already auto-approved by FieldAgent)
     are not actionable work and don't reach the queue.
+
+    `aged` is this job's entry from `fetch_aged_submissions()`, or None. It
+    becomes `extras.agedCount` / `extras.oldestAged`, which is what every
+    aged-work path keys off. `extras.old_sub` is still passed through, but
+    only as a raw echo of the upstream field — see the note on it below.
     """
     project_id = str(job.get("project_id") or "")
     project_name = ""  # Will be populated separately if needed
@@ -170,7 +184,17 @@ def _row_from_api(job, cf_denied_count=0):
         "unreviewedCount": base_unreviewed + cf_denied_count,
         "oldestSubmission": "",
         "extras": {
+            # Raw echo of FA-web's priority component. NOT a count of aged
+            # submissions and NOT safe to branch on: `priority_details` is a
+            # point breakdown (its parts sum to `total`), `old_sub` is
+            # "points for submissions older than 3 days", and it reads 0 on
+            # every row the upstream returns even when the job demonstrably
+            # has aged work. Use `agedCount` instead.
             "old_sub": int((job.get("priority_details") or {}).get("old_sub") or 0),
+            # Aged pending submissions for this job, measured from
+            # /api/responsegroups rather than trusted from the feed.
+            "agedCount": int((aged or {}).get("count") or 0),
+            "oldestAged": str((aged or {}).get("oldest") or ""),
             "startDate": str(job.get("startDate") or ""),
             # Deadline + backlog signals used by the Old Submissions triage view.
             "endDate": str(job.get("endDate") or ""),
@@ -354,6 +378,106 @@ def _fetch_cf_denied_counts(min_submission_date):
     return counts
 
 
+def _parse_submission_date(raw):
+    """Parse a responsegroup `submission_date` into an aware UTC datetime.
+
+    The feed sends RFC-1123-ish strings ("Fri, 18 Sep 2026 19:50:36 GMT").
+    Returns None when it won't parse, so one bad row can't sink the batch.
+    """
+    try:
+        return datetime.datetime.strptime(
+            str(raw), "%a, %d %b %Y %H:%M:%S %Z"
+        ).replace(tzinfo=datetime.timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def fetch_aged_submissions(min_days=AGED_SUBMISSION_DAYS):
+    """Return {job_id_str: {"count": int, "oldest": iso}} for aged pending work.
+
+    One date-bounded query over `/api/responsegroups` replaces what used to be
+    a per-job scan: `submission_date_to` bounds the result to submissions at
+    least `min_days` old, and every row carries its own `job_id`, so the whole
+    backlog arrives in a page or two instead of one call per job in the feed.
+
+    Rows currently checked out to a third party (`tp_review_status == "N"`)
+    are excluded — that work isn't ours to review until it comes back, and
+    surfacing it would put jobs in reviewers' queues with nothing actionable
+    in them. Rows the third party already handed back are kept, including the
+    CF-flagged ones (`tp_review_status == "X"`, e.g. "CF: [Q4] invalid
+    product"), which are still `status="N"` precisely because they need a
+    human.
+
+    Do NOT derive this from `priority_details.old_sub` or the
+    `*_subs_count` buckets: all four are zero on every row the upstream
+    returns, including jobs whose true aged count is nonzero.
+
+    Best-effort and independently cached, like `_fetch_cf_denied_counts` — the
+    background warmer refreshes the job feed every 45s and this must not ride
+    along on every one of those.
+    """
+    now = time.time()
+    cache = _AGED_CACHE
+    fresh = (now - cache["fetched_at"]) < _AGED_CACHE_TTL_SECONDS
+    if fresh and cache["min_days"] == min_days:
+        return cache["by_job"]
+
+    cutoff = (
+        datetime.datetime.now(datetime.timezone.utc).date()
+        - datetime.timedelta(days=min_days)
+    ).isoformat()
+
+    by_job = {}
+    page = 1
+    try:
+        while page <= MAX_AGED_PAGES:
+            resp = internal_api.get(
+                "/api/responsegroups",
+                params={
+                    "status": "N",
+                    "submission_date_to": cutoff,
+                    "sort": "submission_date",
+                    "page": page,
+                    "per_page": PAGE_SIZE,
+                },
+            )
+            batch = resp.get("data", []) if isinstance(resp, dict) else []
+            if not batch:
+                break
+            for rg in batch:
+                if str(rg.get("tp_review_status") or "").strip().upper() == "N":
+                    continue
+                jid = str(rg.get("job_id") or "")
+                if not jid:
+                    continue
+                parsed = _parse_submission_date(rg.get("submission_date"))
+                entry = by_job.setdefault(jid, {"count": 0, "oldest": ""})
+                entry["count"] += 1
+                if parsed is not None:
+                    iso = parsed.isoformat()
+                    if not entry["oldest"] or iso < entry["oldest"]:
+                        entry["oldest"] = iso
+            if len(batch) < PAGE_SIZE:
+                break
+            page += 1
+    except Exception as exc:  # noqa: BLE001 — best-effort, never block the feed
+        logging.warning("aged-submission fetch failed: %s", exc)
+        # Serve stale data rather than none, so a 429 doesn't make the whole
+        # Old Submissions view read as "no aged work".
+        if cache["by_job"]:
+            return cache["by_job"]
+        return by_job
+
+    cache["fetched_at"] = now
+    cache["min_days"] = min_days
+    cache["by_job"] = by_job
+    logging.info(
+        "bloom.fetch_aged_submissions cutoff=%s jobs=%d rows=%d",
+        cutoff, len(by_job), sum(e["count"] for e in by_job.values()),
+    )
+    return by_job
+
+
 def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True, include_aged=False,
                            max_age=None):
     """Return Rows for every job with unreviewed submissions, pre-prioritized by FA-web.
@@ -405,17 +529,31 @@ def _fetch_and_cache_prioritized_jobs():
     min_date = _earliest_start_date_iso(jobs)
     cf_denied_counts = _fetch_cf_denied_counts(min_date) if min_date else {}
 
+    aged_by_job = fetch_aged_submissions()
+
     # Defensive: skip malformed records with no job id — they can't be assigned
     # or completed, and would render as blank rows in the UI.
-    # Include jobs with either new responses OR aged responses. CF-denied work comes back
-    # as aged submissions that still need human review. The include_aged parameter is
-    # kept for backward compatibility but no longer gates aged inclusion in the main feed.
+    #
+    # `new > 0` is the whole filter. Jobs with nothing in FieldAgent's queue are
+    # excluded even when work is parked at Cloud Factory, because a reviewer
+    # handed one finds nothing in Review and has to "Mark done anyway".
+    #
+    # This used to also admit `old_sub > 0`, reading it off the top level of the
+    # raw row — where it does not exist (it lives under `priority_details`), so
+    # the clause was always false and this filter has only ever been `new > 0`.
+    # Removed rather than repointed: repointing it would let exactly those
+    # empty jobs back in.
+    #
     # Uses _safe_int (not bare int()) since the feed sends "" for some counts.
     rows = [
-        _row_from_api(job, cf_denied_counts.get(str(job.get("id") or ""), 0))
+        _row_from_api(
+            job,
+            cf_denied_counts.get(str(job.get("id") or ""), 0),
+            aged_by_job.get(str(job.get("id") or "")),
+        )
         for job in jobs
         if isinstance(job, dict) and job.get("id") not in (None, "")
-        and ((_safe_int(job.get("new")) or 0) > 0 or (_safe_int(job.get("old_sub")) or 0) > 0)
+        and (_safe_int(job.get("new")) or 0) > 0
     ]
 
     # Skip project name fetching on cache misses to reduce rate limit pressure.
@@ -436,4 +574,11 @@ def clear_cache():
     """Reset the in-process cache. Used by tests and the 'Force refresh' path."""
     _CACHE["fetched_at"] = 0.0
     _CACHE["rows"] = []
+    # The aged-submission cache outlives the job cache by design (5 min vs 60s)
+    # so the warmer doesn't re-query it every 45s. Clear it here anyway: a
+    # Force refresh should re-read aged work too, and leaving it set would
+    # leak between tests.
+    _AGED_CACHE["fetched_at"] = 0.0
+    _AGED_CACHE["min_days"] = None
+    _AGED_CACHE["by_job"] = {}
     clear_project_name_cache()

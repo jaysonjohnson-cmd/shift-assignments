@@ -232,11 +232,14 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
       regularJobs = regularJobs.filter((row) => urgencyScore(row) < 55);
     }
 
-    // Separate aged submissions (old_sub flag from Bloom) from fresh jobs
+    // Separate aged submissions from fresh jobs. `agedCount` is the number of
+    // this job's pending submissions older than the aged threshold, measured
+    // from responsegroups by the backend — not the feed's `old_sub`, which is
+    // a priority score that reads 0 on every job.
     let agedJobs: Row[] = [];
     if (prioritizeAged) {
-      agedJobs = regularJobs.filter((row) => Number(row.extras?.old_sub ?? 0) > 0);
-      regularJobs = regularJobs.filter((row) => Number(row.extras?.old_sub ?? 0) === 0);
+      agedJobs = regularJobs.filter((row) => Number(row.extras?.agedCount ?? 0) > 0);
+      regularJobs = regularJobs.filter((row) => Number(row.extras?.agedCount ?? 0) === 0);
     }
 
     // Helper function to distribute jobs using weighted round-robin

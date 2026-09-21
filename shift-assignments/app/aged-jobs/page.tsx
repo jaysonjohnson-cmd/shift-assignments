@@ -165,9 +165,14 @@ export default function AgedJobsPage() {
     setError(null);
     try {
       const jobs = await getBloomJobs(force, undefined, true);
+      // `agedCount` / `oldestAged` come from the backend's responsegroups
+      // query, so rows arrive already dated — no waiting on the ages poll.
       const aged: AgedRow[] = jobs
-        .filter((r) => Number(r.extras?.old_sub ?? 0) > 0)
-        .map((r) => ({ ...r, daysOld: null, oldestSubDate: null }));
+        .filter((r) => Number(r.extras?.agedCount ?? 0) > 0)
+        .map((r) => {
+          const iso = String(r.extras?.oldestAged ?? "") || null;
+          return { ...r, daysOld: iso ? isoToDaysAgo(iso) : null, oldestSubDate: iso };
+        });
       setRows(aged);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load jobs");
