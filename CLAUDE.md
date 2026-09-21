@@ -212,10 +212,19 @@ Pushing to `main` on GitHub does **not** deploy on its own — that was tried
 repeatedly on 2026-09-18 and no build ever started. Commit and push as normal,
 then Publish.
 
-**`cloudbuild.yaml` must stay in the repo.** Publish refuses to run without it.
-It was deleted on 2026-09-18 on the assumption the platform owned the build;
-publishing broke immediately and restoring the file fixed it. Don't remove it
-again, however unused it looks from in here.
+**`cloudbuild.yaml` must stay at the repo root.** The build reads it and fails
+without it: `Build failed: File cloudbuild.yaml not found`.
+
+It looks like dead config from in here, which is the trap. The running service
+gets `TOOL_SLUG`, `JWT_SIGNING_SECRET` and the rest whether or not this file
+sets them, and `/version` reports a SHA matching no commit in this repo — so
+every sign points at the platform owning the build. It was deleted on that
+reasoning on 2026-09-18 and again on 2026-09-21, and broke the deploy both
+times.
+
+Two different failures are easy to confuse: the error above means the file is
+missing, while `Committed, but no build started` means no build fired at all
+and is a separate problem.
 
 **Service:** Cloud Run, storesight-internal-tools project
 
