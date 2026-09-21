@@ -28,82 +28,61 @@ function mockShift(reviewers: string[]): ShiftDraft {
 }
 
 describe("assignShift", () => {
-  it("deduplicates by projectId (PID)", () => {
-    // Scenario: Same project has 2 jobs (different JIDs)
+  it("keeps every job in a project, deduping only by jobId", () => {
+    // Projects used to be deduped too, so only one job per PID was assignable.
+    // The feed averages ~3 jobs per project, so that discarded most of the
+    // work and reviewers' counts came up short.
     const pool: Row[] = [
-      mockRow("1", "PID-1", "JID-1", 1), // PID-1, Job 1
-      mockRow("2", "PID-1", "JID-2", 2), // PID-1, Job 2 (duplicate PID)
-      mockRow("3", "PID-2", "JID-3", 3), // PID-2, Job 1
-      mockRow("4", "PID-3", "JID-4", 4), // PID-3, Job 1
+      mockRow("1", "PID-1", "JID-1", 1),
+      mockRow("2", "PID-1", "JID-2", 2), // same project, different job
+      mockRow("3", "PID-2", "JID-3", 3),
+      mockRow("4", "PID-3", "JID-4", 4),
     ];
 
     const draft = mockShift(["Saylor", "Laurel"]);
     const result = assignShift(pool, draft);
+    const assigned = Object.values(result.assignments).flat();
 
-    // Collect all PIDs assigned across reviewers
-    const assignedPids = new Set<string>();
-    const pidsPerReviewer: Record<string, Set<string>> = {
-      Saylor: new Set(),
-      Laurel: new Set(),
-    };
+    // Both jobs of PID-1 are assignable.
+    const jids = assigned.map((r) => r.jobId);
+    expect(jids).toContain("JID-1");
+    expect(jids).toContain("JID-2");
 
-    for (const [reviewer, rows] of Object.entries(result.assignments)) {
-      for (const row of rows) {
-        const pid = row.projectId;
-        assignedPids.add(pid);
-        pidsPerReviewer[reviewer].add(pid);
-      }
-    }
-
-    // Verify no PID is assigned to both reviewers
-    for (const pid of assignedPids) {
-      const saylorsCount = pidsPerReviewer["Saylor"].has(pid) ? 1 : 0;
-      const laurelCount = pidsPerReviewer["Laurel"].has(pid) ? 1 : 0;
-      expect(saylorsCount + laurelCount).toBeLessThanOrEqual(
-        1,
-        `PID ${pid} assigned to multiple reviewers`
-      );
-    }
-
-    // Verify PID-1 only appears once (JID-1, not JID-2)
-    const allAssigned = Object.values(result.assignments).flat();
-    const pid1Jobs = allAssigned.filter((r) => r.projectId === "PID-1");
-    expect(pid1Jobs.length).toBe(1);
-    expect(pid1Jobs[0].jobId).toBe("JID-1"); // First (highest priority) wins
+    // ...but no single job is ever handed to two reviewers.
+    expect(new Set(jids).size).toBe(jids.length);
   });
 
-  it("prioritizes highest-priority jobs per PID", () => {
-    // Scenario: PID-1 has 2 jobs with different priorities
-    const pool: Row[] = [
-      mockRow("1", "PID-1", "JID-1-low", 10), // Lower priority
-      mockRow("2", "PID-1", "JID-1-high", 1), // Higher priority (goes first)
-      mockRow("3", "PID-2", "JID-2", 2),
-    ];
-
-    const draft = mockShift(["Saylor"]);
-    const result = assignShift(pool, draft);
-
-    const pid1Jobs = Object.values(result.assignments)
-      .flat()
-      .filter((r) => r.projectId === "PID-1");
-
-    expect(pid1Jobs.length).toBe(1);
-    expect(pid1Jobs[0].jobId).toBe("JID-1-high");
-  });
-
-  it("moves duplicate PIDs to leftover", () => {
+  it("drops a repeated jobId from the pool", () => {
+    // The upstream feed can return the same job twice; only the first (most
+    // urgent) copy survives.
     const pool: Row[] = [
       mockRow("1", "PID-1", "JID-1", 1),
-      mockRow("2", "PID-1", "JID-2", 2), // Duplicate
-      mockRow("3", "PID-2", "JID-3", 3),
+      mockRow("2", "PID-1", "JID-1", 9), // same jobId again
+      mockRow("3", "PID-2", "JID-2", 3),
     ];
 
     const draft = mockShift(["Saylor"]);
     const result = assignShift(pool, draft);
 
-    // JID-2 should be in leftover (duplicate PID)
-    const leftoverJids = result.leftover.map((r) => r.jobId);
-    expect(leftoverJids).toContain("JID-2");
+    const jids = Object.values(result.assignments).flat().map((r) => r.jobId);
+    expect(jids.filter((j) => j === "JID-1").length).toBe(1);
+  });
+
+  it("puts jobs that exceed capacity in leftover", () => {
+    // leftover is what didn't fit the reviewers' counts — not duplicates,
+    // which are removed from the pool before distribution.
+    const pool: Row[] = [
+      mockRow("1", "PID-1", "JID-1", 1),
+      mockRow("2", "PID-2", "JID-2", 2),
+      mockRow("3", "PID-3", "JID-3", 3),
+    ];
+
+    const draft = mockShift(["Saylor"]);
+    draft.slots[0].count = 1; // room for one job only
+    const result = assignShift(pool, draft);
+
+    expect(Object.values(result.assignments).flat().length).toBe(1);
+    expect(result.leftover.length).toBe(2);
   });
 
   it("does not break pinned projects", () => {

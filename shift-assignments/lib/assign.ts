@@ -138,22 +138,25 @@ function urgencyScore(row: Row): number {
 export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = false, balanceByResponses = false, prioritizeUrgency = false, prioritizeAged = false): ShiftResult {
   const pins = draft.projectPins ?? {};
 
-  // Guarantee each job and each project is handed to at most one reviewer.
-  // The upstream feed can return more than one record for the same job or
-  // project, which would otherwise let the same jobId/projectId land on
-  // multiple reviewers and overlap the team. Collapse duplicates by jobId
-  // and projectId here. The pool is assumed pre-sorted highest-priority
-  // first, so the first occurrence we keep is the most urgent one.
+  // Guarantee each job is handed to at most one reviewer. The upstream feed can
+  // return more than one record for the same job, which would otherwise let the
+  // same jobId land on two reviewers and duplicate the work. The pool is assumed
+  // pre-sorted highest-priority first, so the first occurrence kept is the most
+  // urgent one.
+  //
+  // Projects are deliberately NOT deduped. They used to be, to stop two
+  // reviewers landing in the same project in Collection Review — but the feed
+  // averages ~3 jobs per project, so it discarded roughly two thirds of the
+  // available work (367 jobs collapsed to 101) and reviewers' counts silently
+  // came up short: 15 requested, 9 delivered. The collision it guarded against
+  // is handled at the link instead — "Open in Review" is scoped to the exact
+  // job, not the project.
   const seenJobKeys = new Set<string>();
-  const seenProjectKeys = new Set<string>();
   const dedupedPool: Row[] = [];
   for (const row of pool) {
     const jobKey = String(row.jobId || row.id || "");
-    const projectKey = String(row.projectId || "");
     if (jobKey && seenJobKeys.has(jobKey)) continue;
-    if (projectKey && seenProjectKeys.has(projectKey)) continue;
     if (jobKey) seenJobKeys.add(jobKey);
-    if (projectKey) seenProjectKeys.add(projectKey);
     dedupedPool.push(row);
   }
 
