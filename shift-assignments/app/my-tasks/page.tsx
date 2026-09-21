@@ -25,6 +25,9 @@ type Density = "comfortable" | "compact";
 const DENSITY_KEY = "storesight-tasks-density";
 const VIEW_BY_PID_KEY = "storesight-tasks-view-by-pid";
 
+/** At or above this many unreviewed responses, skipping is called what it is. */
+const SKIP_WARNING_THRESHOLD = 5;
+
 const EMPTY_QUEUE_MESSAGES = [
   "You've cleared the queue!",
   "Nothing to see here. Great job!",
@@ -489,6 +492,11 @@ function BlockedConfirmationModal({
   onCancel: () => void;
 }) {
   const [confirming, setConfirming] = useState(false);
+  // Below this, a couple of responses really can land mid-click and skipping
+  // them is reasonable. Above it the job simply isn't finished, and the old
+  // copy ("came in while marking this job done") read like a timing quirk
+  // either way — one reviewer skipped 33 responses on that wording.
+  const heavy = unreviewed >= SKIP_WARNING_THRESHOLD;
 
   const handleConfirm = async () => {
     setConfirming(true);
@@ -499,24 +507,41 @@ function BlockedConfirmationModal({
     }
   };
 
+  const tint = heavy ? "#FF4D4D" : "#FFA500";
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="max-w-sm rounded-lg border border-storesight-border bg-white p-4 shadow-lg dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark">
         <div className="flex items-start gap-3">
-          <div className="shrink-0 rounded-full bg-[#FFA500]/15 p-2">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="text-[#FFA500]" aria-hidden>
+          <div className="shrink-0 rounded-full p-2" style={{ backgroundColor: `${tint}26` }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" style={{ color: tint }} aria-hidden>
               <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z" fill="currentColor" />
             </svg>
           </div>
           <div className="min-w-0 flex-1">
             <h3 className="font-semibold text-storesight-ink-dark dark:text-storesight-ink-dark">
-              New responses arrived
+              {heavy ? "This job isn't finished" : "Responses still unreviewed"}
             </h3>
             <p className="mt-1 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-              {unreviewed} unreviewed response{unreviewed === 1 ? "" : "s"} came in while marking this job done.
+              {heavy ? (
+                <>
+                  <strong className="text-storesight-ink dark:text-storesight-ink-dark">
+                    {unreviewed} responses
+                  </strong>{" "}
+                  are still unreviewed on this job. Marking it done leaves them
+                  for a teammate to pick up.
+                </>
+              ) : (
+                <>
+                  {unreviewed} unreviewed response{unreviewed === 1 ? "" : "s"}{" "}
+                  {unreviewed === 1 ? "is" : "are"} still on this job.
+                </>
+              )}
             </p>
             <p className="mt-2 text-[12px] leading-snug text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-              Clear them in FieldAgent, or mark done anyway to skip them.
+              {heavy
+                ? "Only skip them if they can't be cleared in FieldAgent."
+                : "Clear them in FieldAgent, or skip them if they can't be cleared."}
             </p>
           </div>
         </div>
@@ -533,9 +558,16 @@ function BlockedConfirmationModal({
             type="button"
             onClick={handleConfirm}
             disabled={confirming}
-            className="flex-1 rounded-lg bg-[#FFA500]/15 px-3 py-2 text-sm font-semibold text-[#B26A00] transition hover:bg-[#FFA500]/25 disabled:opacity-50 dark:text-[#FFA500]"
+            // The count goes in the label on purpose: "Mark done anyway" hid
+            // what was actually being given up.
+            className="flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition disabled:opacity-50"
+            style={{ backgroundColor: `${tint}26`, color: tint }}
           >
-            {confirming ? "…" : "Mark done anyway"}
+            {confirming
+              ? "…"
+              : heavy
+                ? `Skip ${unreviewed} responses`
+                : "Mark done anyway"}
           </button>
         </div>
       </div>
