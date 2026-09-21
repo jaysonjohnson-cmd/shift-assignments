@@ -1,3 +1,4 @@
+import { describe, expect, it } from "vitest";
 import { assignShift, evenSplit, evenDistribute } from "./assign";
 import type { Row, ShiftDraft } from "./types";
 
@@ -7,9 +8,12 @@ function mockRow(id: string, projectId: string, jobId: string, priority = 999): 
     id,
     jobId,
     projectId,
+    projectName: `Project ${projectId}`,
+    groupIds: [],
     priority,
-    title: `Job ${jobId}`,
+    name: `Job ${jobId}`,
     unreviewedCount: 5,
+    oldestSubmission: "",
     extras: {},
   };
 }
@@ -17,12 +21,13 @@ function mockRow(id: string, projectId: string, jobId: string, priority = 999): 
 // Helper to create a shift draft with reviewers
 function mockShift(reviewers: string[]): ShiftDraft {
   return {
-    shiftTime: "9:00 AM - 12:00 PM",
     slots: reviewers.map((r) => ({
       reviewerId: r,
       count: 2,
       locked: false,
     })),
+    totalTarget: reviewers.length * 2,
+    assignAll: false,
     projectPins: {},
   };
 }
@@ -161,11 +166,12 @@ describe("assignShift", () => {
     ];
 
     const draft: ShiftDraft = {
-      shiftTime: "9:00 AM - 12:00 PM",
       slots: [
         { reviewerId: "Saylor", count: 2, locked: false },
         { reviewerId: "Laurel", count: 2, locked: false },
       ],
+      totalTarget: 4,
+      assignAll: false,
       projectPins: {
         Saylor: ["PID-1"], // Pin PID-1 to Saylor
       },
@@ -173,13 +179,16 @@ describe("assignShift", () => {
 
     const result = assignShift(pool, draft);
 
-    // Both jobs for PID-1 should go to Saylor (pinned)
+    // Both jobs for PID-1 go to Saylor, which is what pinning a project means.
+    // The project dedup used to drop JID-2 before this ran, so a pin only ever
+    // delivered one job however many the project held.
     const saylorsJobs = result.assignments["Saylor"] ?? [];
     const pid1JobsForSaylor = saylorsJobs.filter((r) => r.projectId === "PID-1");
 
-    // With the new dedup, we should get only the first one
-    expect(pid1JobsForSaylor.length).toBe(1);
-    expect(pid1JobsForSaylor[0].jobId).toBe("JID-1");
+    expect(pid1JobsForSaylor.length).toBe(2);
+    expect(pid1JobsForSaylor.map((r) => r.jobId).sort()).toEqual(["JID-1", "JID-2"]);
+    // ...and none of it leaks to the other reviewer.
+    expect((result.assignments["Laurel"] ?? []).length).toBe(0);
   });
 });
 
