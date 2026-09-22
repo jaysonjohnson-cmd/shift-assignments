@@ -1749,11 +1749,21 @@ def _dedup_rows(rows):
     return out
 
 
-def _list_completions_for_snapshot(snapshot_id, reviewer_email=None, force=False):
+def _list_completions_for_snapshot(snapshot_id, reviewer_email=None, force=False,
+                                   include_superseded=False):
     """Return completion docs for a snapshot, optionally filtered by reviewer.
 
     Pass ``force=True`` on correctness-critical paths (the finish check) to read
     authoritatively from Storage rather than the warm cache.
+
+    Superseded completions are excluded by default. A completion is superseded
+    when the same job is handed back to the same reviewer because it picked up
+    new responses — the checkmark described the earlier pass, and the row is
+    live work again, so every "is this done?" caller must stop seeing it.
+    The doc is kept rather than deleted so the history survives; the weekly
+    leaderboard is unaffected either way because it counts "review_tally" docs,
+    not completions. Pass include_superseded=True only to dump or purge the
+    raw set.
     """
     docs = roles.list_docs_by_kind("completion", force=force)
     out = []
@@ -1764,8 +1774,47 @@ def _list_completions_for_snapshot(snapshot_id, reviewer_email=None, force=False
             continue
         if norm_email and (data.get("reviewer_email") or "").lower() != norm_email:
             continue
+        if not include_superseded and data.get("superseded_at"):
+            continue
         out.append({"id": doc.get("id"), **data})
     return out
+
+
+def _supersede_completions_for_rows(snapshot_id, reviewer_email, rows):
+    """Stamp this reviewer's completions for `rows` as superseded.
+
+    Called when a refill hands someone a job they had already checked off, so
+    the returning row reads as pending work instead of Done. Best-effort: a
+    failure here leaves a stale checkmark, which is the pre-existing behaviour,
+    and must never fail the refill.
+    """
+    keys = {_job_key(r) for r in rows if _job_key(r)}
+    if not keys:
+        return 0
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    superseded = 0
+    try:
+        existing = _list_completions_for_snapshot(
+            snapshot_id, reviewer_email=reviewer_email, force=True)
+    except Exception as exc:  # noqa: BLE001 — never fail a refill over this
+        logging.warning("supersede: completion lookup failed for %s: %s",
+                        reviewer_email, exc)
+        return 0
+    for c in existing:
+        if _completion_job_key(c) not in keys or not c.get("id"):
+            continue
+        doc = {k: v for k, v in c.items() if k != "id"}
+        doc["superseded_at"] = now
+        try:
+            internal_api.put(f"{_STORAGE_PATH}/{c['id']}", json={"data": doc})
+            roles.cache_upsert_doc("completion", {"id": c["id"], "data": doc})
+            superseded += 1
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logging.warning("supersede: failed for completion %s: %s", c["id"], exc)
+    if superseded:
+        logging.warning("auto-refill: superseded %d completion(s) for %s "
+                        "(job reassigned with new responses)", superseded, reviewer_email)
+    return superseded
 
 
 def _live_counts_by_job():
@@ -2276,6 +2325,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             return []  # Can't proceed safely without lock
 
         touched_keys = set()
+        held_pairs = set()  # (reviewer_email, job_key) — who is holding what
         shift_reviewers = set()
         max_part = -1
         batch_size = None
@@ -2306,11 +2356,13 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             data = doc.get("data") or {}
             if data.get("shift_snapshot_id") != snap_id:
                 continue
-            shift_reviewers.add((data.get("reviewer_email") or "").strip().lower())
+            doc_reviewer = (data.get("reviewer_email") or "").strip().lower()
+            shift_reviewers.add(doc_reviewer)
             for r in data.get("rows") or []:
                 k = _job_key(r)
                 if k:
                     touched_keys.add(k)
+                    held_pairs.add((doc_reviewer, k))
             if (data.get("reviewer_email") or "").strip().lower() == norm:
                 max_part = max(max_part, int(data.get("part") or 0))
                 bs = data.get("batch_size")
@@ -2322,20 +2374,31 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                 for row in data.get("rows") or []:
                     current_queue_responses += _row_responses(row)
 
-        # A job is only off-limits while it's actively sitting in someone's queue —
-        # once completed, drop it from the exclusion set so fresh unreviewed
-        # responses that land on it later (this feed gets continuous new
-        # submissions all day) are reachable again. Without this, every job ever
-        # touched during the shift was excluded forever, so the "fresh" pool only
-        # ever shrank — completed jobs that later racked up brand-new unreviewed
-        # responses became permanently unassignable to anyone.
+        # A job is off-limits while it is actively sitting in someone's queue.
+        # Once every holder has completed it, it drops out of the exclusion set
+        # so fresh unreviewed responses that land on it later (this feed gets
+        # continuous new submissions all day) are reachable again. Without that
+        # release, every job touched during the shift stayed excluded forever
+        # and the "fresh" pool only ever shrank.
+        #
+        # "Every holder", not "anyone": completions are per (reviewer, job), so
+        # subtracting a flat set of completed keys released a job the moment the
+        # FIRST reviewer finished it — while others were still holding it open.
+        # It then had no exclusion left and was handed out again on every
+        # subsequent refill, which is how one job ended up pending in three
+        # queues at once while a fourth reviewer had already completed it.
         try:
             completions = _list_completions_for_snapshot(snap_id, force=True)
         except Exception as exc:  # noqa: BLE001 — refill is best-effort
             logging.warning("auto-refill: failed to list completions for %s: %s", email, exc)
             completions = []
         completed_keys = {_completion_job_key(c) for c in completions if _completion_job_key(c)}
-        assigned_keys = touched_keys - completed_keys
+        completed_pairs = {
+            ((c.get("reviewer_email") or "").strip().lower(), _completion_job_key(c))
+            for c in completions
+            if _completion_job_key(c)
+        }
+        assigned_keys = {k for (rev, k) in held_pairs if (rev, k) not in completed_pairs}
         logging.warning("auto-refill KEYS for %s: touched=%d, completed=%d, assigned=%d (keys to exclude from pool)",
                        email, len(touched_keys), len(completed_keys), len(assigned_keys))
         # Log sample keys to verify they match expected format
@@ -2507,6 +2570,15 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         if not fresh:
             logging.warning("auto-refill: no new jobs left for %s (reasons: %s)", email, skipped_reasons)
             return []
+
+        # A job handed back to the reviewer who already completed it is live
+        # work again — it only re-entered the pool because new responses landed
+        # on it. Retire that checkmark, or the row renders as Done the moment it
+        # arrives (My Tasks matches completions by job id alone) and the new
+        # responses are unreachable. The doc is stamped rather than deleted so
+        # the history survives; weekly standings come from "review_tally" docs
+        # and are untouched either way.
+        _supersede_completions_for_rows(snap_id, norm, fresh)
 
         try:
             next_part = max_part + 1
@@ -3105,7 +3177,8 @@ def api_shifts_list_completions():
     if not snap_id:
         return jsonify({"data": {"snapshot_id": None, "completions": []}})
     try:
-        completions = _list_completions_for_snapshot(snap_id)
+        # Raw dump: show superseded docs too, or this hides state that exists.
+        completions = _list_completions_for_snapshot(snap_id, include_superseded=True)
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e)
     return jsonify(
@@ -3126,7 +3199,9 @@ def api_shifts_reset_completions():
     if not snap_id:
         return jsonify({"data": {"deleted": 0}})
     try:
-        completions = _list_completions_for_snapshot(snap_id)
+        # Purge means purge — superseded docs must go too, or they linger
+        # against the 10k-per-namespace storage cap.
+        completions = _list_completions_for_snapshot(snap_id, include_superseded=True)
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e)
     deleted = 0

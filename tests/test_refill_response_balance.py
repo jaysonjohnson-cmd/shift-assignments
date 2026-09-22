@@ -345,6 +345,132 @@ def test_special_job_types_keeps_the_refill_scoped(refill):
     assert sorted(r["jobId"] for r in added) == ["p1", "p2", "rr_plural", "rr_singular"]
 
 
+def _refill_with_team(monkeypatch, feed, holders, completions, target=REVIEWER,
+                      batch_size=5):
+    """Run a refill where teammates already hold rows.
+
+    `holders`: {reviewer_email: [job_key, ...]} currently in their shift doc.
+    `completions`: [(reviewer_email, job_key), ...] marked done.
+    """
+    stored = []
+    shift_docs = []
+    for i, (rev, keys) in enumerate(holders.items()):
+        shift_docs.append({"id": f"rs-{i}", "data": {
+            "kind": "reviewer_shift", "shift_snapshot_id": "snap1",
+            "reviewer_email": rev, "part": 0, "batch_size": batch_size,
+            "batch_responses": 100,
+            "rows": [{"jobId": k, "id": k, "unreviewedCount": 1} for k in keys],
+        }})
+    snap = {"id": "snap1", "data": {"kind": "shift_snapshot", "prioritization_flags": {}}}
+    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind, force=False: {
+        "reviewer_shift": shift_docs, "shift_snapshot": [snap],
+    }.get(kind, []))
+    # Real completion docs carry an id; the supersede path needs it to PUT.
+    monkeypatch.setattr(
+        main, "_list_completions_for_snapshot",
+        lambda *a, **k: [{"id": f"c-{rev}-{job}", "reviewer_email": rev,
+                          "job_id": job, "shift_snapshot_id": "snap1"}
+                         for rev, job in completions])
+    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda *a, **k: feed)
+    monkeypatch.setattr(main.bloom, "is_excluded_client", lambda c: False)
+    monkeypatch.setattr(internal_api, "post",
+                        lambda path, json=None: stored.append(json) or {"data": {"id": "new"}})
+    monkeypatch.setattr(main, "_try_delete", lambda *a, **k: None)
+    monkeypatch.setattr(main.roles, "cache_upsert_doc", lambda *a, **k: None)
+    return main._auto_refill_reviewer("snap1", target, batch_size)
+
+
+def test_refill_skips_a_job_a_teammate_still_holds_open(monkeypatch):
+    """One reviewer completing a job must not release it from everyone else.
+
+    Reproduces production job 1971325: Saylor completed it, and because the
+    exclusion set subtracted a flat set of completed keys, the job lost its
+    exclusion entirely and was handed out again on later refills — ending up
+    pending in three queues at once.
+    """
+    feed = _feed({"shared": 1, "fresh": 1})
+    added = _refill_with_team(
+        monkeypatch, feed,
+        holders={
+            REVIEWER: [],
+            "saylor@storesight.com": ["shared"],   # completed it
+            "hudson@storesight.com": ["shared"],   # still working it
+        },
+        completions=[("saylor@storesight.com", "shared")],
+    )
+    assert [r["jobId"] for r in added] == ["fresh"], (
+        "a job another reviewer still has open must not be reassigned"
+    )
+
+
+def test_refill_reopens_a_job_once_every_holder_has_finished(monkeypatch):
+    """The release still works — it just needs ALL holders done, not one.
+
+    This is the behaviour the flat subtraction existed for: the feed takes new
+    submissions all day, so a job everyone has finished must become reachable
+    again rather than staying excluded for the rest of the shift.
+    """
+    feed = _feed({"shared": 1})
+    added = _refill_with_team(
+        monkeypatch, feed,
+        holders={
+            REVIEWER: [],
+            "saylor@storesight.com": ["shared"],
+            "hudson@storesight.com": ["shared"],
+        },
+        completions=[("saylor@storesight.com", "shared"),
+                     ("hudson@storesight.com", "shared")],
+    )
+    assert [r["jobId"] for r in added] == ["shared"], (
+        "once every holder is done the job is assignable again"
+    )
+
+
+def test_refill_retires_the_checkmark_when_a_job_comes_back(monkeypatch):
+    """A job handed back after new responses must not arrive already Done.
+
+    My Tasks matches completions by job id alone, so a returning row would
+    render with its old checkmark and the new responses would be unreachable —
+    the "Done, 1 response" rows reviewers were seeing.
+    """
+    puts = []
+    monkeypatch.setattr(internal_api, "put",
+                        lambda path, json=None: puts.append((path, json)) or {"data": {}})
+    feed = _feed({"comeback": 1})
+    added = _refill_with_team(
+        monkeypatch, feed,
+        holders={REVIEWER: []},
+        completions=[(REVIEWER, "comeback")],
+    )
+
+    assert [r["jobId"] for r in added] == ["comeback"], "job should be reassigned"
+    assert len(puts) == 1, "its completion should have been stamped"
+    assert puts[0][1]["data"]["superseded_at"], "stamped, not deleted"
+    assert puts[0][1]["data"]["job_id"] == "comeback"
+
+
+def test_superseded_completions_stop_counting_as_done(monkeypatch):
+    """Once stamped, a completion is invisible to every 'is this done?' read."""
+    docs = [
+        {"id": "c1", "data": {"kind": "completion", "shift_snapshot_id": "snap1",
+                              "reviewer_email": REVIEWER, "job_id": "a"}},
+        {"id": "c2", "data": {"kind": "completion", "shift_snapshot_id": "snap1",
+                              "reviewer_email": REVIEWER, "job_id": "b",
+                              "superseded_at": "2026-09-22T12:00:00+00:00"}},
+    ]
+    monkeypatch.setattr(main.roles, "list_docs_by_kind",
+                        lambda kind, force=False: docs if kind == "completion" else [])
+
+    active = main._list_completions_for_snapshot("snap1", reviewer_email=REVIEWER)
+    assert [c["job_id"] for c in active] == ["a"]
+
+    everything = main._list_completions_for_snapshot(
+        "snap1", reviewer_email=REVIEWER, include_superseded=True)
+    assert sorted(c["job_id"] for c in everything) == ["a", "b"], (
+        "the doc is kept so an admin dump and purge still see it"
+    )
+
+
 def test_special_job_type_fragments_match_the_frontend_list():
     """The two fragment lists must stay identical.
 
