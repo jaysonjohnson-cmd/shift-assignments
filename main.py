@@ -2016,11 +2016,21 @@ def _job_key(row):
     return str((row or {}).get("jobId") or (row or {}).get("id") or "")
 
 
-def _cleanup_orphaned_refill_locks(max_age_seconds=600):
-    """Clean up refill_lock documents older than max_age_seconds (default 10 min).
+_REFILL_LOCK_MAX_AGE_SECONDS = 120
+
+
+def _cleanup_orphaned_refill_locks(max_age_seconds=_REFILL_LOCK_MAX_AGE_SECONDS):
+    """Clean up refill_lock documents older than max_age_seconds.
 
     Defensive measure against orphaned locks accumulating if exceptions occur
     that somehow bypass lock cleanup. Runs best-effort and never blocks refill.
+
+    The window is deliberately short. Release happens in a finally block, so a
+    lock only survives if the process itself dies mid-refill — and since the
+    lock is per snapshot, a survivor blocks every reviewer's top-up, not just
+    the one who orphaned it. A refill is seconds of work against a warm feed
+    cache, so two minutes is already generous; the old ten-minute window would
+    have stalled the whole team for a shift-noticeable stretch.
     """
     try:
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -2287,8 +2297,9 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
     prioritizeUrgency, etc.) so refills maintain consistent prioritization.
 
     Concurrent refill safety: uses a "refill_lock" marker in storage to prevent
-    duplicate jobs when multiple refill requests run in parallel. Only one
-    refill per reviewer per snapshot is allowed at a time.
+    duplicate jobs when multiple refill requests run in parallel. One refill per
+    snapshot at a time — the lock protects the shared job pool, so it cannot be
+    scoped to a single reviewer.
     """
     # Defensive cleanup: remove any orphaned locks older than 10 minutes
     _cleanup_orphaned_refill_locks()
@@ -2297,16 +2308,26 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
     lock_id = None
     logging.warning("auto-refill: starting for %s (snap=%s, fallback_count=%d)", email, snap_id, fallback_count)
     try:
-        # Guard against concurrent refills: check if another refill is in progress.
-        # If so, skip this one to avoid distributing the same jobs twice.
+        # Guard against concurrent refills: one at a time per SNAPSHOT, not per
+        # reviewer. The contended resource is the shared pool — a refill reads
+        # which jobs are held, picks from what's left, then writes. Two refills
+        # for different reviewers overlapping that read-modify-write both see
+        # the same free jobs and both take them. Scoping the lock to the
+        # reviewer only stopped someone double-refilling themselves, which is
+        # not the race that hands two people the same job.
+        #
+        # A skipped refill is not a lost one: the reviewer has nothing pending,
+        # so the self-heal path in /api/shifts/my retries on their next poll
+        # (see _SELF_HEAL_COOLDOWN_SECONDS).
         try:
             lock_docs = roles.list_docs_by_kind("refill_lock", force=True)
             for doc in lock_docs:
                 data = doc.get("data") or {}
-                if (data.get("shift_snapshot_id") == snap_id and
-                    (data.get("reviewer_email") or "").strip().lower() == norm):
-                    logging.info("auto-refill skipped for %s (refill already in progress)", email)
-                    return []  # Another refill is running; skip to avoid duplicates
+                if data.get("shift_snapshot_id") == snap_id:
+                    logging.info(
+                        "auto-refill skipped for %s (refill already running for %s)",
+                        email, data.get("reviewer_email") or "?")
+                    return []  # Another refill holds the pool; skip to avoid duplicates
         except Exception:
             pass  # Best-effort; continue without the lock if it fails
 

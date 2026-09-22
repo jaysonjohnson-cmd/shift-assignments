@@ -7,6 +7,7 @@ tiny jobs while heavy work sat unassigned. Refill now fills to a response
 budget, biggest jobs first.
 """
 
+import datetime
 import os
 import pathlib
 
@@ -469,6 +470,76 @@ def test_superseded_completions_stop_counting_as_done(monkeypatch):
     assert sorted(c["job_id"] for c in everything) == ["a", "b"], (
         "the doc is kept so an admin dump and purge still see it"
     )
+
+
+def _refill_with_lock(monkeypatch, feed, lock_docs, target=REVIEWER):
+    """Run a refill with the given refill_lock docs already in storage."""
+    stored = []
+    shift_docs = [{"id": "rs-0", "data": {
+        "kind": "reviewer_shift", "shift_snapshot_id": "snap1",
+        "reviewer_email": target, "rows": [], "part": 0,
+        "batch_size": 5, "batch_responses": 100,
+    }}]
+    snap = {"id": "snap1", "data": {"kind": "shift_snapshot", "prioritization_flags": {}}}
+    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind, force=False: {
+        "reviewer_shift": shift_docs, "shift_snapshot": [snap],
+        "refill_lock": lock_docs,
+    }.get(kind, []))
+    monkeypatch.setattr(main, "_list_completions_for_snapshot", lambda *a, **k: [])
+    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda *a, **k: feed)
+    monkeypatch.setattr(main.bloom, "is_excluded_client", lambda c: False)
+    monkeypatch.setattr(internal_api, "post",
+                        lambda path, json=None: stored.append(json) or {"data": {"id": "new"}})
+    monkeypatch.setattr(main, "_try_delete", lambda *a, **k: None)
+    monkeypatch.setattr(main.roles, "cache_upsert_doc", lambda *a, **k: None)
+    return main._auto_refill_reviewer("snap1", target, 5)
+
+
+def _lock(reviewer, snap="snap1", age_seconds=0):
+    when = (datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(seconds=age_seconds)).isoformat()
+    return {"id": f"lock-{reviewer}", "data": {
+        "kind": "refill_lock", "shift_snapshot_id": snap,
+        "reviewer_email": reviewer, "locked_at": when}}
+
+
+def test_refill_waits_on_another_reviewers_refill(monkeypatch):
+    """The lock covers the shared pool, so ANY in-flight refill blocks.
+
+    Scoped per reviewer it only stopped someone double-refilling themselves,
+    which is not the race that hands two people the same job: two refills for
+    different reviewers overlap on the read-modify-write and both take the
+    same free jobs.
+    """
+    added = _refill_with_lock(
+        monkeypatch, _feed({"a": 1, "b": 1}),
+        lock_docs=[_lock("saylor@storesight.com")])
+    assert added == [], "a refill running for someone else must block this one"
+
+
+def test_refill_ignores_a_lock_from_a_different_shift(monkeypatch):
+    """A lock only guards its own snapshot."""
+    added = _refill_with_lock(
+        monkeypatch, _feed({"a": 1, "b": 1}),
+        lock_docs=[_lock("saylor@storesight.com", snap="some-other-snapshot")])
+    assert [r["jobId"] for r in added] == ["a", "b"]
+
+
+def test_orphaned_locks_expire_in_two_minutes(monkeypatch):
+    """A stuck lock now blocks the whole team, so the window has to be short."""
+    assert main._REFILL_LOCK_MAX_AGE_SECONDS == 120
+
+    deleted = []
+    monkeypatch.setattr(main, "_try_delete", lambda doc_id: deleted.append(doc_id))
+    monkeypatch.setattr(
+        main.roles, "list_docs_by_kind",
+        lambda kind, force=False: [
+            _lock("stuck@storesight.com", age_seconds=300),
+            _lock("fresh@storesight.com", age_seconds=5),
+        ] if kind == "refill_lock" else [])
+
+    main._cleanup_orphaned_refill_locks()
+    assert deleted == ["lock-stuck@storesight.com"], "only the stale lock goes"
 
 
 def test_special_job_type_fragments_match_the_frontend_list():
