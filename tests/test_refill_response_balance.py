@@ -542,6 +542,37 @@ def test_orphaned_locks_expire_in_two_minutes(monkeypatch):
     assert deleted == ["lock-stuck@storesight.com"], "only the stale lock goes"
 
 
+def test_pg_store_walk_only_keeps_the_refill_scoped(refill):
+    """A P&G-scoped shift must not top up with anything else.
+
+    Keyed off the feed's own png_store_walk flag rather than the job name:
+    measured against the live feed the flag matched the 9 jobs named "P&G
+    Display Store Walk" exactly, with no misses either way, so it carries the
+    same meaning without breaking on a rename.
+    """
+    feed = _feed({"walk1": 5, "walk2": 5, "ordinary": 200})
+    for row in feed:
+        row["extras"]["pngStoreWalk"] = row["jobId"].startswith("walk")
+    # A name that looks right but lacks the flag must NOT qualify.
+    feed[2]["name"] = "P&G Display Store Walk (Lookalike)"
+
+    added = refill(feed, batch_size=20, batch_responses=300,
+                   flags={"pgStoreWalkOnly": True})
+
+    assert sorted(r["jobId"] for r in added) == ["walk1", "walk2"]
+
+
+def test_pg_store_walk_off_leaves_the_pool_alone(refill):
+    """Without the flag the filter must not silently scope a normal shift."""
+    feed = _feed({"walk": 5, "ordinary": 5})
+    feed[0]["extras"]["pngStoreWalk"] = True
+    feed[1]["extras"]["pngStoreWalk"] = False
+
+    added = refill(feed, batch_size=20, batch_responses=300, flags={})
+
+    assert sorted(r["jobId"] for r in added) == ["ordinary", "walk"]
+
+
 def test_special_job_type_fragments_match_the_frontend_list():
     """The two fragment lists must stay identical.
 

@@ -180,6 +180,7 @@ export async function publishShift(
     prioritizeAged?: boolean;
     specialJobTypes?: boolean;
     retailPipelineOnly?: boolean;
+    pgStoreWalkOnly?: boolean;
   },
 ): Promise<{ id: string; published_at: string }> {
   const resp = await call<{ data: { id: string; published_at: string } }>(

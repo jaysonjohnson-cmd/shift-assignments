@@ -2467,17 +2467,21 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         prioritize_aged = bool(prioritization_flags.get("prioritizeAged", False))
         balance_by_responses = bool(prioritization_flags.get("balanceByResponses", False))
         retail_pipeline_only = bool(prioritization_flags.get("retailPipelineOnly", False))
+        pg_store_walk_only = bool(prioritization_flags.get("pgStoreWalkOnly", False))
         special_job_types = bool(prioritization_flags.get("specialJobTypes", False))
         logging.warning(
-            "auto-refill flags for %s: new=%s urgency=%s aged=%s balance=%s retail_only=%s special=%s",
+            "auto-refill flags for %s: new=%s urgency=%s aged=%s balance=%s "
+            "retail_only=%s special=%s pg_store_walk=%s",
             email, prioritize_new, prioritize_urgency, prioritize_aged,
             balance_by_responses, retail_pipeline_only, special_job_types,
+            pg_store_walk_only,
         )
 
         eligible = []
         skipped_reasons = {"no_key": 0, "already_assigned": 0, "excluded_id": 0,
                            "excluded_name": 0, "excluded_client": 0,
                            "not_retail_pipeline": 0, "not_special_job_type": 0,
+                           "not_pg_store_walk": 0,
                            "no_unreviewed": 0}
         for r in pool:
             k = _job_key(r)
@@ -2512,6 +2516,12 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             # top up with everything else in the feed.
             if special_job_types and not _is_special_job_type(r.get("name")):
                 skipped_reasons["not_special_job_type"] += 1
+                continue
+            # "P&G Display Store Walk only" — same contract. Keyed off the feed's
+            # own png_store_walk flag rather than the job name, so a rename can't
+            # silently empty a scoped shift.
+            if pg_store_walk_only and not (r.get("extras") or {}).get("pngStoreWalk"):
+                skipped_reasons["not_pg_store_walk"] += 1
                 continue
             # Skip jobs with no reviewable work (unreviewedCount == 0). These hold
             # only auto-rejected responses, cleared on the Responses page rather than

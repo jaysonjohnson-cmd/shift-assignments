@@ -61,6 +61,7 @@ export default function AssignmentsPage() {
   // actually filtered out for good.
   const [agedLoading, setAgedLoading] = useState(false);
   const [retailPipelineOnly, setRetailPipelineOnly] = useState(false);
+  const [pgStoreWalkOnly, setPgStoreWalkOnly] = useState(false);
   const [specialJobTypes, setSpecialJobTypes] = useState(false);
   const [showCloseModal, setShowCloseModal] = useState(false);
   const [liveJobs, setLiveJobs] = useState<ShiftJobs | null>(null);
@@ -192,6 +193,11 @@ export default function AssignmentsPage() {
     if (specialJobTypes) {
       filtered = filtered.filter((r) => isSpecialJobType(r.name));
     }
+    if (pgStoreWalkOnly) {
+      // Keyed off the feed's own png_store_walk flag rather than the job name,
+      // so a rename can't quietly empty a scoped shift.
+      filtered = filtered.filter((r) => Boolean(r.extras?.pngStoreWalk));
+    }
     if (retailPipelineOnly) {
       filtered = filtered.filter(
         (r) =>
@@ -235,7 +241,7 @@ export default function AssignmentsPage() {
       });
     }
     return [...filtered].sort((a, b) => a.priority - b.priority);
-  }, [rows, prioritizeAged, specialJobTypes, retailPipelineOnly, assignedElsewhereKeys, agedSubDates, agedMinDays]);
+  }, [rows, prioritizeAged, specialJobTypes, retailPipelineOnly, pgStoreWalkOnly, assignedElsewhereKeys, agedSubDates, agedMinDays]);
 
   const cancel = () => {
     setMode({ kind: "menu" });
@@ -294,6 +300,7 @@ export default function AssignmentsPage() {
         // Persisted so auto-refill keeps the shift scoped to this client too;
         // without it a Retail-Pipeline-only shift topped up with everyone else's work.
         retailPipelineOnly,
+        pgStoreWalkOnly,
       });
       setLastPublishedAt(resp.published_at);
       refreshLiveJobs();
@@ -360,9 +367,9 @@ export default function AssignmentsPage() {
                 <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3h.2a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8v.2a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
               </svg>
               Options
-              {(prioritizeFilter || balanceByResponses || prioritizeUrgency || prioritizeAged || retailPipelineOnly || specialJobTypes) && (
+              {(prioritizeFilter || balanceByResponses || prioritizeUrgency || prioritizeAged || retailPipelineOnly || specialJobTypes || pgStoreWalkOnly) && (
                 <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-storesight-primary text-[9px] font-bold text-white dark:bg-storesight-accent-light dark:text-storesight-surface-dark">
-                  {[prioritizeFilter, balanceByResponses, prioritizeUrgency, prioritizeAged, retailPipelineOnly, specialJobTypes].filter(Boolean).length}
+                  {[prioritizeFilter, balanceByResponses, prioritizeUrgency, prioritizeAged, retailPipelineOnly, specialJobTypes, pgStoreWalkOnly].filter(Boolean).length}
                 </span>
               )}
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden className={`transition-transform ${showOptions ? "rotate-180" : ""}`}>
@@ -467,6 +474,18 @@ export default function AssignmentsPage() {
                     }`}
                   >
                     {specialJobTypes ? "✓ " : ""}Special job types
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPgStoreWalkOnly(!pgStoreWalkOnly)}
+                    title="Only assign P&G Display Store Walk jobs (uses the feed's own store-walk flag, not the job name)"
+                    className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                      pgStoreWalkOnly
+                        ? "border border-storesight-primary bg-storesight-primary/10 text-storesight-primary dark:border-storesight-accent-light dark:bg-storesight-accent/20 dark:text-storesight-accent-light"
+                        : "border border-storesight-border bg-white text-storesight-ink-muted hover:border-storesight-primary/40 dark:border-storesight-border-dark dark:bg-storesight-surface-dark dark:text-storesight-ink-muted-dark"
+                    }`}
+                  >
+                    {pgStoreWalkOnly ? "✓ " : ""}P&amp;G Display Store Walk
                   </button>
                 </div>
               </div>

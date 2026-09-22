@@ -206,6 +206,15 @@ def _row_from_api(job, cf_denied_count=0, aged=None):
             "client": str(job.get("client") or ""),
             # Cloud-Factory-denied responses auto-approved before human re-review.
             "cfDeniedCount": cf_denied_count,
+            # FA-web's own P&G store-walk flag, from the priority breakdown.
+            # Unlike `old_sub` this one is genuinely populated: measured against
+            # the live feed it matched the 9 jobs named "P&G Display Store Walk"
+            # exactly, with no misses either way, and is binary in practice
+            # (300 or 0). Preferred over matching the name so the filter
+            # survives a rename.
+            "pngStoreWalk": float(
+                (job.get("priority_details") or {}).get("png_store_walk") or 0
+            ) > 0,
         },
     }
 
