@@ -46,7 +46,10 @@ const tiles: Tile[] = [
     description:
       "Live check-in — who's on shift right now and how far they've gotten.",
     accent: "from-storesight-sky/20 to-storesight-violet/10",
-    enabledFor: ["admin"],
+    // Leads too: every endpoint this page uses (overview, jobs, clear,
+    // remove-job) already guards with _require_admin_or_lead, so the tile was
+    // the only thing hiding it — a lead could already reach it by URL.
+    enabledFor: ["admin", "lead"],
     icon: (
       <svg viewBox="0 0 24 24" fill="none" className={ICON_CLASS} aria-hidden>
         <path

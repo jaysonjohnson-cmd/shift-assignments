@@ -8,7 +8,13 @@ import { useUser } from "@/lib/useUser";
 
 export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
   const { role } = useUser();
-  const isAdmin = role === "admin";
+  // Leads are full deputies for shift management, not read-only observers:
+  // every endpoint this page calls — overview, jobs, clear, remove-job —
+  // guards with _require_admin_or_lead. Remove job used to be the one control
+  // gated to admins, which left the UI stricter than the backend on the
+  // smallest action while the far more destructive "End shift (clear all)"
+  // was already open to leads.
+  const canManage = role === "admin" || role === "lead";
   const [data, setData] = useState<ShiftOverview | null>(null);
   const [jobs, setJobs] = useState<ShiftJobs | null>(null);
   const [loading, setLoading] = useState(true);
@@ -278,7 +284,7 @@ export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
                                     Pending
                                   </span>
                                 )}
-                                {isAdmin && (
+                                {canManage && (
                                   <button
                                     type="button"
                                     onClick={() => handleRemoveJob(r.email, job.id)}
