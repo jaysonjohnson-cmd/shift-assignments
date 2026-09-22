@@ -2031,13 +2031,38 @@ _REFILL_MAX_LARGE_JOBS = 3
 # Client behind the composer's "Storesight / Retail Pipeline only" filter.
 _RETAIL_PIPELINE_CLIENT = "retailpipeline@fieldagent.net"
 
-# Name fragments behind the composer's "Special Job Types" filter. Kept in sync
-# with the frontend rule in shift-assignments/app/assignments/page.tsx — a
-# case-insensitive substring match on the job name. "ratings & review" is
-# deliberately singular so it catches both "Ratings & Review" and the plural
-# "Ratings & Reviews"; "part 1"/"part 2" catch the "Part 1/2" and "Part 2/2"
-# split jobs.
-_SPECIAL_JOB_TYPE_FRAGMENTS = ("ratings & review", "part 1", "part 2")
+# Name fragments behind the composer's "Special Job Types" filter — a
+# case-insensitive substring match on the job name. Kept in sync with
+# SPECIAL_JOB_TYPE_FRAGMENTS in shift-assignments/lib/types.ts; the two lists
+# must stay identical or the composer and auto-refill scope a shift
+# differently. tests/test_refill_response_balance.py pins the contents.
+#
+# Phrases, never bare words: "buy" alone would drag in every Best Buy job in
+# the feed, and "part" alone would catch "Napa Auto Parts". Both rating
+# spellings are listed because "ratings" is not a substring of "rating &
+# review" — the plural doesn't cover the singular.
+#
+# "online" is deliberately broad: the ask was every online job, and it also
+# rescues rows whose name is truncated mid-phrase ("… Walmart Online Ratings
+# &"), which the rating fragments miss.
+#
+# The split-job fragments carry their slash. "part 1"/"part 2" match nothing in
+# the current feed — the convention is "(Job 1/2)" — but are kept for older
+# names. The slash is load-bearing: a bare "job 1" would match "Advance Auto
+# Parts - Job 1", which is an unrelated job type.
+_SPECIAL_JOB_TYPE_FRAGMENTS = (
+    "online",
+    "ratings & review",
+    "ratings and review",
+    "rating & review",
+    "rating and review",
+    "buy & try",
+    "buy and try",
+    "part 1",
+    "part 2",
+    "job 1/2",
+    "job 2/2",
+)
 
 
 def _is_special_job_type(job_name) -> bool:

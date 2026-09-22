@@ -8,6 +8,7 @@ budget, biggest jobs first.
 """
 
 import os
+import pathlib
 
 import pytest
 
@@ -342,6 +343,58 @@ def test_special_job_types_keeps_the_refill_scoped(refill):
                    flags={"specialJobTypes": True})
 
     assert sorted(r["jobId"] for r in added) == ["p1", "p2", "rr_plural", "rr_singular"]
+
+
+def test_special_job_type_fragments_match_the_frontend_list():
+    """The two fragment lists must stay identical.
+
+    The composer filters the pool in TypeScript and auto-refill re-filters it
+    in Python; if the lists drift, a Special-Job-Types shift gets topped up
+    with jobs the composer would never have offered.
+    """
+    import re
+    ts = (pathlib.Path(__file__).parent.parent
+          / "shift-assignments" / "lib" / "types.ts").read_text()
+    block = re.search(
+        r"export const SPECIAL_JOB_TYPE_FRAGMENTS = \[(.*?)\] as const;",
+        ts, re.S)
+    assert block, "SPECIAL_JOB_TYPE_FRAGMENTS not found in types.ts"
+    frontend = tuple(re.findall(r'"([^"]+)"', block.group(1)))
+    assert frontend == main._SPECIAL_JOB_TYPE_FRAGMENTS
+
+
+def test_special_job_types_matches_the_real_feed_names():
+    """Names taken from the live feed, including the ones that must NOT match."""
+    matches = [
+        "Wild Delight® Songbird Food: Walmart Online Ratings & Reviews (Job 2/2)",
+        "Chef Boyardee Protein Beefaroni: Walmart Online Ratings & Reviews (Job 1/2)",
+        "Member's Mark Chicken Breast: Ratings & Review - Scavenger Hunt",
+        # Truncated mid-phrase in the feed — "online" is what rescues it.
+        "3 Gal. Ligustrum California Privet Flowering Live Shrub: Walmart Online Ratings &",
+        "Acme Buy & Try - October",
+        "Acme Buy and Try - October",
+        "Acme Rating and Review Pilot",
+        "Acme Audit Part 1/2",
+        # Split jobs whose only qualifying signal is the slashed suffix.
+        "Acme Shelf Audit (Job 1/2)",
+        "Acme Shelf Audit (Job 2/2)",
+    ]
+    for name in matches:
+        assert main._is_special_job_type(name), name
+
+    # Bare-word fragments would have swept these in.
+    non_matches = [
+        "Storesight - September 2026 - Best Buy - Best Buy",
+        "Ultrahuman Best Buy Mystery Shop US - Sept '26",
+        "Storesight - September 2026 - Napa Auto Parts - Napa Auto Parts",
+        # "Job 1" without the slash is a different job type entirely — this is
+        # why the split-job fragments keep their "/2".
+        "Storesight - September 2026 - Advance Auto Parts - Advance Auto Parts - Job 1",
+        "Storesight - September 2026 - Kroger (all banners) - Job 2",
+        "Storesight Non-Engine || Creamers (Danone Repeats - Non-Club)",
+    ]
+    for name in non_matches:
+        assert not main._is_special_job_type(name), name
 
 
 def test_special_job_types_off_leaves_the_pool_alone(refill):

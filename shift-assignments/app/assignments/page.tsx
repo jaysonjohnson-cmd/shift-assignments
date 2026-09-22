@@ -16,6 +16,7 @@ import { assignShift, plannedTotal } from "@/lib/assign";
 import {
   emptyShiftDraft,
   EXCLUDED_CLIENTS,
+  isSpecialJobType,
   type ProjectSummary,
   type Reviewer,
   type Row,
@@ -189,14 +190,7 @@ export default function AssignmentsPage() {
       filtered = filtered.filter((r) => Number(r.extras?.agedCount ?? 0) > 0);
     }
     if (specialJobTypes) {
-      filtered = filtered.filter((r) => {
-        const name = String(r.name || "").toLowerCase();
-        return (
-          name.includes("ratings & review") ||
-          name.includes("part 1") ||
-          name.includes("part 2")
-        );
-      });
+      filtered = filtered.filter((r) => isSpecialJobType(r.name));
     }
     if (retailPipelineOnly) {
       filtered = filtered.filter(

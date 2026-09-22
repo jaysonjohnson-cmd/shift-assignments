@@ -78,6 +78,46 @@ export type ShiftDraft = {
  */
 export const EXCLUDED_CLIENTS = new Set<string>(["joanna.riney@menasha.com"]);
 
+/**
+ * Name fragments behind the composer's "Special Job Types" filter — a
+ * case-insensitive substring match on the job name. Keep in sync with
+ * _SPECIAL_JOB_TYPE_FRAGMENTS in main.py, which auto-refill uses to scope a
+ * Special-Job-Types shift the same way.
+ *
+ * Phrases, never bare words: "buy" alone would drag in every Best Buy job in
+ * the feed, and "part" alone would catch "Napa Auto Parts". The rating
+ * variants are spelled out because "ratings" is not a substring of "rating &
+ * review" — the plural has to be listed separately from the singular.
+ *
+ * "online" is deliberately broad: the ask was every online job, and it also
+ * rescues rows whose name is truncated mid-phrase ("… Walmart Online Ratings
+ * &"), which the rating fragments miss.
+ *
+ * The split-job fragments carry their slash. "part 1"/"part 2" match nothing
+ * in the current feed — the convention is "(Job 1/2)" — but they are kept for
+ * older names. The slash is load-bearing: a bare "job 1" would match
+ * "Advance Auto Parts - Job 1", which is an unrelated job type.
+ */
+export const SPECIAL_JOB_TYPE_FRAGMENTS = [
+  "online",
+  "ratings & review",
+  "ratings and review",
+  "rating & review",
+  "rating and review",
+  "buy & try",
+  "buy and try",
+  "part 1",
+  "part 2",
+  "job 1/2",
+  "job 2/2",
+] as const;
+
+/** True when a job name matches the Special Job Types filter. */
+export function isSpecialJobType(name: string | null | undefined): boolean {
+  const n = String(name ?? "").toLowerCase();
+  return SPECIAL_JOB_TYPE_FRAGMENTS.some((f) => n.includes(f));
+}
+
 export const MAX_SLOTS_PER_SHIFT = 100;
 
 export const SHIFT_ACCENTS = [
