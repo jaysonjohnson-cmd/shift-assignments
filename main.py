@@ -1431,6 +1431,37 @@ def api_shifts_publish():
             # Append new jobs to incomplete existing ones
             normalized[email] = existing_filtered + new_jobs
 
+        # A reviewer can end up with nothing to publish: everything they
+        # already held was either completed (correctly dropped by
+        # existing_filtered) or the newly-picked jobs turned out to already be
+        # assigned somewhere — most often to that SAME reviewer, since the
+        # composer deliberately keeps a draft reviewer's own held jobs visible
+        # in the picker so a genuine re-cut still works (see
+        # assignedElsewhereKeys in assignments/page.tsx). Picking one of their
+        # own already-completed jobs by mistake used to still make it through
+        # to here as an empty batch.
+        #
+        # Treat that reviewer as untouched by this publish rather than writing
+        # an empty reviewer_shift doc for them — the completion-cleanup loop
+        # below drops anything not in a reviewer's retained set, and an empty
+        # set meant EVERY one of their real completions looked orphaned and
+        # got deleted. Confirmed in production 2026-09-23: a reviewer's 20
+        # genuine completions were wiped this way, reverting all 20 jobs to
+        # incomplete while they received zero new work.
+        empty_reviewers = [email for email in reviewer_emails if not normalized[email]]
+        for email in empty_reviewers:
+            logging.warning(
+                "publish: %s ended up with 0 jobs after merging with existing "
+                "assignments — leaving their shift untouched rather than "
+                "wiping their completions", email,
+            )
+            del normalized[email]
+        reviewer_emails = [e for e in reviewer_emails if e not in empty_reviewers]
+        if not reviewer_emails:
+            return jsonify({
+                "error": "every selected job is already assigned or completed — nothing to publish",
+            }), 400
+
         # Write new reviewer_shift docs under the existing snapshot.
         snapshot_id = existing_snap_id
         # Clear ORPHANED completions only — ones whose job is no longer in the

@@ -153,7 +153,16 @@ export default function AssignmentsPage() {
   // Job keys held by live reviewers who are NOT part of the current draft. Those
   // jobs stay with their reviewer on a merge-publish, so they shouldn't be
   // offered again here. A reviewer being (re)assigned in this draft keeps their
-  // jobs available so re-cutting them still works.
+  // still-open jobs available so re-cutting them still works.
+  //
+  // Their COMPLETED jobs stay excluded regardless — done work is never
+  // re-cuttable. Without this, adding a reviewer to a draft (e.g. to top them
+  // up with more work) makes every project they'd already finished look
+  // available again in the project picker; picking one produces a publish
+  // that *looks* successful but silently ends up with zero new rows once the
+  // backend dedupes it against their own existing assignment. Confirmed
+  // production 2026-09-23: a reviewer topped up this way got an empty
+  // reviewer_shift chunk (batch_size 0) instead of new work.
   const assignedElsewhereKeys = useMemo(() => {
     const keys = new Set<string>();
     if (!liveJobs) return keys;
@@ -163,10 +172,12 @@ export default function AssignmentsPage() {
         .filter((e): e is string => !!e),
     );
     for (const group of liveJobs.jobs_by_reviewer) {
-      if (draftEmails.has(group.email.toLowerCase())) continue;
+      const inDraft = draftEmails.has(group.email.toLowerCase());
       for (const job of group.jobs) {
         const k = String(job.jobId || job.id || "");
-        if (k) keys.add(k);
+        if (!k) continue;
+        if (inDraft && !job.completed) continue;
+        keys.add(k);
       }
     }
     return keys;

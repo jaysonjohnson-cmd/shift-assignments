@@ -587,6 +587,149 @@ def test_merge_publish_preserves_completions_for_retained_jobs(client, monkeypat
     assert sorted(sam_jobs) == ["J2"]
 
 
+def test_merge_publish_leaves_reviewer_untouched_when_pick_is_already_theirs(client, monkeypatch):
+    """Re-publishing a reviewer's OWN already-completed job must not wipe
+    their completions or write an empty reviewer_shift doc for them.
+
+    The composer deliberately keeps a draft reviewer's own held jobs
+    (including completed ones) visible in the project picker so a genuine
+    re-cut still works. Picking one of those by mistake for a "give them more
+    work" publish used to reach this endpoint as an empty merged batch —
+    existing_filtered drops it (completed), new_jobs drops it (already
+    theirs) — and the completion-cleanup loop then treated an EMPTY retained
+    set as "everything is orphaned," deleting every real completion the
+    reviewer had. Confirmed in production 2026-09-23: a reviewer's 20
+    genuine completions were wiped this way, with zero new work to show
+    for it.
+    """
+    c, token_file = client
+    _as_admin(token_file)
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(roles, "list_reviewers", lambda: [])
+
+    published_docs = [
+        {"id": "snap-1", "data": {"kind": "shift_snapshot", "reviewer_emails": ["sam@storesight.com"]}},
+        {"id": "rs-1", "data": {"kind": "reviewer_shift", "shift_snapshot_id": "snap-1",
+                                 "reviewer_email": "sam@storesight.com",
+                                 "rows": [{"jobId": "J1", "projectId": "10", "name": "Job 1", "unreviewedCount": 2}],
+                                 "part": 0}},
+    ]
+    completions = [
+        {"id": "c1", "data": {"kind": "completion", "shift_snapshot_id": "snap-1",
+                               "reviewer_email": "sam@storesight.com", "job_id": "J1",
+                               "completed_at": "2026-04-21T01:00:00+00:00"}},
+    ]
+
+    def fake_post(path, json=None):
+        doc_id = f"doc-{len(published_docs) + 1}"
+        published_docs.append({"id": doc_id, "data": json["data"]})
+        return {"data": {"id": doc_id}}
+
+    def fake_list_docs_by_kind(kind, force=False):
+        if kind == "shift_snapshot":
+            return [d for d in published_docs if d["data"].get("kind") == "shift_snapshot"]
+        if kind == "reviewer_shift":
+            return [d for d in published_docs if d["data"].get("kind") == "reviewer_shift"]
+        if kind == "completion":
+            return completions
+        return []
+
+    deleted = []
+    monkeypatch.setattr(internal_api, "post", fake_post)
+    monkeypatch.setattr(internal_api, "put", lambda path, json=None: {"data": {}})
+    monkeypatch.setattr(internal_api, "delete", lambda path: deleted.append(path) or {"data": {}})
+    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list_docs_by_kind)
+
+    # Admin (by mistake) re-selects Sam's own already-completed J1 as "new" work.
+    resp = c.post("/api/shifts/publish", json={"assignments": {
+        "sam@storesight.com": [
+            {"jobId": "J1", "projectId": "10", "name": "Job 1", "unreviewedCount": 2},
+        ],
+    }})
+    assert resp.status_code == 400, resp.get_json()
+
+    # No new reviewer_shift doc written for Sam.
+    sam_docs = [
+        d for d in published_docs
+        if d["data"].get("kind") == "reviewer_shift"
+        and d["data"].get("reviewer_email") == "sam@storesight.com"
+        and d["id"] != "rs-1"
+    ]
+    assert sam_docs == []
+    # Sam's real completion must survive — nothing should have been deleted.
+    assert deleted == []
+
+
+def test_merge_publish_skips_only_the_reviewer_left_with_nothing(client, monkeypatch):
+    """When one reviewer's batch merges down to empty but another's doesn't,
+    the publish must still succeed for the one with real new work — only the
+    empty reviewer is left untouched."""
+    c, token_file = client
+    _as_admin(token_file)
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(roles, "list_reviewers", lambda: [])
+
+    published_docs = [
+        {"id": "snap-1", "data": {"kind": "shift_snapshot", "reviewer_emails": ["sam@storesight.com"]}},
+        {"id": "rs-1", "data": {"kind": "reviewer_shift", "shift_snapshot_id": "snap-1",
+                                 "reviewer_email": "sam@storesight.com",
+                                 "rows": [{"jobId": "J1", "projectId": "10", "name": "Job 1", "unreviewedCount": 2}],
+                                 "part": 0}},
+    ]
+    completions = [
+        {"id": "c1", "data": {"kind": "completion", "shift_snapshot_id": "snap-1",
+                               "reviewer_email": "sam@storesight.com", "job_id": "J1",
+                               "completed_at": "2026-04-21T01:00:00+00:00"}},
+    ]
+
+    def fake_post(path, json=None):
+        doc_id = f"doc-{len(published_docs) + 1}"
+        published_docs.append({"id": doc_id, "data": json["data"]})
+        return {"data": {"id": doc_id}}
+
+    def fake_list_docs_by_kind(kind, force=False):
+        if kind == "shift_snapshot":
+            return [d for d in published_docs if d["data"].get("kind") == "shift_snapshot"]
+        if kind == "reviewer_shift":
+            return [d for d in published_docs if d["data"].get("kind") == "reviewer_shift"]
+        if kind == "completion":
+            return completions
+        return []
+
+    deleted = []
+    monkeypatch.setattr(internal_api, "post", fake_post)
+    monkeypatch.setattr(internal_api, "put", lambda path, json=None: {"data": {}})
+    monkeypatch.setattr(internal_api, "delete", lambda path: deleted.append(path) or {"data": {}})
+    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list_docs_by_kind)
+
+    resp = c.post("/api/shifts/publish", json={"assignments": {
+        "sam@storesight.com": [
+            {"jobId": "J1", "projectId": "10", "name": "Job 1", "unreviewedCount": 2},
+        ],
+        "alex@storesight.com": [
+            {"jobId": "J2", "projectId": "20", "name": "Job 2", "unreviewedCount": 4},
+        ],
+    }})
+    assert resp.status_code == 201, resp.get_json()
+
+    sam_docs = [
+        d for d in published_docs
+        if d["data"].get("kind") == "reviewer_shift"
+        and d["data"].get("reviewer_email") == "sam@storesight.com"
+        and d["id"] != "rs-1"
+    ]
+    assert sam_docs == [], "Sam gained nothing this round, so nothing should be written for him"
+    assert deleted == [], "Sam's existing completion must survive"
+
+    alex_docs = [
+        d for d in published_docs
+        if d["data"].get("kind") == "reviewer_shift"
+        and d["data"].get("reviewer_email") == "alex@storesight.com"
+    ]
+    alex_jobs = [r["jobId"] for d in alex_docs for r in d["data"]["rows"]]
+    assert alex_jobs == ["J2"]
+
+
 def test_publish_compacts_rows_to_subset_needed_by_my_tasks(client, monkeypatch):
     """Oversized fields (`groupIds`, `extras`) must never reach Storage API."""
     c, token_file = client
