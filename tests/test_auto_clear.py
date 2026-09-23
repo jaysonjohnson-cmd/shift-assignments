@@ -127,3 +127,40 @@ def test_settings_write_requires_a_boolean(client, monkeypatch):
     monkeypatch.setattr(main, "_require_admin", lambda: None)
     resp = client.post("/api/shifts/auto-clear/settings", json={"enabled": "yes"})
     assert resp.status_code == 400
+
+
+def _sign_in_as(monkeypatch, tmp_path, email):
+    token_file = tmp_path / "other-dev-token"
+    now = datetime.datetime.now(datetime.timezone.utc)
+    token_file.write_text(jwt.encode(
+        {"email": email, "name": "Someone",
+         "iat": now, "exp": now + datetime.timedelta(hours=8)},
+        "irrelevant", algorithm="HS256"))
+    monkeypatch.setattr("main._dev_token_path", lambda: token_file)
+
+
+def test_a_non_admin_cannot_clear_the_shift(client, monkeypatch, shift, tmp_path):
+    """The cookie flow authenticates everyone, so the handler must check role.
+
+    Without it, any reviewer could wipe the whole team's shift — every
+    reviewer_shift, completion and close-out doc — while the switch was on.
+    """
+    _sign_in_as(monkeypatch, tmp_path, "reviewer@storesight.com")
+    monkeypatch.setattr(roles, "is_admin", lambda email: False)
+    monkeypatch.setattr(main, "_get_auto_clear_enabled", lambda force=False: True)
+    resp = client.post("/api/shifts/auto-clear")
+    assert resp.status_code == 403
+    assert shift == [], "nothing may be deleted for a non-admin"
+
+
+def test_the_scheduler_identity_can_clear_without_being_an_admin(
+        client, monkeypatch, shift, tmp_path):
+    """The timer's service account isn't an admin, and must still get through."""
+    _sign_in_as(monkeypatch, tmp_path, "scheduler@proj.iam.gserviceaccount.com")
+    monkeypatch.setattr(main, "_OIDC_SERVICE_ACCOUNTS",
+                        frozenset({"scheduler@proj.iam.gserviceaccount.com"}))
+    monkeypatch.setattr(roles, "is_admin", lambda email: False)
+    monkeypatch.setattr(main, "_get_auto_clear_enabled", lambda force=False: True)
+    resp = client.post("/api/shifts/auto-clear")
+    assert resp.status_code == 200
+    assert "snap-1" in shift

@@ -82,8 +82,16 @@ def _is_excluded_job_name(job_name: str) -> bool:
 
 
 def _is_excluded_job(row):
-    """True if this job should never be assignable or visible in the composer."""
+    """True if this job should never be assignable or visible in the composer.
+
+    The single source of truth for exclusion — publish, refill, the feed
+    endpoints and My Tasks all call this rather than re-deriving the checks.
+    The client check only applies to feed rows; stored rows are compacted and
+    carry no `extras`.
+    """
     if str(row.get("jobId") or "") in EXCLUDED_JOB_IDS:
+        return True
+    if bloom.is_excluded_client((row.get("extras") or {}).get("client")):
         return True
     job_name = str(row.get("name") or "")
     if _is_excluded_job_name(job_name):
@@ -745,7 +753,9 @@ def api_shifts_auto_publish():
 
         if existing_snap_id:
             try:
-                all_shift_docs = roles.list_docs_by_kind("reviewer_shift")
+                # Forced, like manual publish: a stale warm cache can miss a
+                # refill chunk another instance just wrote and double-assign it.
+                all_shift_docs = roles.list_docs_by_kind("reviewer_shift", force=True)
             except requests.exceptions.HTTPError:
                 all_shift_docs = []
 
@@ -845,6 +855,14 @@ def api_shifts_auto_clear():
     allowlisted service account's OIDC token — one of only two paths that accept
     the latter (see _OIDC_ALLOWED_PATHS).
     """
+    # The cookie flow authenticates everyone, so a human caller must still be an
+    # admin. Without this, any reviewer could wipe the whole team's shift while
+    # the switch was on. An OIDC identity is only ever issued for an email on
+    # _OIDC_SERVICE_ACCOUNTS, which no human session can carry.
+    if (g.user.get("email") or "").strip().lower() not in _OIDC_SERVICE_ACCOUNTS:
+        denied = _require_admin()
+        if denied is not None:
+            return denied
     if not _get_auto_clear_enabled():
         logging.info("Auto-clear skipped: disabled in settings")
         return jsonify({"skipped": True, "reason": "auto-clear is disabled"}), 200
@@ -1296,21 +1314,15 @@ def api_shifts_publish():
         if not isinstance(rows, list):
             continue
         # Filter out excluded jobs and empty jobs (no responses to review).
-        # Jobs with responses stuck in CF (0 new, > 0 massReview) are already filtered at the Bloom level.
+        # Re-checked here rather than trusting the composer: the client-side
+        # pool filter is bypassable (pins, a stale bundle), and an excluded
+        # client like Menasha must never reach a reviewer.
         valid_rows = []
         filtered_jobs = []
         for r in rows:
-            job_id = str(r.get("jobId") or r.get("id") or "")
-            if job_id in EXCLUDED_JOB_IDS:
-                filtered_jobs.append((job_id, "excluded_id"))
-                continue
-            job_name = str(r.get("name") or "")
-            if _is_excluded_job_name(job_name):
-                filtered_jobs.append((job_id, "excluded_name"))
-                continue
-            # Exclude video jobs, but allow non-video jobs through
-            if "video" in job_name.lower() and "non-video" not in job_name.lower():
-                filtered_jobs.append((job_id, "excluded_video"))
+            job_id = _job_key(r)
+            if _is_excluded_job(r):
+                filtered_jobs.append((job_id, "excluded"))
                 continue
             unreviewable = int(r.get("unreviewedCount") or 0)
             # Only assign jobs with actual reviewable responses. Jobs with only
@@ -1372,136 +1384,93 @@ def api_shifts_publish():
         existing_snap_id, existing_snap_data = None, None
 
     if existing_snap_id:
-        # When adding to a published shift, merge new jobs with existing ones.
-        # Collect existing jobs per reviewer to preserve them.
-        # Only prevent assigning jobs to multiple reviewers (cross-reviewer dedup).
+        # Adding to a live shift. For each reviewer being published, their new
+        # row set is everything they already hold (completed jobs included, so
+        # those still read as Done and keep their completion) plus the newly
+        # picked jobs nobody holds yet. Their old reviewer_shift docs are then
+        # REPLACED by the new ones — My Tasks unions every doc for a reviewer,
+        # so leaving the old ones behind kept jobs the merge had dropped.
+        #
+        # This used to drop completed jobs from the merged set, keep the old
+        # docs anyway, and delete every completion not in the merged set. Any
+        # top-up of a reviewer who had finished work therefore deleted the
+        # completions for everything they'd finished while the old doc kept
+        # those jobs on their list — so it all came back as pending. Confirmed
+        # in production 2026-09-23 (a reviewer's 20 completions wiped by one
+        # top-up).
         try:
-            all_shift_docs = roles.list_docs_by_kind("reviewer_shift")
+            # Forced: another instance may have just written a refill chunk,
+            # and missing it here hands that job to a second reviewer.
+            all_shift_docs = roles.list_docs_by_kind("reviewer_shift", force=True)
         except requests.exceptions.HTTPError as e:
             return _http_error_response(e)
         existing_jobs_by_email: dict = {}
-        other_reviewers_keys: set = set()
+        old_doc_ids_by_email: dict = {}
+        all_existing_keys: set = set()
         for doc in all_shift_docs:
             doc_data = doc.get("data") or {}
             if doc_data.get("shift_snapshot_id") != existing_snap_id:
                 continue
             reviewer_email = (doc_data.get("reviewer_email") or "").strip().lower()
             rows = doc_data.get("rows") or []
-            if not existing_jobs_by_email.get(reviewer_email):
-                existing_jobs_by_email[reviewer_email] = []
-            existing_jobs_by_email[reviewer_email].extend(rows)
+            existing_jobs_by_email.setdefault(reviewer_email, []).extend(rows)
+            old_doc_ids_by_email.setdefault(reviewer_email, []).append(doc.get("id"))
+            for r in rows:
+                if _job_key(r):
+                    all_existing_keys.add(_job_key(r))
 
-        # Build set of keys for ALL existing assignments (to prevent cross-reviewer and self-duplication)
-        all_existing_keys: set = set()
-        for email, jobs in existing_jobs_by_email.items():
-            for r in jobs:
-                jk = str(r.get("jobId") or r.get("id") or "")
-                if jk:
-                    all_existing_keys.add(jk)
-
-        # Get all completed jobs so we can exclude them from the retained assignments
-        # (prevents completed jobs from accumulating in the queue as we add more work).
-        # IMPORTANT: only exclude "normally" completed jobs (not override-completed).
-        # Override-completed jobs must stay in the queue to show as completed on My Tasks.
-        completed_keys: set = set()
         try:
             all_completions = _list_completions_for_snapshot(existing_snap_id)
-            completed_keys = {
-                _completion_job_key(c) for c in all_completions
-                if _completion_job_key(c) and not c.get("overridden")
-            }
-        except requests.exceptions.HTTPError:
-            pass  # Best-effort; if completion lookup fails, keep all existing jobs
+        except requests.exceptions.HTTPError as e:
+            # Without completions we can't tell finished work from pending, and
+            # guessing wrong either resurrects or loses it. Refuse instead.
+            return _http_error_response(e)
+        completed_by_email: dict = {}
+        for c in all_completions:
+            if _completion_job_key(c):
+                completed_by_email.setdefault(
+                    (c.get("reviewer_email") or "").strip().lower(), set()
+                ).add(_completion_job_key(c))
 
-        # For reviewers in the new publish: keep incomplete existing + add truly NEW jobs
+        added_by_email: dict = {}
+        live_count_by_email: dict = {}
         for email in reviewer_emails:
-            existing = existing_jobs_by_email.get(email, [])
-            # Re-filter existing jobs: exclude excluded jobs, completed jobs, and jobs with zero reviewable work
-            existing_filtered = [
-                r for r in existing
-                if not _is_excluded_job(r)
-                and str(r.get("jobId") or r.get("id") or "") not in completed_keys
-                and int(r.get("unreviewedCount") or 0) > 0
-            ]
-            # Filter new jobs to exclude anything already assigned (to any reviewer, including this one)
-            new_jobs = [
-                r for r in normalized[email]
-                if str(r.get("jobId") or r.get("id") or "") not in all_existing_keys
-            ]
-            # Append new jobs to incomplete existing ones
-            normalized[email] = existing_filtered + new_jobs
+            done = completed_by_email.get(email, set())
+            kept = []
+            for r in _dedup_rows(existing_jobs_by_email.get(email, [])):
+                if _is_excluded_job(r):
+                    continue
+                if _job_key(r) in done or int(r.get("unreviewedCount") or 0) > 0:
+                    kept.append(r)
+            new_jobs = [r for r in normalized[email] if _job_key(r) not in all_existing_keys]
+            added_by_email[email] = new_jobs
+            live_count_by_email[email] = (
+                sum(1 for r in kept if _job_key(r) not in done) + len(new_jobs)
+            )
+            normalized[email] = kept + new_jobs
 
-        # A reviewer can end up with nothing to publish: everything they
-        # already held was either completed (correctly dropped by
-        # existing_filtered) or the newly-picked jobs turned out to already be
-        # assigned somewhere — most often to that SAME reviewer, since the
-        # composer deliberately keeps a draft reviewer's own held jobs visible
-        # in the picker so a genuine re-cut still works (see
-        # assignedElsewhereKeys in assignments/page.tsx). Picking one of their
-        # own already-completed jobs by mistake used to still make it through
-        # to here as an empty batch.
-        #
-        # Treat that reviewer as untouched by this publish rather than writing
-        # an empty reviewer_shift doc for them — the completion-cleanup loop
-        # below drops anything not in a reviewer's retained set, and an empty
-        # set meant EVERY one of their real completions looked orphaned and
-        # got deleted. Confirmed in production 2026-09-23: a reviewer's 20
-        # genuine completions were wiped this way, reverting all 20 jobs to
-        # incomplete while they received zero new work.
-        empty_reviewers = [email for email in reviewer_emails if not normalized[email]]
-        for email in empty_reviewers:
+        # A reviewer whose picks were all already assigned (often their own
+        # held or completed jobs, which the composer keeps visible for re-cuts)
+        # gains nothing. Leave them untouched instead of rewriting their docs.
+        unchanged = [e for e in reviewer_emails if not added_by_email[e]]
+        for email in unchanged:
             logging.warning(
-                "publish: %s ended up with 0 jobs after merging with existing "
-                "assignments — leaving their shift untouched rather than "
-                "wiping their completions", email,
+                "publish: every job picked for %s is already assigned — "
+                "leaving their shift untouched", email,
             )
             del normalized[email]
-        reviewer_emails = [e for e in reviewer_emails if e not in empty_reviewers]
+        reviewer_emails = [e for e in reviewer_emails if e not in unchanged]
         if not reviewer_emails:
             return jsonify({
                 "error": "every selected job is already assigned or completed — nothing to publish",
             }), 400
 
-        # Write new reviewer_shift docs under the existing snapshot.
         snapshot_id = existing_snap_id
-        # Clear ORPHANED completions only — ones whose job is no longer in the
-        # reviewer's merged row set (e.g. dropped by the excluded-job re-filter
-        # above). Since this path now merges new jobs into the reviewer's
-        # existing ones instead of replacing them, a retained job's completion
-        # must survive the publish — deleting it unconditionally (the old
-        # behavior, from when publish fully replaced a reviewer's rows) made
-        # already-finished jobs reappear as incomplete every time an admin
-        # added more work to an active shift. Drop orphans from the warm cache
-        # immediately (in-memory, no network call) so every read reflects it
-        # right away, then delete the actual Storage docs in the background —
-        # this can be dozens of individual DELETE calls sharing the 60 req/min
-        # Storage limit, and doing that synchronously here was what made
-        # publish take minutes when a reviewer had a long completion history.
-        stale_completion_ids = []
-        for email in reviewer_emails:
-            retained_keys = {
-                str(r.get("jobId") or r.get("id") or "") for r in normalized[email]
-            }
-            try:
-                existing_completions = _list_completions_for_snapshot(
-                    snapshot_id, reviewer_email=email
-                )
-                for c in existing_completions:
-                    if _completion_job_key(c) in retained_keys:
-                        continue  # still assigned — keep the completion
-                    roles.cache_remove_doc("completion", c.get("id"))
-                    if c.get("id"):
-                        stale_completion_ids.append(c["id"])
-            except requests.exceptions.HTTPError:
-                pass  # Best-effort cleanup — don't block publish on completion lookup
-        if stale_completion_ids:
-            threading.Thread(
-                target=_delete_docs_bg, args=(stale_completion_ids,),
-                daemon=True, name="publish-completion-cleanup",
-            ).start()
         written = []
         for email in reviewer_emails:
             chunks = _chunk_rows_for_storage(normalized[email])
+            live_rows = [r for r in normalized[email]
+                         if _job_key(r) not in completed_by_email.get(email, set())]
             for idx, chunk in enumerate(chunks):
                 doc = {
                     "kind": "reviewer_shift",
@@ -1510,10 +1479,12 @@ def api_shifts_publish():
                     "rows": chunk,
                     "part": idx,
                     "part_count": len(chunks),
-                    "batch_size": len(normalized[email]),
+                    # The allotment auto-refill tops up to: live work only, or
+                    # every re-publish would grow it by the completed jobs.
+                    "batch_size": live_count_by_email[email],
                     # Response total, not just job count — auto-refill tops up to
                     # a comparable amount of work rather than a job count.
-                    "batch_responses": sum(_row_responses(r) for r in normalized[email]),
+                    "batch_responses": sum(_row_responses(r) for r in live_rows),
                 }
                 try:
                     r = internal_api.post(_STORAGE_PATH, json={"data": doc})
@@ -1522,6 +1493,12 @@ def api_shifts_publish():
                         _try_delete(did)
                     return _http_error_response(e)
                 written.append((r.get("data") or {}).get("id"))
+
+        # Only now that the replacements exist, retire the old docs.
+        for email in reviewer_emails:
+            for did in old_doc_ids_by_email.get(email, []):
+                _try_delete(did)
+                roles.cache_remove_doc("reviewer_shift", did)
 
         # Update the snapshot's reviewer_emails to include the new reviewers.
         existing_emails = set(existing_snap_data.get("reviewer_emails") or [])
@@ -1544,8 +1521,8 @@ def api_shifts_publish():
             published_by, snapshot_id, len(reviewer_emails),
         )
         # Send Slack notification
-        job_count = sum(len(rows) for rows in normalized.values())
-        reviewer_count = len(normalized)
+        job_count = sum(len(added_by_email[e]) for e in reviewer_emails)
+        reviewer_count = len(reviewer_emails)
         slack_msg = f"📋 *Shift assignments published* — {job_count} job{'' if job_count == 1 else 's'} assigned to {reviewer_count} reviewer{'' if reviewer_count == 1 else 's'}"
         _send_slack_notification(slack_msg)
 
@@ -1811,26 +1788,32 @@ def _list_completions_for_snapshot(snapshot_id, reviewer_email=None, force=False
     return out
 
 
-def _supersede_completions_for_rows(snapshot_id, reviewer_email, rows):
+def _supersede_completions_for_rows(snapshot_id, reviewer_email, rows, completions=None):
     """Stamp this reviewer's completions for `rows` as superseded.
 
     Called when a refill hands someone a job they had already checked off, so
     the returning row reads as pending work instead of Done. Best-effort: a
     failure here leaves a stale checkmark, which is the pre-existing behaviour,
-    and must never fail the refill.
+    and must never fail the refill. Pass `completions` (this snapshot's, any
+    reviewer) to reuse a list the caller already read.
     """
     keys = {_job_key(r) for r in rows if _job_key(r)}
     if not keys:
         return 0
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     superseded = 0
-    try:
-        existing = _list_completions_for_snapshot(
-            snapshot_id, reviewer_email=reviewer_email, force=True)
-    except Exception as exc:  # noqa: BLE001 — never fail a refill over this
-        logging.warning("supersede: completion lookup failed for %s: %s",
-                        reviewer_email, exc)
-        return 0
+    norm = (reviewer_email or "").strip().lower()
+    if completions is not None:
+        existing = [c for c in completions
+                    if (c.get("reviewer_email") or "").strip().lower() == norm]
+    else:
+        try:
+            existing = _list_completions_for_snapshot(
+                snapshot_id, reviewer_email=reviewer_email, force=True)
+        except Exception as exc:  # noqa: BLE001 — never fail a refill over this
+            logging.warning("supersede: completion lookup failed for %s: %s",
+                            reviewer_email, exc)
+            return 0
     for c in existing:
         if _completion_job_key(c) not in keys or not c.get("id"):
             continue
@@ -1970,6 +1953,7 @@ def api_shifts_my():
             added = _auto_refill_reviewer(snap_id, email, len(enriched) or len(rows))
         except Exception as exc:  # noqa: BLE001 — a read must never fail on refill
             logging.warning("self-heal refill failed for %s: %s", email, exc)
+            _clear_refill_attempt(snap_id, email)  # let the next poll retry
             added = []
         if added:
             logging.warning("self-heal: refilled %d jobs for %s", len(added), email)
@@ -2027,11 +2011,26 @@ _REFILL_LOCK_WAIT_ATTEMPTS = 4
 _REFILL_LOCK_WAIT_SECONDS = 1
 
 
-def _cleanup_orphaned_refill_locks(max_age_seconds=_REFILL_LOCK_MAX_AGE_SECONDS):
+def _release_refill_lock(doc_id):
+    """Delete a refill_lock from Storage AND the warm cache.
+
+    Deleting it from Storage alone left the cached copy behind, and a lock
+    that's still in the cache blocks every later refill on this instance.
+    """
+    if not doc_id:
+        return
+    _try_delete(doc_id)
+    roles.cache_remove_doc("refill_lock", doc_id)
+
+
+def _cleanup_orphaned_refill_locks(max_age_seconds=_REFILL_LOCK_MAX_AGE_SECONDS,
+                                   lock_docs=None):
     """Clean up refill_lock documents older than max_age_seconds.
 
     Defensive measure against orphaned locks accumulating if exceptions occur
     that somehow bypass lock cleanup. Runs best-effort and never blocks refill.
+    Pass `lock_docs` to reuse a list the caller already read (saves a full
+    namespace scan). Returns the locks that are still live.
 
     The window is deliberately short. Release happens in a finally block, so a
     lock only survives if the process itself dies mid-refill — and since the
@@ -2040,38 +2039,51 @@ def _cleanup_orphaned_refill_locks(max_age_seconds=_REFILL_LOCK_MAX_AGE_SECONDS)
     cache, so two minutes is already generous; the old ten-minute window would
     have stalled the whole team for a shift-noticeable stretch.
     """
+    live = []
     try:
         now = datetime.datetime.now(datetime.timezone.utc)
         cutoff = now - datetime.timedelta(seconds=max_age_seconds)
 
-        lock_docs = roles.list_docs_by_kind("refill_lock", force=True)
+        if lock_docs is None:
+            lock_docs = roles.list_docs_by_kind("refill_lock", force=True)
         for doc in lock_docs:
             data = doc.get("data") or {}
             locked_at_str = data.get("locked_at")
             if not locked_at_str:
+                live.append(doc)
                 continue
             try:
                 locked_at = datetime.datetime.fromisoformat(
                     locked_at_str.replace("Z", "+00:00")
                 )
                 if locked_at < cutoff:
-                    # Lock is stale; delete it
-                    doc_id = doc.get("id")
-                    if doc_id:
-                        _try_delete(doc_id)
-                        logging.warning(
-                            "Cleaned up orphaned refill_lock for %s (locked at %s)",
-                            data.get("reviewer_email"),
-                            locked_at_str,
-                        )
+                    _release_refill_lock(doc.get("id"))
+                    logging.warning(
+                        "Cleaned up orphaned refill_lock for %s (locked at %s)",
+                        data.get("reviewer_email"),
+                        locked_at_str,
+                    )
+                else:
+                    live.append(doc)
             except (ValueError, TypeError):
-                # Malformed timestamp; delete the broken lock
-                doc_id = doc.get("id")
-                if doc_id:
-                    _try_delete(doc_id)
-                    logging.warning("Cleaned up malformed refill_lock (id=%s)", doc_id)
+                _release_refill_lock(doc.get("id"))
+                logging.warning("Cleaned up malformed refill_lock (id=%s)", doc.get("id"))
     except Exception as exc:  # noqa: BLE001 — cleanup is best-effort
         logging.warning("Failed to clean up orphaned refill locks: %s", exc)
+    return live
+
+
+def _clear_refill_attempt(snap_id, email):
+    """Drop a self-heal cooldown stamp so the next My Tasks poll can retry.
+
+    Both refill triggers stamp the cooldown before they attempt a refill. When
+    the attempt fails for a transient reason (lock still busy, Storage or
+    Bloom hiccup), keeping the stamp left a finished reviewer idle for the
+    full cooldown even though the cause had already cleared.
+    """
+    key = (snap_id, (email or "").strip().lower())
+    with _self_heal_lock:
+        _self_heal_attempts.pop(key, None)
 
 
 # Oldest Bloom feed a refill will build a batch from. Comfortably above the
@@ -2309,9 +2321,6 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
     snapshot at a time — the lock protects the shared job pool, so it cannot be
     scoped to a single reviewer.
     """
-    # Defensive cleanup: remove any orphaned locks older than 10 minutes
-    _cleanup_orphaned_refill_locks()
-
     norm = (email or "").strip().lower()
     lock_id = None
     logging.warning("auto-refill: starting for %s (snap=%s, fallback_count=%d)", email, snap_id, fallback_count)
@@ -2336,11 +2345,20 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         # cache, so a held lock almost always clears within a few seconds —
         # worth a short wait here rather than leaving a finished reviewer idle
         # indefinitely on a coin-flip of contention timing.
+        #
+        # A lock lookup that FAILS is treated as busy, not free: reading an
+        # error as "unlocked" reopened the duplicate-assignment race at exactly
+        # the moment Storage was flaky. The caller's cooldown is cleared so the
+        # next My Tasks poll retries.
         for attempt in range(_REFILL_LOCK_WAIT_ATTEMPTS):
             try:
-                lock_docs = roles.list_docs_by_kind("refill_lock", force=True)
-            except Exception:
-                lock_docs = []  # Best-effort; treat a failed lookup as unlocked
+                # One forced scan refreshes every kind's cache at once.
+                lock_docs = _cleanup_orphaned_refill_locks(
+                    lock_docs=roles.list_docs_by_kind("refill_lock", force=True))
+            except Exception as exc:  # noqa: BLE001 — treated as busy below
+                logging.warning("auto-refill: lock lookup failed for %s: %s", email, exc)
+                lock_docs = [{"data": {"shift_snapshot_id": snap_id,
+                                       "reviewer_email": "<lookup failed>"}}]
             holder = next(
                 (
                     (doc.get("data") or {}).get("reviewer_email")
@@ -2352,9 +2370,10 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             if holder is None:
                 break
             if attempt == _REFILL_LOCK_WAIT_ATTEMPTS - 1:
-                logging.info(
+                logging.warning(
                     "auto-refill skipped for %s (refill still running for %s after %d retries)",
                     email, holder or "?", attempt)
+                _clear_refill_attempt(snap_id, norm)
                 return []  # Pool stayed contended; skip to avoid duplicates
             time.sleep(_REFILL_LOCK_WAIT_SECONDS)
 
@@ -2370,10 +2389,13 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             lock_id = (lock_resp.get("data") or {}).get("id")
         except Exception as exc:
             logging.warning("auto-refill: failed to create lock for %s: %s", email, exc)
+            _clear_refill_attempt(snap_id, norm)
             return []  # Can't proceed safely without lock
+        if lock_id:
+            roles.cache_upsert_doc("refill_lock", {"id": lock_id, "data": lock_doc})
 
-        touched_keys = set()
         held_pairs = set()  # (reviewer_email, job_key) — who is holding what
+        own_rows = []
         shift_reviewers = set()
         max_part = -1
         batch_size = None
@@ -2381,10 +2403,20 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         current_queue_responses = 0
         prioritization_flags = {}
 
+        try:
+            # Authoritative read, taken AFTER the lock so a concurrent refill's
+            # just-written part is seen — otherwise two refills pick the same
+            # next_part and the same jobs. One forced scan refreshes every kind,
+            # so the snapshot, shift and completion reads below come from it.
+            docs = roles.list_docs_by_kind("reviewer_shift", force=True)
+        except Exception as exc:  # noqa: BLE001 — refill is best-effort
+            logging.warning("auto-refill: failed to list shifts for %s: %s", email, exc)
+            _clear_refill_attempt(snap_id, norm)
+            return []
+
         # Read snapshot data to get prioritization flags for consistent refilling
         try:
-            snaps = roles.list_docs_by_kind("shift_snapshot", force=True)
-            for snap in snaps:
+            for snap in roles.list_docs_by_kind("shift_snapshot"):
                 if snap.get("id") == snap_id:
                     snap_data = snap.get("data") or {}
                     prioritization_flags = snap_data.get("prioritization_flags") or {}
@@ -2392,14 +2424,6 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         except Exception as exc:  # noqa: BLE001 — flags are best-effort
             logging.warning("auto-refill: failed to read snapshot flags for %s: %s", email, exc)
 
-        try:
-            # Authoritative read: compute assigned_keys and next_part from current
-            # storage so a concurrent refill's just-written part is seen — otherwise
-            # two refills pick the same next_part and the same jobs (duplicate batch).
-            docs = roles.list_docs_by_kind("reviewer_shift", force=True)
-        except Exception as exc:  # noqa: BLE001 — refill is best-effort
-            logging.warning("auto-refill: failed to list shifts for %s: %s", email, exc)
-            return []
         for doc in docs:
             data = doc.get("data") or {}
             if data.get("shift_snapshot_id") != snap_id:
@@ -2409,9 +2433,9 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             for r in data.get("rows") or []:
                 k = _job_key(r)
                 if k:
-                    touched_keys.add(k)
                     held_pairs.add((doc_reviewer, k))
-            if (data.get("reviewer_email") or "").strip().lower() == norm:
+            if doc_reviewer == norm:
+                own_rows.extend(data.get("rows") or [])
                 max_part = max(max_part, int(data.get("part") or 0))
                 bs = data.get("batch_size")
                 if bs:
@@ -2436,23 +2460,33 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         # subsequent refill, which is how one job ended up pending in three
         # queues at once while a fourth reviewer had already completed it.
         try:
-            completions = _list_completions_for_snapshot(snap_id, force=True)
+            completions = _list_completions_for_snapshot(snap_id)
         except Exception as exc:  # noqa: BLE001 — refill is best-effort
             logging.warning("auto-refill: failed to list completions for %s: %s", email, exc)
-            completions = []
-        completed_keys = {_completion_job_key(c) for c in completions if _completion_job_key(c)}
+            _clear_refill_attempt(snap_id, norm)
+            return []
         completed_pairs = {
             ((c.get("reviewer_email") or "").strip().lower(), _completion_job_key(c))
             for c in completions
             if _completion_job_key(c)
         }
         assigned_keys = {k for (rev, k) in held_pairs if (rev, k) not in completed_pairs}
-        logging.warning("auto-refill KEYS for %s: touched=%d, completed=%d, assigned=%d (keys to exclude from pool)",
-                       email, len(touched_keys), len(completed_keys), len(assigned_keys))
-        # Log sample keys to verify they match expected format
-        if touched_keys or completed_keys or assigned_keys:
-            logging.warning("auto-refill SAMPLE: touched_sample=%s completed_sample=%s assigned_sample=%s",
-                           sorted(list(touched_keys))[:3], sorted(list(completed_keys))[:3], sorted(list(assigned_keys))[:3])
+        logging.info("auto-refill for %s: held=%d, completed=%d, excluded-from-pool=%d",
+                     email, len(held_pairs), len(completed_pairs), len(assigned_keys))
+
+        # Only top up a reviewer who has actually run out. Both triggers check
+        # this before calling, but from a read taken before the lock: two
+        # completions landing in the same instant (two tabs, a double-click)
+        # could each see the "last job done" edge and refill twice, handing out
+        # a double batch. Rechecking under the lock makes the second one a no-op.
+        still_pending = [
+            r for r in own_rows
+            if not _is_excluded_job(r) and (norm, _job_key(r)) not in completed_pairs
+        ]
+        if still_pending:
+            logging.warning("auto-refill: %s still has %d pending jobs; skipping",
+                            email, len(still_pending))
+            return []
 
         # Refill the original allotment, not the (possibly grown) current queue.
         count = batch_size if batch_size else fallback_count
@@ -2482,6 +2516,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             pool = bloom.fetch_prioritized_jobs(max_age=_REFILL_MAX_FEED_AGE)
         except Exception as exc:  # noqa: BLE001 — refill is best-effort
             logging.warning("auto-refill: failed to fetch jobs for %s: %s", email, exc)
+            _clear_refill_attempt(snap_id, norm)
             return []
 
         # Reapply the flags the shift was composed with, so a top-up hands out
@@ -2505,8 +2540,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         )
 
         eligible = []
-        skipped_reasons = {"no_key": 0, "already_assigned": 0, "excluded_id": 0,
-                           "excluded_name": 0, "excluded_client": 0,
+        skipped_reasons = {"no_key": 0, "already_assigned": 0, "excluded": 0,
                            "not_retail_pipeline": 0, "not_special_job_type": 0,
                            "not_pg_store_walk": 0,
                            "no_unreviewed": 0}
@@ -2518,19 +2552,8 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                 else:
                     skipped_reasons["already_assigned"] += 1
                 continue
-            # Skip excluded jobs (jobs with responses stuck in CF are already filtered at the Bloom level).
-            if str(r.get("jobId") or "") in EXCLUDED_JOB_IDS:
-                skipped_reasons["excluded_id"] += 1
-                continue
-            if _is_excluded_job_name(str(r.get("name") or "")):
-                skipped_reasons["excluded_name"] += 1
-                continue
-            if "video" in str(r.get("name") or "").lower() and "non-video" not in str(r.get("name") or "").lower():
-                skipped_reasons["excluded_client"] += 1
-                continue
-            # Skip jobs from excluded clients (e.g., Menasha handled by Cloud Factory).
-            if bloom.is_excluded_client((r.get("extras") or {}).get("client")):
-                skipped_reasons["excluded_client"] += 1
+            if _is_excluded_job(r):
+                skipped_reasons["excluded"] += 1
                 continue
             # "Storesight / Retail Pipeline only" is a hard filter on the pool at
             # publish, so honour it here rather than refilling a scoped shift with
@@ -2630,7 +2653,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         # responses are unreachable. The doc is stamped rather than deleted so
         # the history survives; weekly standings come from "review_tally" docs
         # and are untouched either way.
-        _supersede_completions_for_rows(snap_id, norm, fresh)
+        _supersede_completions_for_rows(snap_id, norm, fresh, completions=completions)
 
         try:
             next_part = max_part + 1
@@ -2662,8 +2685,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
     finally:
         # Always clean up the refill lock marker to allow future refills,
         # even if an exception occurred or an early return was taken.
-        if lock_id:
-            _try_delete(lock_id)
+        _release_refill_lock(lock_id)
 
 
 def _notify_reviewer_finished(email, total_jobs, added_jobs, snap_id=None):
@@ -2741,7 +2763,18 @@ def _live_unreviewed_count(job_id, force=False):
       • >0  → still has unreviewed responses
       •  0  → reviewed / not in the feed
       • None → couldn't reach Bloom (caller should fail open, not block)
+
+    `force=True` is the "cache may be stale" re-check. It asks for this one
+    job's live count (~0.3s) rather than refetching the whole feed, which is
+    the 10-12s call the background warmer exists to keep off user-facing
+    requests — a reviewer's "mark done" click was paying it whenever the warm
+    cache still showed responses. Falls back to the full fetch only if the
+    per-job lookup fails.
     """
+    if force:
+        live = bloom.fetch_job_pending_count(job_id)
+        if live is not None:
+            return live
     try:
         feed = bloom.fetch_prioritized_jobs(use_cache=not force)
     except Exception as exc:  # noqa: BLE001 — never block completion on a Bloom hiccup
@@ -2959,6 +2992,28 @@ def api_shifts_my_complete():
     # Reflect this write in the warm cache immediately so the finish check (and
     # any read-after-write) sees it without waiting for the next background scan.
     roles.cache_upsert_doc("completion", {"id": doc_id, "data": doc})
+
+    # Authoritative read, used both to catch a duplicate and by the finish-check
+    # below. The idempotency check above is read-then-write, so a double-click
+    # or client retry can get two requests past it before either has written —
+    # which used to create two completion docs and count the job twice on the
+    # weekly leaderboard. Every request that wrote one agrees on the same keeper
+    # (earliest completed_at, then lowest id), so exactly one survives and only
+    # that request goes on to tally and finish-check.
+    try:
+        done = _list_completions_for_snapshot(snap_id, reviewer_email=email, force=True)
+    except requests.exceptions.HTTPError:
+        done = None
+    if done is not None:
+        mine = [c for c in done if _completion_job_key(c) == job_id and c.get("id")]
+        if len(mine) > 1:
+            keeper = min(mine, key=lambda c: (str(c.get("completed_at") or ""), str(c.get("id"))))
+            if keeper.get("id") != doc_id:
+                _try_delete(doc_id)
+                roles.cache_remove_doc("completion", doc_id)
+                logging.warning("complete: dropped duplicate completion for %s job=%s", email, job_id)
+                return jsonify({"data": keeper})
+
     # Tally this review into the reviewer's weekly leaderboard total. Stored
     # separately from completions (kind "review_tally") so clearing/republishing
     # a shift never erases the week's standings. Best-effort. `responses` is the
@@ -2989,12 +3044,15 @@ def api_shifts_my_complete():
     # silently sit idle for the rest of the shift with nothing to
     # re-trigger the check — there's no job left for them to complete.
     try:
-        assigned = _rows_for_reviewer(snap_id, email, force=True) or []
+        # The forced completion read above refreshed every kind's cache, so the
+        # shift docs come from that same scan instead of a second one.
+        if done is None:
+            done = _list_completions_for_snapshot(snap_id, reviewer_email=email, force=True)
+        assigned = _rows_for_reviewer(snap_id, email) or []
         # Count only what the reviewer can actually see and act on in My Tasks —
         # the same filter that endpoint applies (excluded titles/video jobs).
         assigned = [r for r in assigned if not _is_excluded_job(r)]
         assigned_keys = {_row_job_key(r) for r in assigned}
-        done = _list_completions_for_snapshot(snap_id, reviewer_email=email, force=True)
 
         # Include override-completed jobs (forced completions that bypassed unreviewed checks).
         # These count as "done" even though they may have unreviewed responses, because
@@ -3059,6 +3117,7 @@ def api_shifts_my_complete():
                         email, was_complete, is_complete, len(assigned_keys), len(all_done_keys))
     except Exception as exc:  # noqa: BLE001 — refill/ping must not break completion
         logging.error("finish-check failed for %s: %s", email, exc, exc_info=True)
+        _clear_refill_attempt(snap_id, email)  # let My Tasks' self-heal retry
 
     # Include refill debugging info in response so user can see why refill succeeded/failed
     refill_debug = {}

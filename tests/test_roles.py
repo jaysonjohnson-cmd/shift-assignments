@@ -284,3 +284,53 @@ def test_genuine_viewer_still_viewer_when_roster_present(monkeypatch):
     )
     assert roles.get_role("stranger@storesight.com") == "viewer"
     assert forced["n"] == 0  # roster non-empty → no forced reload
+
+
+# ---------- warm cache ----------
+
+
+def _fake_storage(monkeypatch, storage, calls=None):
+    import internal_api
+
+    def fake_get(path, params=None):
+        if calls is not None:
+            calls.append((params or {}).get("page", 1))
+        page = (params or {}).get("page", 1)
+        return {"data": list(storage) if page == 1 else []}
+
+    monkeypatch.setattr(internal_api, "get", fake_get)
+    monkeypatch.setattr(roles, "_ensure_bg_started", lambda: None)
+    monkeypatch.setattr(roles.time, "sleep", lambda s: None)
+    monkeypatch.setattr(roles, "_DOC_CACHE", {})
+
+
+def test_forced_scan_drops_a_kind_whose_last_doc_was_deleted(monkeypatch):
+    """A released refill_lock must not survive in the cache.
+
+    The scan only rewrote kinds it saw docs for, so once the last lock was
+    deleted from Storage its cached copy stuck forever — and every later
+    refill on the instance read the pool as locked and gave up. Confirmed
+    2026-09-23: reviewers sat idle after finishing with no refill written.
+    """
+    storage = [
+        {"id": "lock-1", "data": {"kind": "refill_lock", "shift_snapshot_id": "s1"}},
+        {"id": "rs-1", "data": {"kind": "reviewer_shift", "shift_snapshot_id": "s1"}},
+    ]
+    _fake_storage(monkeypatch, storage)
+    assert len(roles.list_docs_by_kind("refill_lock", force=True)) == 1
+
+    storage[:] = [d for d in storage if d["id"] != "lock-1"]
+    assert roles.list_docs_by_kind("refill_lock", force=True) == []
+
+
+def test_an_empty_kind_is_cached_not_rescanned_every_read(monkeypatch):
+    """A kind with no docs at all must still count as warm after a scan."""
+    calls = []
+    _fake_storage(monkeypatch, [
+        {"id": "rs-1", "data": {"kind": "reviewer_shift"}},
+    ], calls)
+    roles.list_docs_by_kind("lead")
+    scans_after_first = len(calls)
+    roles.list_docs_by_kind("lead")
+    roles.list_docs_by_kind("lead")
+    assert len(calls) == scans_after_first, "an empty kind triggered a rescan"

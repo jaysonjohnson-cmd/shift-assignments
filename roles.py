@@ -123,10 +123,19 @@ def _full_namespace_scan(want_kind=None, force=False):
             logging.warning("Storage namespace scan failed (page %d): %s", page, exc)
             raise
 
+        # A full scan is authoritative for every kind, including ones it found
+        # zero docs for. Only writing the kinds it happened to see left a kind
+        # whose last doc was just deleted holding its old contents forever —
+        # a released refill_lock kept blocking every refill for the rest of
+        # the shift — and left a genuinely empty kind permanently "cold", so
+        # every read of it paid a synchronous full scan.
         now = time.time()
         with _CACHE_LOCK:
-            for k, docs in by_kind.items():
-                _DOC_CACHE[k] = {"data": docs, "fetched_at": now}
+            kinds = set(_DOC_CACHE) | set(by_kind)
+            if want_kind is not None:
+                kinds.add(want_kind)
+            for k in kinds:
+                _DOC_CACHE[k] = {"data": by_kind.get(k, []), "fetched_at": now}
         logging.info(
             "Storage scan complete: %d docs across %d kinds",
             sum(len(v) for v in by_kind.values()),
@@ -145,8 +154,9 @@ def list_docs_by_kind(kind, force=False):
     * the cache for this kind is *cold* (no entry yet) — this happens right
       after startup or right after an ``invalidate_doc_cache`` wipe. Returning
       ``[]`` here is what produced wrong roles on cold start and missed finish
-      pings. A forced scan is coalesced (see ``_SCAN_COALESCE_WINDOW``) so a
-      burst of concurrent cold reads costs a single scan, not one each.
+      pings. A cold-cache scan is coalesced by the stampede guard in
+      ``_full_namespace_scan``, so a burst of concurrent cold reads costs a
+      single scan, not one each. A forced scan is never coalesced.
     """
     _ensure_bg_started()
     with _CACHE_LOCK:

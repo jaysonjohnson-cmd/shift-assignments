@@ -197,13 +197,20 @@ def test_auto_refill_excludes_already_assigned(monkeypatch):
                                "reviewer_email": "kim@storesight.com",
                                "rows": [{"jobId": "J3"}], "part": 0}},
     ]
+    # Sam has finished his own queue (refill only tops up a reviewer who has).
+    completions = [
+        {"id": f"c{j}", "data": {"kind": "completion", "shift_snapshot_id": "snap1",
+                                 "reviewer_email": "sam@storesight.com", "job_id": j}}
+        for j in ["J1", "J2"]
+    ]
     def mock_list_docs(kind, force=False):
-        return shift_docs if kind == "reviewer_shift" else []
+        return {"reviewer_shift": shift_docs, "completion": completions}.get(kind, [])
     monkeypatch.setattr(main.roles, "list_docs_by_kind", mock_list_docs)
     feed = [
         {"id": j, "jobId": j, "projectId": f"p{j}", "priority": 1, "name": j,
          "unreviewedCount": 3, "oldestSubmission": ""}
-        for j in ["J1", "J2", "J3", "J4", "J5", "J6"]
+        # J1/J2 are fully reviewed, so they've dropped out of the feed.
+        for j in ["J3", "J4", "J5", "J6"]
     ]
     monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda *a, **k: feed)
 
@@ -212,7 +219,7 @@ def test_auto_refill_excludes_already_assigned(monkeypatch):
 
     added = main._auto_refill_reviewer("snap1", "sam@storesight.com", 2)
 
-    # J1-J3 are taken; the next two unassigned are J4, J5.
+    # J3 is on Kim's queue; the next two unassigned are J4, J5.
     assert [r["jobId"] for r in added] == ["J4", "J5"]
     # Stored includes lock doc + reviewer_shift chunk. Filter for reviewer_shift docs.
     shift_docs_stored = [s for s in stored if s.get("data", {}).get("kind") == "reviewer_shift"]
@@ -237,13 +244,18 @@ def test_auto_refill_uses_stored_batch_size_not_grown_queue(monkeypatch):
                               "rows": [{"jobId": "J3"}, {"jobId": "J4"}],
                               "part": 1, "batch_size": 2}},
     ]
+    completions = [
+        {"id": f"c{j}", "data": {"kind": "completion", "shift_snapshot_id": "snap1",
+                                 "reviewer_email": "sam@storesight.com", "job_id": j}}
+        for j in ["J1", "J2", "J3", "J4"]
+    ]
     def mock_list_docs(kind, force=False):
-        return shift_docs if kind == "reviewer_shift" else []
+        return {"reviewer_shift": shift_docs, "completion": completions}.get(kind, [])
     monkeypatch.setattr(main.roles, "list_docs_by_kind", mock_list_docs)
     feed = [
         {"id": j, "jobId": j, "projectId": f"p{j}", "priority": 1, "name": j,
          "unreviewedCount": 3, "oldestSubmission": ""}
-        for j in ["J1", "J2", "J3", "J4", "J5", "J6", "J7"]
+        for j in ["J5", "J6", "J7"]
     ]
     monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda *a, **k: feed)
     stored = []

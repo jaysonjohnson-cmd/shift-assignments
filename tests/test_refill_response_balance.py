@@ -551,7 +551,8 @@ def test_refill_retries_and_succeeds_once_the_lock_clears(monkeypatch):
         # Held for the first two checks, gone by the third.
         return [_lock("saylor@storesight.com")] if calls["n"] < 3 else []
 
-    monkeypatch.setattr(main, "_cleanup_orphaned_refill_locks", lambda *a, **k: None)
+    monkeypatch.setattr(main, "_cleanup_orphaned_refill_locks",
+                        lambda *a, lock_docs=None, **k: list(lock_docs or []))
     monkeypatch.setattr(main.roles, "list_docs_by_kind", flaky_list_docs)
     monkeypatch.setattr(main, "_list_completions_for_snapshot", lambda *a, **k: [])
     monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda *a, **k: _feed({"a": 1, "b": 1}))
@@ -738,3 +739,67 @@ def test_heavy_jobs_divide_by_the_team_on_shift(refill):
     assert heavy_taken(2) == 2
     # Six on shift over six is one each.
     assert heavy_taken(5) == 1
+
+
+def test_refill_skips_a_reviewer_who_still_has_pending_work(monkeypatch):
+    """Rechecked under the lock: two completions in the same instant (two tabs,
+    a double-click) could each see the "last job done" edge and refill twice,
+    handing out a double batch. The second must be a no-op."""
+    stored = []
+    shift_docs = [{"id": "rs-0", "data": {
+        "kind": "reviewer_shift", "shift_snapshot_id": "snap1",
+        "reviewer_email": REVIEWER, "rows": [{"jobId": "held"}], "part": 0,
+        "batch_size": 5,
+    }}]
+    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind, force=False: {
+        "reviewer_shift": shift_docs}.get(kind, []))
+    monkeypatch.setattr(main, "_list_completions_for_snapshot", lambda *a, **k: [])
+    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda *a, **k: _feed({"a": 1}))
+    monkeypatch.setattr(internal_api, "post",
+                        lambda path, json=None: stored.append(json) or {"data": {"id": "new"}})
+    monkeypatch.setattr(main, "_try_delete", lambda *a, **k: None)
+
+    assert main._auto_refill_reviewer("snap1", REVIEWER, 5) == []
+    assert not [s for s in stored if s["data"].get("kind") == "reviewer_shift"]
+
+
+def test_contended_refill_clears_the_self_heal_cooldown(monkeypatch):
+    """A refill that gave up on a busy lock must let the next poll retry.
+
+    Both triggers stamp the 120s cooldown before trying; keeping the stamp after
+    a transient failure left a finished reviewer idle for the whole window.
+    """
+    monkeypatch.setattr(main.time, "sleep", lambda *a, **k: None)
+    main._mark_refill_attempted("snap1", REVIEWER)
+    assert not main._self_heal_cooldown_ok("snap1", REVIEWER)
+
+    added = _refill_with_lock(
+        monkeypatch, _feed({"a": 1}), lock_docs=[_lock("saylor@storesight.com")])
+    assert added == []
+    assert main._self_heal_cooldown_ok("snap1", REVIEWER), "cooldown should be cleared"
+
+
+def test_a_failed_lock_lookup_is_treated_as_busy(monkeypatch):
+    """Reading a Storage error as "unlocked" reopened the duplicate race."""
+    stored = []
+
+    def list_docs(kind, force=False):
+        if kind == "refill_lock":
+            raise RuntimeError("storage down")
+        return []
+
+    monkeypatch.setattr(main.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(main.roles, "list_docs_by_kind", list_docs)
+    monkeypatch.setattr(internal_api, "post",
+                        lambda path, json=None: stored.append(json) or {"data": {"id": "new"}})
+    assert main._auto_refill_reviewer("snap1", REVIEWER, 5) == []
+    assert stored == [], "no lock or rows may be written when lock state is unknown"
+
+
+def test_releasing_a_lock_also_drops_it_from_the_cache(monkeypatch):
+    removed = []
+    monkeypatch.setattr(main, "_try_delete", lambda *a, **k: None)
+    monkeypatch.setattr(main.roles, "cache_remove_doc",
+                        lambda kind, doc_id: removed.append((kind, doc_id)))
+    main._release_refill_lock("lock-1")
+    assert removed == [("refill_lock", "lock-1")]

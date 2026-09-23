@@ -575,8 +575,10 @@ def test_merge_publish_preserves_completions_for_retained_jobs(client, monkeypat
     }})
     assert resp.status_code == 201, resp.get_json()
 
-    # Sam's merged row set should keep only incomplete jobs plus new ones.
-    # J1 is completed, so it should be removed; only J2 should remain.
+    # Sam's new doc carries the completed J1 (so it still reads as Done) plus
+    # the new J2, and replaces the old doc rather than sitting beside it.
+    # Previously J1 was dropped from the new doc, the old doc was kept, and J1's
+    # completion was deleted as "orphaned" — so J1 came back as pending.
     sam_docs = [
         d for d in published_docs
         if d["data"].get("kind") == "reviewer_shift"
@@ -584,7 +586,12 @@ def test_merge_publish_preserves_completions_for_retained_jobs(client, monkeypat
         and d["id"] != "rs-1"
     ]
     sam_jobs = [r["jobId"] for d in sam_docs for r in d["data"]["rows"]]
-    assert sorted(sam_jobs) == ["J2"]
+    assert sorted(sam_jobs) == ["J1", "J2"]
+    assert all(d["data"]["batch_size"] == 1 for d in sam_docs), (
+        "the refill allotment counts live work only, not completed jobs"
+    )
+    assert any(p.endswith("/rs-1") for p in deleted), "the old doc must be replaced"
+    assert not any(p.endswith("/c1") for p in deleted), "J1's completion must survive"
 
 
 def test_merge_publish_leaves_reviewer_untouched_when_pick_is_already_theirs(client, monkeypatch):
@@ -728,6 +735,28 @@ def test_merge_publish_skips_only_the_reviewer_left_with_nothing(client, monkeyp
     ]
     alex_jobs = [r["jobId"] for d in alex_docs for r in d["data"]["rows"]]
     assert alex_jobs == ["J2"]
+
+
+def test_publish_never_assigns_an_excluded_client(client, monkeypatch):
+    """The composer filters Cloud Factory clients, but that filter is
+    bypassable (pins, a stale bundle). The server must refuse them too."""
+    c, token_file = client
+    _as_admin(token_file)
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(roles, "list_reviewers", lambda: [])
+    posted = []
+    monkeypatch.setattr(internal_api, "post",
+                        lambda path, json=None: posted.append(json) or {"data": {"id": "x"}})
+    monkeypatch.setattr(roles, "list_docs_by_kind", lambda kind, force=False: [])
+
+    resp = c.post("/api/shifts/publish", json={"assignments": {
+        "sam@storesight.com": [{
+            "jobId": "M1", "projectId": "1", "name": "Menasha job", "unreviewedCount": 3,
+            "extras": {"client": "Joanna.Riney@menasha.com"},
+        }],
+    }})
+    assert resp.status_code == 400, resp.get_json()
+    assert not [p for p in posted if p["data"].get("kind") == "reviewer_shift"]
 
 
 def test_publish_compacts_rows_to_subset_needed_by_my_tasks(client, monkeypatch):
@@ -1364,6 +1393,97 @@ def test_complete_is_idempotent(client, monkeypatch):
     second = c.post("/api/shifts/my/complete", json={"job_id": "10"})
     assert second.status_code == 200  # existing doc returned, no create
     assert len(created_docs) == 1
+
+
+def test_a_racing_duplicate_completion_is_dropped(client, monkeypatch):
+    """Two requests for the same job can both pass the read-then-write
+    idempotency check. The later writer must see the earlier doc, delete its
+    own, and skip the leaderboard tally so the job only counts once."""
+    c, token_file = client
+    _as_reviewer(token_file, "sam@storesight.com")
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(roles, "list_reviewers",
+                        lambda: [{"id": "r", "name": "Sam", "email": "sam@storesight.com"}])
+    snapshot_doc = {"id": "snap-1", "data": {"kind": "shift_snapshot"}}
+    reviewer_doc = {"id": "rs-1", "data": {"kind": "reviewer_shift",
+                    "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
+                    "rows": [{"jobId": "10", "id": "10"}], "part": 0}}
+    # The other request's doc: written first, but not yet visible to our
+    # idempotency read.
+    racer = {"id": "comp-0", "data": {"kind": "completion", "shift_snapshot_id": "snap-1",
+             "reviewer_email": "sam@storesight.com", "job_id": "10",
+             "completed_at": "2000-01-01T00:00:00+00:00"}}
+    created = []
+    reads = {"completion": 0}
+
+    def fake_list(kind, force=False):
+        if kind == "shift_snapshot":
+            return [snapshot_doc]
+        if kind == "reviewer_shift":
+            return [reviewer_doc]
+        if kind == "completion":
+            reads["completion"] += 1
+            return list(created) if reads["completion"] == 1 else [racer, *created]
+        return []
+
+    posted_kinds = []
+
+    def fake_post(path, json=None):
+        posted_kinds.append((json or {}).get("data", {}).get("kind"))
+        if (json or {}).get("data", {}).get("kind") == "completion":
+            created.append({"id": "comp-1", "data": json["data"]})
+            return {"data": {"id": "comp-1"}}
+        return {"data": {"id": "other"}}
+
+    deleted = []
+    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
+    monkeypatch.setattr(internal_api, "post", fake_post)
+    monkeypatch.setattr(internal_api, "put", lambda path, json=None: {"data": {}})
+    monkeypatch.setattr(main, "_try_delete", lambda did: deleted.append(did))
+    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda *a, **k: [])
+
+    resp = c.post("/api/shifts/my/complete", json={"job_id": "10"})
+    assert resp.status_code == 200, resp.get_json()
+    assert resp.get_json()["data"]["id"] == "comp-0", "the earlier doc is the keeper"
+    assert deleted == ["comp-1"], "our duplicate must be removed"
+    assert "review_tally" not in posted_kinds, "the job must only count once"
+
+
+def test_complete_rechecks_a_stale_count_with_the_per_job_lookup(client, monkeypatch):
+    """When the warm feed still shows responses, confirm with the ~0.3s per-job
+    count instead of refetching the whole 10-12s feed on the reviewer's click."""
+    c, token_file = client
+    _as_reviewer(token_file, "sam@storesight.com")
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(roles, "list_reviewers",
+                        lambda: [{"id": "r", "name": "Sam", "email": "sam@storesight.com"}])
+    snapshot_doc = {"id": "snap-1", "data": {"kind": "shift_snapshot"}}
+    reviewer_doc = {"id": "rs-1", "data": {"kind": "reviewer_shift",
+                    "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
+                    "rows": [{"jobId": "55", "id": "55"}], "part": 0}}
+    created = []
+    monkeypatch.setattr(roles, "list_docs_by_kind", lambda kind, force=False: {
+        "shift_snapshot": [snapshot_doc], "reviewer_shift": [reviewer_doc],
+        "completion": list(created)}.get(kind, []))
+    monkeypatch.setattr(internal_api, "post", lambda path, json=None: (
+        created.append({"id": "c1", "data": json["data"]})
+        if (json or {}).get("data", {}).get("kind") == "completion" else None
+    ) or {"data": {"id": "c1"}})
+    monkeypatch.setattr(internal_api, "put", lambda path, json=None: {"data": {}})
+
+    uncached_fetches = []
+
+    def feed(*a, use_cache=True, **k):
+        if not use_cache:
+            uncached_fetches.append(1)
+        return [{"jobId": "55", "id": "55", "unreviewedCount": 7}]  # stale
+
+    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", feed)
+    monkeypatch.setattr(main.bloom, "fetch_job_pending_count", lambda job_id: 0)
+
+    resp = c.post("/api/shifts/my/complete", json={"job_id": "55"})
+    assert resp.status_code == 201, resp.get_json()
+    assert uncached_fetches == [], "must not refetch the whole feed on a click"
 
 
 def test_complete_blocked_when_job_still_unreviewed(client, monkeypatch):

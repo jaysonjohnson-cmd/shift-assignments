@@ -128,6 +128,30 @@ def _fetch_prioritized_jobs_raw():
     return resp.get("data", []) if isinstance(resp, dict) else []
 
 
+def fetch_job_pending_count(job_id):
+    """Live count of one job's pending submissions that are ours to review.
+
+    Two small /api/responsegroups reads (~0.3s total) instead of refetching the
+    whole prioritized feed (10-12s): everything still status N, minus what is
+    checked out to a third party right now (tp_review_status N), which isn't
+    reviewable here. Returns None if either read fails, so the caller can fall
+    back to the feed.
+    """
+    try:
+        pending = internal_api.get("/api/responsegroups", params={
+            "job_id": job_id, "status": "N", "per_page": 1})
+        at_third_party = internal_api.get("/api/responsegroups", params={
+            "job_id": job_id, "status": "N", "tp_review_status": "N", "per_page": 1})
+    except Exception as exc:  # noqa: BLE001 — caller falls back to the feed
+        logging.warning("pending-count lookup failed for job %s: %s", job_id, exc)
+        return None
+    total = _safe_int(((pending or {}).get("pagination") or {}).get("total"))
+    parked = _safe_int(((at_third_party or {}).get("pagination") or {}).get("total"))
+    if total is None or parked is None:
+        return None
+    return max(0, total - parked)
+
+
 def _safe_int(value):
     """Coerce a feed value to int, or None when it's missing/blank/non-numeric.
     The feed sends some counts as "" (empty string), which int() chokes on."""
