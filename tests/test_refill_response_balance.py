@@ -504,17 +504,68 @@ def _lock(reviewer, snap="snap1", age_seconds=0):
 
 
 def test_refill_waits_on_another_reviewers_refill(monkeypatch):
-    """The lock covers the shared pool, so ANY in-flight refill blocks.
+    """The lock covers the shared pool, so ANY in-flight refill blocks —
+    after waiting it out for a few seconds, not on the first check.
 
     Scoped per reviewer it only stopped someone double-refilling themselves,
     which is not the race that hands two people the same job: two refills for
     different reviewers overlap on the read-modify-write and both take the
     same free jobs.
     """
+    monkeypatch.setattr(main.time, "sleep", lambda *a, **k: None)
     added = _refill_with_lock(
         monkeypatch, _feed({"a": 1, "b": 1}),
         lock_docs=[_lock("saylor@storesight.com")])
-    assert added == [], "a refill running for someone else must block this one"
+    assert added == [], "a refill running for someone else the whole time must block this one"
+
+
+def test_refill_retries_and_succeeds_once_the_lock_clears(monkeypatch):
+    """A refill must not give up on the first sighting of a held lock.
+
+    The finish-check that calls this has no retry of its own — it fires once,
+    synchronously, right when a reviewer completes their last job. Confirmed
+    in production 2026-09-23: four reviewers sat at 0 pending with no refill
+    doc ever written, because the only prior behaviour was to bail on the
+    first contended check and hope the reviewer's own browser polled again.
+    A refill is seconds of work against a warm feed cache, so a held lock
+    should almost always clear within the retry window.
+    """
+    calls = {"n": 0}
+    sleeps = []
+    stored = []
+    shift_docs = [{"id": "rs-0", "data": {
+        "kind": "reviewer_shift", "shift_snapshot_id": "snap1",
+        "reviewer_email": REVIEWER, "rows": [], "part": 0,
+        "batch_size": 5, "batch_responses": 100,
+    }}]
+    snap = {"id": "snap1", "data": {"kind": "shift_snapshot", "prioritization_flags": {}}}
+
+    def flaky_list_docs(kind, force=False):
+        if kind == "reviewer_shift":
+            return shift_docs
+        if kind == "shift_snapshot":
+            return [snap]
+        if kind != "refill_lock":
+            return []
+        calls["n"] += 1
+        # Held for the first two checks, gone by the third.
+        return [_lock("saylor@storesight.com")] if calls["n"] < 3 else []
+
+    monkeypatch.setattr(main, "_cleanup_orphaned_refill_locks", lambda *a, **k: None)
+    monkeypatch.setattr(main.roles, "list_docs_by_kind", flaky_list_docs)
+    monkeypatch.setattr(main, "_list_completions_for_snapshot", lambda *a, **k: [])
+    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda *a, **k: _feed({"a": 1, "b": 1}))
+    monkeypatch.setattr(main.bloom, "is_excluded_client", lambda c: False)
+    monkeypatch.setattr(internal_api, "post",
+                        lambda path, json=None: stored.append(json) or {"data": {"id": "new"}})
+    monkeypatch.setattr(main, "_try_delete", lambda *a, **k: None)
+    monkeypatch.setattr(main.roles, "cache_upsert_doc", lambda *a, **k: None)
+    monkeypatch.setattr(main.time, "sleep", lambda s: sleeps.append(s))
+
+    added = main._auto_refill_reviewer("snap1", REVIEWER, 5)
+    assert [r["jobId"] for r in added] == ["a", "b"], "should succeed once the lock clears"
+    assert calls["n"] == 3, "should have rechecked the lock until it cleared"
+    assert len(sleeps) == 2, "should wait between retries, not busy-loop"
 
 
 def test_refill_ignores_a_lock_from_a_different_shift(monkeypatch):

@@ -1988,6 +1988,13 @@ def _job_key(row):
 
 _REFILL_LOCK_MAX_AGE_SECONDS = 120
 
+# How long to wait out a contended refill_lock before giving up. A refill is
+# seconds of work against a warm feed cache, so a held lock almost always
+# clears within that window — see _auto_refill_reviewer for why giving up on
+# the first contended check isn't good enough.
+_REFILL_LOCK_WAIT_ATTEMPTS = 4
+_REFILL_LOCK_WAIT_SECONDS = 1
+
 
 def _cleanup_orphaned_refill_locks(max_age_seconds=_REFILL_LOCK_MAX_AGE_SECONDS):
     """Clean up refill_lock documents older than max_age_seconds.
@@ -2286,20 +2293,39 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         # reviewer only stopped someone double-refilling themselves, which is
         # not the race that hands two people the same job.
         #
-        # A skipped refill is not a lost one: the reviewer has nothing pending,
-        # so the self-heal path in /api/shifts/my retries on their next poll
-        # (see _SELF_HEAL_COOLDOWN_SECONDS).
-        try:
-            lock_docs = roles.list_docs_by_kind("refill_lock", force=True)
-            for doc in lock_docs:
-                data = doc.get("data") or {}
-                if data.get("shift_snapshot_id") == snap_id:
-                    logging.info(
-                        "auto-refill skipped for %s (refill already running for %s)",
-                        email, data.get("reviewer_email") or "?")
-                    return []  # Another refill holds the pool; skip to avoid duplicates
-        except Exception:
-            pass  # Best-effort; continue without the lock if it fails
+        # Wait out a held lock rather than bailing on the first check. This is
+        # this function's ONLY caller with no retry of its own: the finish-check
+        # fires once, synchronously, exactly when a reviewer completes their
+        # last job. A skip there used to rely entirely on the reviewer's own
+        # browser polling /api/shifts/my again afterward — fine if their tab is
+        # still open, but if they stepped away or closed it, nothing ever
+        # retried for them. Confirmed in production 2026-09-23: four reviewers
+        # sat at 0 pending with no refill doc ever written, each needing a
+        # manual republish. A refill is seconds of work against a warm feed
+        # cache, so a held lock almost always clears within a few seconds —
+        # worth a short wait here rather than leaving a finished reviewer idle
+        # indefinitely on a coin-flip of contention timing.
+        for attempt in range(_REFILL_LOCK_WAIT_ATTEMPTS):
+            try:
+                lock_docs = roles.list_docs_by_kind("refill_lock", force=True)
+            except Exception:
+                lock_docs = []  # Best-effort; treat a failed lookup as unlocked
+            holder = next(
+                (
+                    (doc.get("data") or {}).get("reviewer_email")
+                    for doc in lock_docs
+                    if (doc.get("data") or {}).get("shift_snapshot_id") == snap_id
+                ),
+                None,
+            )
+            if holder is None:
+                break
+            if attempt == _REFILL_LOCK_WAIT_ATTEMPTS - 1:
+                logging.info(
+                    "auto-refill skipped for %s (refill still running for %s after %d retries)",
+                    email, holder or "?", attempt)
+                return []  # Pool stayed contended; skip to avoid duplicates
+            time.sleep(_REFILL_LOCK_WAIT_SECONDS)
 
         # Write a lock marker to prevent concurrent refills
         lock_doc = {
