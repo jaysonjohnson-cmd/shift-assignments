@@ -157,22 +157,32 @@ def _row_from_api(job, cf_denied_count=0, aged=None):
     """
     project_id = str(job.get("project_id") or "")
     project_name = ""  # Will be populated separately if needed
-    # Use the REVIEWABLE count ("Mass Review"), not raw "New". "New" includes
-    # responses the reviewer can't act on — e.g. auto-rejected for distance —
-    # which would otherwise block completion and the finish ping forever. The
-    # gap (new - massReview) is exactly those un-reviewable responses. Fall
-    # back to "new" when massReview is missing/blank (some feed rows send "").
-    #
-    # Capped at "new": massReview can be LARGER than "new" when most of a
-    # job's mass-review backlog is checked out to a third party (Cloud
-    # Factory) and hasn't been released back into FieldAgent's queue yet —
-    # e.g. massReview=100, new=1 means only 1 is actually sitting here
-    # ready to review, not 100. Reviewers can never act on more than "new".
-    base_unreviewed = (
-        min(_safe_int(job.get("massReview")), _safe_int(job.get("new")) or 0)
-        if _safe_int(job.get("massReview")) is not None
-        else (_safe_int(job.get("new")) or 0)
-    )
+    # Always use raw "New" — the number of unreviewed submissions FieldAgent
+    # has sitting in the queue right now. This used to be capped at
+    # min(massReview, new) on the theory that "Mass Review" was the
+    # trustworthy reviewable subset and the gap was un-reviewable noise
+    # (auto-rejected for distance, etc). Disproved 2026-09-23: cross-checked
+    # against FA-web's own Prioritized Jobs admin page and found massReview
+    # reading 0 on jobs where every single "new" response was confirmed
+    # individually approvable there ("# to Approve" matched "new" exactly) —
+    # including the #1 priority job in the whole queue (new=16, massReview=0).
+    # That cap was silently zeroing 20 jobs / 55 real submissions out of the
+    # entire tool. A job with responses waiting must never disappear, so
+    # "new" — the ceiling on what a reviewer can ever act on — is the count.
+    base_unreviewed = _safe_int(job.get("new")) or 0
+    # Informational only — never subtracted from unreviewedCount above, so it
+    # can no longer hide a job or shrink its count. "massReview" is officially
+    # documented (FA-web's own OpenAPI spec) as just "Mass-review count, or
+    # empty string when not a mass-review job" — it is NOT documented as a
+    # reviewable/auto-rejected split, and using it that way is what caused the
+    # 2026-09-23 bug where real work vanished from the tool. Kept anyway as a
+    # "may need clearing in Response Search rather than reviewing" nudge on
+    # jayson's explicit call: verified live against job 1971209 (new=16,
+    # massReview=0) where the gap matched what turned out to actually need
+    # rejecting once a human looked. Unverified for the general case — treat
+    # it as a hint that's worth a look, not a trustworthy count.
+    _mr = _safe_int(job.get("massReview"))
+    possible_reject = max(0, base_unreviewed - _mr) if _mr is not None else 0
     return {
         "id": str(job.get("id") or ""),
         "projectId": project_id,
@@ -202,6 +212,9 @@ def _row_from_api(job, cf_denied_count=0, aged=None):
             "numSubs": float((job.get("priority_details") or {}).get("num_subs") or 0),
             # Raw "New" count (incl. un-reviewable/auto-rejected) for reference.
             "newCount": _safe_int(job.get("new")) or 0,
+            # Informational "may need clearing, not reviewing" hint — see the
+            # note on `possible_reject` above. Never affects unreviewedCount.
+            "possibleRejectCount": possible_reject,
             # Client owner email — used to scope to Storesight / Retail Pipeline jobs.
             "client": str(job.get("client") or ""),
             # Cloud-Factory-denied responses auto-approved before human re-review.

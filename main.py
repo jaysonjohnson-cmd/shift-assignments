@@ -1818,11 +1818,19 @@ def _supersede_completions_for_rows(snapshot_id, reviewer_email, rows):
 
 
 def _live_counts_by_job():
-    """{jobId: {"reviewable", "new", "aged"}} from the live feed, or None.
+    """{jobId: {"reviewable", "new", "aged", "possibleReject"}} from the live
+    feed, or None.
 
     None is meaningful and must be propagated: it means "no live data", and a
     caller has to fall back to the stored snapshot counts. Treating an empty
     feed as real data would mark every assigned job as fully reviewed.
+
+    `reviewable` and `new` are the same value as of 2026-09-23 — bloom.py no
+    longer lets anything shrink unreviewedCount below "new" (a prior cap on
+    "massReview" was silently zeroing real work out of the whole tool).
+    `possibleReject` is a separate, purely informational "may need clearing in
+    Response Search rather than reviewing" hint — see bloom.py's `_row_from_api`
+    for the caveats on trusting it.
     """
     try:
         feed = bloom.fetch_prioritized_jobs()
@@ -1833,47 +1841,13 @@ def _live_counts_by_job():
             "reviewable": int(j.get("unreviewedCount") or 0),
             "new": int((j.get("extras") or {}).get("newCount") or 0),
             "aged": int((j.get("extras") or {}).get("agedCount") or 0),
+            "possibleReject": int((j.get("extras") or {}).get("possibleRejectCount") or 0),
         }
         for j in feed
         if j.get("jobId")
     }
     # Empty feed → treat as no data (don't auto-mark every job reviewed).
     return live or None
-
-
-def _is_unactionable_row(row, live_by_job):
-    """True if this job still has responses but none the reviewer can action.
-
-    Everything left on it was auto-rejected (distance, etc.), which is cleared
-    on the Responses page rather than in My Tasks. /api/shifts/my hides these
-    rows, so the completion finish-check MUST discount them the same way: a
-    reviewer holding one otherwise never reaches is_complete, so their queue is
-    never topped up and they sit idle with an apparently empty task list. Both
-    callers share this predicate so the two views can't drift apart again.
-
-    Exception: once the auto-rejected pile is *aged*, it stops being noise and
-    becomes the only thing keeping the job open. Nothing will ever clear it on
-    its own — that was the point of hiding it — so it sat for days precisely
-    because no one could see it. Aged rows are therefore actionable: they show
-    in My Tasks as clear-only work ("N to auto-reject" + the Responses link),
-    and the checkmark closes them out.
-
-    This narrows, but does not undo, the 2026-07-16 decision to hide
-    auto-rejected-only rows. Fresh ones stay hidden: they have no urgency and
-    usually pick up reviewable work on their own. Only rows that have aged
-    past the threshold surface.
-    """
-    if live_by_job is None:
-        return False
-    jid = str(row.get("jobId") or "")
-    if not jid:
-        return False
-    live = live_by_job.get(jid)
-    if live is None:
-        return False
-    if live.get("aged", 0) > 0:
-        return False
-    return live["reviewable"] == 0 and live["new"] > 0
 
 
 @app.route("/api/shifts/my", methods=["GET"])
@@ -1904,8 +1878,8 @@ def api_shifts_my():
     # feed has no unreviewed responses left (fully reviewed) → count 0, which the
     # UI treats as already-done. Best-effort: if the feed is unavailable we keep
     # the stored counts rather than blanking the page.
-    # Per job: reviewable count (massReview) and the raw New count, so we can
-    # show both "what's left to review" and "what's stuck as auto-rejected".
+    # Per job: reviewable count and a separate informational "may need
+    # clearing, not reviewing" hint (see _live_counts_by_job).
     live_by_job = _live_counts_by_job()
 
     enriched = []
@@ -1926,15 +1900,11 @@ def api_shifts_my():
             if live is not None:
                 # Job is in the live feed — use current data.
                 reviewable = live["reviewable"]
-                new = live["new"]
                 item["unreviewedCount"] = reviewable
-                # Responses left that aren't reviewable (auto-rejected for distance,
-                # etc.) — the reviewer clears these on the Responses page, not here.
-                item["autoRejected"] = max(0, new - reviewable)
-                # Skip jobs with zero reviewable responses (all auto-rejected).
-                # These have no actionable work and shouldn't appear on My Tasks.
-                if _is_unactionable_row(row, live_by_job):
-                    continue
+                # Informational "may need clearing in Response Search, not
+                # reviewing" nudge — never reduces unreviewedCount or hides
+                # the job. See bloom.py's _row_from_api for caveats.
+                item["autoRejected"] = live["possibleReject"]
             elif completion:
                 # Job is not in the live feed AND has been marked completed.
                 # Treat as fully reviewed (0). Don't modify item — let it show as done.
@@ -1978,7 +1948,7 @@ def api_shifts_my():
                 live = live_by_job.get(jid) if (live_by_job is not None and jid) else None
                 if live is not None:
                     item["unreviewedCount"] = live["reviewable"]
-                    item["autoRejected"] = max(0, live["new"] - live["reviewable"])
+                    item["autoRejected"] = live["possibleReject"]
                 enriched.append(item)
         else:
             logging.warning("self-heal: no eligible jobs to refill for %s", email)
@@ -2523,16 +2493,10 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             if pg_store_walk_only and not (r.get("extras") or {}).get("pngStoreWalk"):
                 skipped_reasons["not_pg_store_walk"] += 1
                 continue
-            # Skip jobs with no reviewable work (unreviewedCount == 0). These hold
-            # only auto-rejected responses, cleared on the Responses page rather than
-            # in My Tasks, and My Tasks hides them — so refilling with one would hand
-            # a reviewer a job they never see.
+            # Skip jobs with no reviewable work and no aged backlog — nothing
+            # here for a reviewer to act on either way.
             unreviewable = int(r.get("unreviewedCount") or 0)
             aged_count = int((r.get("extras") or {}).get("agedCount") or 0)
-            # Aged auto-rejected-only jobs are the exception: they carry no
-            # reviewable work but are visible and completable in My Tasks (see
-            # _is_unactionable_row), so a reviewer can clear them down on the
-            # Responses page and check them off.
             if unreviewable <= 0 and aged_count <= 0:
                 skipped_reasons["no_unreviewed"] += 1
                 continue
@@ -2970,15 +2934,8 @@ def api_shifts_my_complete():
     try:
         assigned = _rows_for_reviewer(snap_id, email, force=True) or []
         # Count only what the reviewer can actually see and act on in My Tasks —
-        # the same two filters that endpoint applies. Excluded titles/video jobs,
-        # and jobs whose remaining responses are all auto-rejected (invisible
-        # there, so impossible to check off). Counting either as outstanding work
-        # means is_complete never goes true and the queue is never topped up.
-        live_by_job = _live_counts_by_job()
-        assigned = [
-            r for r in assigned
-            if not _is_excluded_job(r) and not _is_unactionable_row(r, live_by_job)
-        ]
+        # the same filter that endpoint applies (excluded titles/video jobs).
+        assigned = [r for r in assigned if not _is_excluded_job(r)]
         assigned_keys = {_row_job_key(r) for r in assigned}
         done = _list_completions_for_snapshot(snap_id, reviewer_email=email, force=True)
 

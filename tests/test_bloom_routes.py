@@ -193,29 +193,35 @@ def test_jobs_with_no_new_responses_stay_excluded(monkeypatch):
     assert [r["id"] for r in bloom.fetch_prioritized_jobs(use_cache=False)] == ["10"]
 
 
-def test_unreviewed_count_uses_mass_review_not_new(monkeypatch):
-    """unreviewedCount tracks the REVIEWABLE count ("massReview"), not raw "New"
-    — so auto-rejected responses (new > massReview) don't count as actionable."""
+def test_unreviewed_count_always_uses_new_ignoring_mass_review(monkeypatch):
+    """unreviewedCount tracks raw "New" regardless of "massReview".
+
+    Used to cap at min(massReview, new) on the theory that massReview was the
+    trustworthy reviewable subset. Disproved 2026-09-23 against live data:
+    massReview reads 0 on jobs where FA-web's own admin page confirms every
+    "new" response is individually approvable — that cap was silently zeroing
+    real, priority work out of the whole tool. A job with responses waiting
+    must never disappear, so "new" is always the count now.
+    """
     bloom.clear_cache()
     jobs = [
-        # 5 new, but only 2 reviewable — the other 3 are auto-rejected/un-actionable.
+        # massReview lower than new no longer suppresses the count.
         {"id": 10, "project_id": 110, "priority": 1, "name": "A", "new": 5, "massReview": 2},
-        # All new are reviewable.
         {"id": 20, "project_id": 120, "priority": 2, "name": "B", "new": 4, "massReview": 4},
-        # Everything left is auto-rejected → nothing actionable.
+        # massReview=0 must not zero this out — verified live to still mean
+        # "fully reviewable", not "nothing actionable".
         {"id": 30, "project_id": 130, "priority": 3, "name": "C", "new": 3, "massReview": 0},
-        # massReview (100) can OVERSTATE what's actionable when most of the
-        # backlog is checked out to Cloud Factory and hasn't been released
-        # back into FieldAgent's queue — only "new" (1) is actually here.
+        # massReview larger than new no longer matters either — "new" is the
+        # ceiling on what a reviewer can act on regardless.
         {"id": 40, "project_id": 140, "priority": 4, "name": "D", "new": 1, "massReview": 100},
     ]
     monkeypatch.setattr(internal_api, "get", _prioritized_jobs(jobs))
     rows = {r["id"]: r for r in bloom.fetch_prioritized_jobs(use_cache=False)}
-    assert rows["10"]["unreviewedCount"] == 2
+    assert rows["10"]["unreviewedCount"] == 5
     assert rows["10"]["extras"]["newCount"] == 5
     assert rows["20"]["unreviewedCount"] == 4
-    assert rows["30"]["unreviewedCount"] == 0  # only auto-rejected left → not actionable
-    assert rows["40"]["unreviewedCount"] == 1  # capped at "new" despite massReview=100
+    assert rows["30"]["unreviewedCount"] == 3
+    assert rows["40"]["unreviewedCount"] == 1
 
 
 def test_fetch_prioritized_jobs_uses_cache(monkeypatch):
@@ -331,8 +337,9 @@ def test_fetch_prioritized_jobs_skips_jobs_with_no_responses_anywhere(monkeypatc
     it's fully parked with a third party (e.g. Cloud Factory) — keep it out of
     the feed so it's never assignable, without disturbing already-published
     my-tasks rows (which only clear on checkmark, not on unreviewedCount).
-    A stale/nonzero massReview can't override this since unreviewedCount is
-    capped at "new" (see test_unreviewed_count_uses_mass_review_not_new)."""
+    massReview no longer affects unreviewedCount at all (see
+    test_unreviewed_count_always_uses_new_ignoring_mass_review) — inclusion in
+    the feed is gated purely on raw "new" > 0."""
     bloom.clear_cache()
     jobs = [
         # Fully empty — parked, nothing to review anywhere.
@@ -950,8 +957,9 @@ def test_shifts_my_overlays_live_unreviewed_counts(client, monkeypatch):
 
 
 def test_shifts_my_reports_auto_rejected_count(client, monkeypatch):
-    """autoRejected = raw New minus reviewable (massReview) — the responses that
-    can't be reviewed here. The job stays in the list with that count."""
+    """autoRejected surfaces bloom's informational "possibleRejectCount" hint
+    (a "may need clearing in Response Search, not reviewing" nudge) without
+    ever affecting unreviewedCount or hiding the job."""
     c, token_file = client
     _as_reviewer(token_file, "sam@storesight.com")
     monkeypatch.setattr(roles, "list_admins", lambda: [])
@@ -964,8 +972,8 @@ def test_shifts_my_reports_auto_rejected_count(client, monkeypatch):
     reviewer_shift = {"id": "rs-1", "data": {"kind": "reviewer_shift",
                       "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
                       "rows": [
-                          {"jobId": "A", "projectId": "10", "unreviewedCount": 9},  # 2 review + 3 AR
-                          {"jobId": "B", "projectId": "20", "unreviewedCount": 9},  # only auto-rejects
+                          {"jobId": "A", "projectId": "10", "unreviewedCount": 9},
+                          {"jobId": "B", "projectId": "20", "unreviewedCount": 9},
                       ]}}
 
     def fake_list(kind, force=False):
@@ -976,12 +984,11 @@ def test_shifts_my_reports_auto_rejected_count(client, monkeypatch):
         return []
 
     monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
-    # bloom rows carry reviewable (unreviewedCount) + raw new (extras.newCount).
     monkeypatch.setattr(
         main.bloom, "fetch_prioritized_jobs",
         lambda *a, **k: [
-            {"jobId": "A", "unreviewedCount": 2, "extras": {"newCount": 5}},
-            {"jobId": "B", "unreviewedCount": 0, "extras": {"newCount": 1}},
+            {"jobId": "A", "unreviewedCount": 2, "extras": {"newCount": 5, "possibleRejectCount": 3}},
+            {"jobId": "B", "unreviewedCount": 0, "extras": {"newCount": 1, "possibleRejectCount": 1}},
         ],
     )
 
@@ -989,19 +996,20 @@ def test_shifts_my_reports_auto_rejected_count(client, monkeypatch):
     assert resp.status_code == 200
     rows = {r["jobId"]: r for r in resp.get_json()["data"]["rows"]}
     assert rows["A"]["unreviewedCount"] == 2 and rows["A"]["autoRejected"] == 3
-    # Auto-reject-only job (B) is now hidden — zero reviewable responses means
-    # no actionable work, so it shouldn't appear on My Tasks.
-    assert "B" not in rows
+    # B has 0 reviewable but still shows — a job is never hidden just because
+    # unreviewedCount reads 0 (see the 2026-09-23 massReview incident).
+    assert "B" in rows
+    assert rows["B"]["unreviewedCount"] == 0 and rows["B"]["autoRejected"] == 1
 
 
-def test_shifts_my_shows_aged_auto_reject_only_jobs(client, monkeypatch):
-    """An auto-reject-only job that has AGED becomes visible clear-only work.
+def test_shifts_my_never_hides_zero_reviewable_jobs(client, monkeypatch):
+    """A job with 0 reviewable responses (fresh or aged) must still show.
 
-    Fresh ones stay hidden (nothing actionable, and they usually pick up
-    reviewable work on their own). Aged ones are hidden *because* nobody could
-    see them, which is exactly why they are the oldest thing in the queue — so
-    they surface with their AR count and the reviewer clears them down on the
-    Responses page and checks the job off.
+    Prior to 2026-09-23 this was the reverse: "fresh" zero-reviewable jobs
+    were hidden entirely, on the theory that massReview reliably meant
+    "nothing here is actually reviewable". That was disproved live — hiding
+    a job with genuine work waiting in it is exactly the failure mode this
+    pins against, regardless of whether the backlog happens to be aged.
     """
     c, token_file = client
     _as_reviewer(token_file, "sam@storesight.com")
@@ -1030,21 +1038,20 @@ def test_shifts_my_shows_aged_auto_reject_only_jobs(client, monkeypatch):
     monkeypatch.setattr(
         main.bloom, "fetch_prioritized_jobs",
         lambda *a, **k: [
-            # Both are auto-reject-only (0 reviewable). Only the aged one shows.
             {"jobId": "FRESH_AR", "unreviewedCount": 0,
-             "extras": {"newCount": 4, "agedCount": 0}},
+             "extras": {"newCount": 4, "agedCount": 0, "possibleRejectCount": 4}},
             {"jobId": "AGED_AR", "unreviewedCount": 0,
-             "extras": {"newCount": 9, "agedCount": 9}},
+             "extras": {"newCount": 9, "agedCount": 9, "possibleRejectCount": 9}},
         ],
     )
 
     resp = c.get("/api/shifts/my")
     assert resp.status_code == 200
     rows = {r["jobId"]: r for r in resp.get_json()["data"]["rows"]}
-    assert "FRESH_AR" not in rows, "fresh auto-reject-only work stays hidden"
-    assert "AGED_AR" in rows, "aged auto-reject-only work must be visible"
-    assert rows["AGED_AR"]["unreviewedCount"] == 0
-    assert rows["AGED_AR"]["autoRejected"] == 9, "shown as clear-only work"
+    assert "FRESH_AR" in rows, "a job is never hidden for reading 0 reviewable"
+    assert "AGED_AR" in rows
+    assert rows["FRESH_AR"]["unreviewedCount"] == 0 and rows["FRESH_AR"]["autoRejected"] == 4
+    assert rows["AGED_AR"]["unreviewedCount"] == 0 and rows["AGED_AR"]["autoRejected"] == 9
 
 
 def test_shifts_my_keeps_stored_count_when_feed_unavailable(client, monkeypatch):
