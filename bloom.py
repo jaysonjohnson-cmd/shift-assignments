@@ -21,6 +21,7 @@ import logging
 import os
 import threading
 import time
+from zoneinfo import ZoneInfo
 
 import internal_api
 
@@ -100,10 +101,37 @@ _CF_DENIED_CACHE = {"fetched_at": 0.0, "min_date": None, "counts": {}}
 _CF_DENIED_CACHE_TTL_SECONDS = 300
 MAX_CF_DENIED_PAGES = 10
 
-# "Old submission" threshold, in days. Matches what FA-web's own `old_sub`
-# priority component claims to measure ("submissions older than 3 days"), so
-# the Old Submissions view keeps meaning the same thing it always advertised.
-AGED_SUBMISSION_DAYS = 3
+# "Old submission" threshold, in days. FA-web's Prioritized Jobs page counts
+# anything 2+ days old as an old sub (its "Old Subs" table ends at a 2-3 day
+# row), so the Old Submissions view starts there too.
+AGED_SUBMISSION_DAYS = 2
+
+# Age buckets for aged work, as (label, min_days). FA-web stops at 2-3; the
+# older end is where the risk is, so it's split further here. Anything that
+# makes the aged query counts as at least the first bucket, even when its date
+# won't parse.
+AGED_BUCKETS = (("2-3", 2), ("4-5", 4), ("6+", 6))
+
+# Submission age is counted in calendar days in US Central, not 24-hour
+# periods: that's what FA-web's "Old Subs" table does. Checked 2026-09-23
+# against it (days 0 / 1 / 2-3): Central calendar days gave 1328 / 135 / 99
+# against FA-web's 1322 / 135 / 98, while 24-hour ages put only 53 in 2-3.
+_AGE_TZ = ZoneInfo("America/Chicago")
+
+
+def submission_age_days(submitted, now=None):
+    """Calendar days (US Central) between an aware submission time and now."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    return (now.astimezone(_AGE_TZ).date() - submitted.astimezone(_AGE_TZ).date()).days
+
+
+def aged_bucket(age_days):
+    """Label of the AGED_BUCKETS entry an age (whole days, or None) falls in."""
+    label = AGED_BUCKETS[0][0]
+    for name, min_days in AGED_BUCKETS:
+        if age_days is not None and age_days >= min_days:
+            label = name
+    return label
 
 _AGED_CACHE = {"fetched_at": 0.0, "min_days": None, "by_job": {}}
 _AGED_CACHE_TTL_SECONDS = 300
@@ -278,6 +306,11 @@ def _row_from_api(job, cf_denied_count=0, aged=None):
             # /api/responsegroups rather than trusted from the feed.
             "agedCount": int((aged or {}).get("count") or 0),
             "oldestAged": str((aged or {}).get("oldest") or ""),
+            # agedCount split by age, keyed by AGED_BUCKETS label ("2-3", ...).
+            "agedBuckets": {
+                name: int(((aged or {}).get("buckets") or {}).get(name) or 0)
+                for name, _ in AGED_BUCKETS
+            },
             "startDate": str(job.get("startDate") or ""),
             # Deadline + backlog signals used by the Old Submissions triage view.
             "endDate": str(job.get("endDate") or ""),
@@ -488,7 +521,8 @@ def _parse_submission_date(raw):
 
 
 def fetch_aged_submissions(min_days=AGED_SUBMISSION_DAYS):
-    """Return {job_id_str: {"count": int, "oldest": iso}} for aged pending work.
+    """Return {job_id_str: {"count": int, "oldest": iso, "buckets": {label: int}}}
+    for aged pending work, with `buckets` keyed by AGED_BUCKETS label.
 
     One date-bounded query over `/api/responsegroups` replaces what used to be
     a per-job scan: `submission_date_to` bounds the result to submissions at
@@ -517,9 +551,12 @@ def fetch_aged_submissions(min_days=AGED_SUBMISSION_DAYS):
     if fresh and cache["min_days"] == min_days:
         return cache["by_job"]
 
+    # The server's date bound is a UTC date, and a Central day straddles two
+    # of them, so bound one day loose and apply the real cutoff per row below.
+    # Oldest-first sort means a page cap only ever drops the youngest rows.
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
     cutoff = (
-        datetime.datetime.now(datetime.timezone.utc).date()
-        - datetime.timedelta(days=min_days)
+        now_dt.astimezone(_AGE_TZ).date() - datetime.timedelta(days=min_days - 1)
     ).isoformat()
 
     by_job = {}
@@ -546,8 +583,18 @@ def fetch_aged_submissions(min_days=AGED_SUBMISSION_DAYS):
                 if not jid:
                     continue
                 parsed = _parse_submission_date(rg.get("submission_date"))
-                entry = by_job.setdefault(jid, {"count": 0, "oldest": ""})
+                age = submission_age_days(parsed, now_dt) if parsed is not None else None
+                # The loose bound above lets through work that isn't old yet.
+                # An unparseable date is kept: the server already put it past
+                # the bound, and dropping real work is the worse mistake.
+                if age is not None and age < min_days:
+                    continue
+                entry = by_job.setdefault(jid, {
+                    "count": 0, "oldest": "",
+                    "buckets": {name: 0 for name, _ in AGED_BUCKETS},
+                })
                 entry["count"] += 1
+                entry["buckets"][aged_bucket(age)] += 1
                 if parsed is not None:
                     iso = parsed.isoformat()
                     if not entry["oldest"] or iso < entry["oldest"]:

@@ -2445,3 +2445,43 @@ def test_publish_has_no_duplicate_jobs_anywhere(client, monkeypatch):
     )
     # Nothing is dropped either — all five distinct jobs are still assigned.
     assert set(all_jobs) == {"1", "2", "3", "4", "5"}
+
+
+
+def test_aged_submissions_split_into_age_buckets(monkeypatch):
+    """Aged work is bucketed 2-3 / 4-5 / 6+ Central calendar days, and anything
+    younger that the loose server-side date bound lets through is dropped."""
+    bloom.clear_cache()
+    today = datetime.datetime.now(bloom._AGE_TZ).date()
+
+    def days_ago(n):
+        # Noon Central n calendar days back — its age is exactly n.
+        d = today - datetime.timedelta(days=n)
+        noon = datetime.datetime(d.year, d.month, d.day, 12, tzinfo=bloom._AGE_TZ)
+        return noon.astimezone(datetime.timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+    monkeypatch.setattr(internal_api, "get", _feed_with_responsegroups([], [
+        _rg(10, days_ago(1)),   # not aged yet
+        _rg(10, days_ago(2)),
+        _rg(10, days_ago(3)),
+        _rg(10, days_ago(4)),
+        _rg(10, days_ago(9)),
+        _rg(20, days_ago(1)),   # only too-young work — job not aged at all
+    ]))
+
+    aged = bloom.fetch_aged_submissions()
+    assert aged["10"]["count"] == 4
+    assert aged["10"]["buckets"] == {"2-3": 2, "4-5": 1, "6+": 1}
+    assert "20" not in aged
+
+
+def test_submission_age_counts_central_calendar_days():
+    """FA-web counts days by Central calendar date, not 24-hour periods: 11 PM
+    Central yesterday is one day old at 1 AM today, only two hours later."""
+    tz = bloom._AGE_TZ
+    now = datetime.datetime(2026, 9, 23, 1, 0, tzinfo=tz)
+    assert bloom.submission_age_days(datetime.datetime(2026, 9, 22, 23, 0, tzinfo=tz), now) == 1
+    assert bloom.submission_age_days(datetime.datetime(2026, 9, 21, 1, 30, tzinfo=tz), now) == 2
+    # A UTC timestamp past midnight UTC but still the evening before in Central.
+    utc = datetime.datetime(2026, 9, 21, 3, 0, tzinfo=datetime.timezone.utc)   # 10 PM CDT Sep 20
+    assert bloom.submission_age_days(utc, now) == 3

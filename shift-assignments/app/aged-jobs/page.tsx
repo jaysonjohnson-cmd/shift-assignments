@@ -17,17 +17,31 @@ const SORTS: { key: SortMode; label: string }[] = [
   { key: "backlog", label: "Biggest backlog" },
 ];
 
-const PRESETS = [
-  { label: "All old", min: 0 },
-  { label: "3+ days", min: 3 },
-  { label: "7+ days", min: 7 },
-  { label: "14+ days", min: 14 },
-];
+// Age buckets, matching bloom.py's AGED_BUCKETS. FA-web's Prioritized Jobs
+// "Old Subs" table stops at 2-3 days; the older end is split out here.
+const BUCKETS = [
+  { key: "2-3", label: "2–3 days" },
+  { key: "4-5", label: "4–5 days" },
+  { key: "6+", label: "6+ days" },
+] as const;
+type BucketKey = (typeof BUCKETS)[number]["key"];
+
+/** Aged responses on this job in one age bucket. */
+function bucketCount(r: Row, key: BucketKey): number {
+  const b = r.extras?.agedBuckets as Record<string, unknown> | undefined;
+  return Number(b?.[key] ?? 0);
+}
+
+// YYYY-MM-DD for a moment in US Central. Ages are counted in Central calendar
+// days to match the backend's buckets (bloom.py submission_age_days) and
+// FA-web's Old Subs table.
+const centralDate = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago" });
 
 function isoToDaysAgo(iso: string): number {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return 0;
-  return Math.floor((Date.now() - d.getTime()) / 86_400_000);
+  const days = (x: Date) => Date.parse(centralDate.format(x)) / 86_400_000;
+  return Math.round(days(new Date()) - days(d));
 }
 
 function formatDate(iso: string): string {
@@ -155,7 +169,7 @@ export default function AgedJobsPage() {
   const [loading, setLoading] = useState(true);
   const [agesLoading, setAgesLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [minDays, setMinDays] = useState(0);
+  const [bucket, setBucket] = useState<BucketKey | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>("urgency");
   const [copied, setCopied] = useState(false);
   const router = useRouter();
@@ -223,7 +237,7 @@ export default function AgedJobsPage() {
   useEffect(() => { void load(); }, [load]);
 
   const filtered = [...rows]
-    .filter((r) => minDays === 0 || (r.daysOld !== null && r.daysOld >= minDays))
+    .filter((r) => bucket === null || bucketCount(r, bucket) > 0)
     .sort((a, b) => {
       if (sortMode === "closing") {
         const ac = daysUntilClose(a);
@@ -247,6 +261,12 @@ export default function AgedJobsPage() {
   }).length;
   const waiting14 = rows.filter((r) => r.daysOld !== null && r.daysOld >= 14).length;
   const totalUnreviewed = rows.reduce((s, r) => s + (r.unreviewedCount || 0), 0);
+  const bucketTotals = BUCKETS.map((b) => ({
+    ...b,
+    responses: rows.reduce((s, r) => s + bucketCount(r, b.key), 0),
+    jobs: rows.filter((r) => bucketCount(r, b.key) > 0).length,
+  }));
+  const agedResponses = bucketTotals.reduce((s, b) => s + b.responses, 0);
 
   // max-w-7xl, matching team-assignments: this table needs ~1130px and was
   // being clipped inside a 1024px container, hiding the Urgency column behind
@@ -307,6 +327,38 @@ export default function AgedJobsPage() {
         <StatCard label="Unreviewed (aged)" value={totalUnreviewed} />
       </div>
 
+      {/* Old subs by age. Each bucket is also the filter for the table below:
+          click one to see only jobs with responses that old, again to clear. */}
+      <div className="mb-5 grid max-w-3xl grid-cols-2 gap-3 sm:grid-cols-4">
+        {[{ key: null, label: "All old", responses: agedResponses, jobs: rows.length }, ...bucketTotals].map((b) => {
+          const active = bucket === b.key;
+          return (
+            <button
+              key={b.label}
+              type="button"
+              onClick={() => setBucket(active || b.key === null ? null : (b.key as BucketKey))}
+              className={`rounded-lg border px-4 py-3 text-left transition ${
+                active
+                  ? "border-storesight-accent bg-storesight-accent/10 dark:border-storesight-accent-light dark:bg-storesight-accent/20"
+                  : "border-storesight-border bg-white hover:border-storesight-accent dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark"
+              }`}
+            >
+              <div className="text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">{b.label}</div>
+              <div
+                className={`mt-0.5 text-2xl font-semibold tabular-nums ${
+                  b.key === "6+" && b.responses > 0 ? "text-[#FF4D4D]" : "text-storesight-ink dark:text-storesight-ink-dark"
+                }`}
+              >
+                {b.responses}
+              </div>
+              <div className="text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                {b.jobs} job{b.jobs !== 1 ? "s" : ""}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-1 rounded-lg border border-storesight-border bg-white p-1 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark">
           {SORTS.map((s) => (
@@ -321,22 +373,6 @@ export default function AgedJobsPage() {
               }`}
             >
               {s.label}
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-1 rounded-lg border border-storesight-border bg-white p-1 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark">
-          {PRESETS.map((p) => (
-            <button
-              key={p.label}
-              type="button"
-              onClick={() => setMinDays(p.min)}
-              className={`rounded px-3 py-1.5 text-xs font-medium transition ${
-                minDays === p.min
-                  ? "bg-storesight-accent/20 text-storesight-primary dark:text-storesight-accent-light"
-                  : "text-storesight-ink-muted hover:text-storesight-primary dark:text-storesight-ink-muted-dark"
-              }`}
-            >
-              {p.label}
             </button>
           ))}
         </div>
@@ -381,6 +417,7 @@ export default function AgedJobsPage() {
               <col className="w-[108px]" />
               <col className="w-[104px]" />
               <col className="w-[88px]" />
+              <col className="w-[120px]" />
               <col className="w-[132px]" />
               <col className="w-[112px]" />
             </colgroup>
@@ -392,6 +429,12 @@ export default function AgedJobsPage() {
                 <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Waiting</th>
                 <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Closes</th>
                 <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Unrev.</th>
+                <th
+                  className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark"
+                  title="Aged responses by age: 2–3 / 4–5 / 6+ days"
+                >
+                  2–3 / 4–5 / 6+
+                </th>
                 <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Pending</th>
                 <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Urgency</th>
               </tr>
@@ -464,6 +507,27 @@ export default function AgedJobsPage() {
                     </td>
                     <td className="px-4 py-3 text-right font-semibold tabular-nums text-storesight-ink dark:text-storesight-ink-dark">
                       {r.unreviewedCount}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-right tabular-nums text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                      {BUCKETS.map((b, i) => {
+                        const n = bucketCount(r, b.key);
+                        return (
+                          <span key={b.key}>
+                            {i > 0 && " / "}
+                            <span
+                              className={
+                                n === 0
+                                  ? ""
+                                  : b.key === "6+"
+                                  ? "font-semibold text-[#FF4D4D]"
+                                  : "font-semibold text-storesight-ink dark:text-storesight-ink-dark"
+                              }
+                            >
+                              {n}
+                            </span>
+                          </span>
+                        );
+                      })}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-2">
