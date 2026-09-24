@@ -152,6 +152,55 @@ def fetch_job_pending_count(job_id):
     return max(0, total - parked)
 
 
+# FieldAgent's automation account. Its auto-approves and auto-denies land on the
+# same response groups as human reviews, but nobody on the team did that work.
+SYSTEM_REVIEWER_ID = 90
+# Outcomes a human review leaves a response group in: A = approved, X = denied,
+# P = agent paid / hidden from the client. Pending (N) and in-flight states
+# (S, SUB, R) carry no review timestamp worth counting.
+REVIEWED_STATUSES = ("A", "X", "P")
+MAX_REVIEWED_PAGES = 10
+
+
+def count_reviewed_since(job_id, since):
+    """Response groups on a job a human reviewed at or after `since` (aware
+    datetime), across every reviewed outcome. Returns None if Bloom can't be
+    read, so the caller can fall back.
+
+    There's no review-date filter on /api/responsegroups, so this sorts by
+    review_ts descending and pages until it passes `since` — usually one page
+    per status. Nulls sort first, so rows without a review_ts are skipped
+    rather than treated as the end.
+    """
+    count = 0
+    try:
+        for status in REVIEWED_STATUSES:
+            page = 1
+            while page <= MAX_REVIEWED_PAGES:
+                resp = internal_api.get("/api/responsegroups", params={
+                    "job_id": job_id, "status": status, "sort": "-review_ts",
+                    "page": page, "per_page": PAGE_SIZE,
+                })
+                batch = resp.get("data", []) if isinstance(resp, dict) else []
+                passed = False
+                for rg in batch:
+                    reviewed_at = _parse_submission_date(rg.get("review_ts"))
+                    if reviewed_at is None:
+                        continue
+                    if reviewed_at < since:
+                        passed = True
+                        break
+                    if rg.get("reviewed_by_id") != SYSTEM_REVIEWER_ID:
+                        count += 1
+                if passed or len(batch) < PAGE_SIZE:
+                    break
+                page += 1
+    except Exception as exc:  # noqa: BLE001 — caller falls back to the stored count
+        logging.warning("reviewed-count lookup failed for job %s: %s", job_id, exc)
+        return None
+    return count
+
+
 def _safe_int(value):
     """Coerce a feed value to int, or None when it's missing/blank/non-numeric.
     The feed sends some counts as "" (empty string), which int() chokes on."""

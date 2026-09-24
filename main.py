@@ -2931,6 +2931,50 @@ def api_shifts_leaderboard():
     }})
 
 
+def _parse_iso_utc(value):
+    """Aware UTC datetime for an ISO timestamp, or None."""
+    try:
+        ts = datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=datetime.timezone.utc)
+
+
+def _responses_to_credit(snap_id, snap_data, email, job_id, completion_id):
+    """How many responses a completed job is worth on the leaderboard.
+
+    Counts what was actually reviewed in Bloom — approved, denied, or
+    paid/hidden, by a human, not FieldAgent's automation — since the job was
+    last up for grabs. The count stored on the row is only a snapshot from when
+    the job was handed out, so responses that landed mid-shift (which the
+    reviewer still had to clear before the checkmark would take) went uncredited.
+
+    The window opens at the shift's publish time, or at the previous checkmark
+    on this job in the same shift if there was one — a job handed back after
+    new responses arrived is credited only for the new ones, not recounted.
+    Falls back to the stored row count if Bloom can't be read.
+    """
+    since = _parse_iso_utc((snap_data or {}).get("published_at"))
+    try:
+        earlier = _list_completions_for_snapshot(snap_id, include_superseded=True)
+    except requests.exceptions.HTTPError:
+        earlier = []
+    for c in earlier:
+        if _completion_job_key(c) != job_id or c.get("id") == completion_id:
+            continue
+        ts = _parse_iso_utc(c.get("completed_at"))
+        if ts and (since is None or ts > since):
+            since = ts
+    if since is not None:
+        reviewed = bloom.count_reviewed_since(job_id, since)
+        if reviewed is not None:
+            return reviewed
+    for r in (_rows_for_reviewer(snap_id, email) or []):
+        if _row_job_key(r) == job_id:
+            return int(r.get("unreviewedCount") or 0)
+    return 0
+
+
 @app.route("/api/shifts/my/complete", methods=["POST"])
 def api_shifts_my_complete():
     """Mark a row done for the signed-in reviewer. Idempotent."""
@@ -2940,7 +2984,7 @@ def api_shifts_my_complete():
         return jsonify({"error": "job_id is required"}), 400
     email = (g.user.get("email") or "").strip().lower()
     try:
-        snap_id, _ = _latest_snapshot()
+        snap_id, snap_data = _latest_snapshot()
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e)
     if not snap_id:
@@ -3016,15 +3060,10 @@ def api_shifts_my_complete():
 
     # Tally this review into the reviewer's weekly leaderboard total. Stored
     # separately from completions (kind "review_tally") so clearing/republishing
-    # a shift never erases the week's standings. Best-effort. `responses` is the
-    # job's assigned response count (stored on the row) so the board can show
-    # response volume, not just job count.
+    # a shift never erases the week's standings. Best-effort. See
+    # _responses_to_credit for how the response count is arrived at.
     try:
-        responses = 0
-        for r in (_rows_for_reviewer(snap_id, email) or []):
-            if _row_job_key(r) == job_id:
-                responses = int(r.get("unreviewedCount") or 0)
-                break
+        responses = _responses_to_credit(snap_id, snap_data, email, job_id, doc_id)
         _record_review_event(email, completed_at, responses)
     except Exception as exc:  # noqa: BLE001 — leaderboard must not break completion
         logging.warning("review tally failed for %s: %s", email, exc)
