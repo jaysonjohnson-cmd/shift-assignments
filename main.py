@@ -1739,6 +1739,17 @@ def _rows_for_reviewer(snapshot_id, email, force=False):
     return _dedup_rows(out)
 
 
+def _job_on_reviewer_shift(snapshot_id, email, job_id):
+    """True when `job_id` is one of the reviewer's rows under this snapshot.
+    Checks the warm cache first and confirms a miss with a forced read."""
+    target = str(job_id)
+    for force in (False, True):
+        rows = _rows_for_reviewer(snapshot_id, email, force=force) or []
+        if any(_row_job_key(r) == target for r in rows):
+            return True
+    return False
+
+
 def _dedup_rows(rows):
     """Drop rows that repeat a job key (first occurrence wins, order preserved).
 
@@ -2997,6 +3008,14 @@ def api_shifts_my_complete():
     for c in existing:
         if _completion_job_key(c) == job_id:
             return jsonify({"data": c})
+
+    # Only a job actually on the caller's shift can be checked off. Anything else
+    # (a PID sent from a By-PID group card was the real case) matches no row, so
+    # it would write an orphan completion that credits the leaderboard for work
+    # that doesn't exist. Re-read authoritatively before refusing: a refill that
+    # just landed may not be in the warm cache yet.
+    if not _job_on_reviewer_shift(snap_id, email, job_id):
+        return jsonify({"error": "That job isn't on your shift."}), 404
 
     # Guard against marking a job done while it still has unreviewed responses —
     # that usually means the reviewer hasn't actually cleared it. The cached feed

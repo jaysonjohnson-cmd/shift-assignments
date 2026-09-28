@@ -6,14 +6,17 @@ import type { Row } from "@/lib/types";
 
 type Props = {
   row: Row;
-  onChange: (completedAt: string | null) => void;
+  /** `jobIds` are the jobs whose state changed (several for a By-PID group). */
+  onChange: (completedAt: string | null, jobIds: string[]) => void;
   size?: "sm" | "md";
   /** `default` keeps the legacy outlined button. `ghost` renders an icon-only subtle action. */
   variant?: "default" | "ghost";
   /** Called after the underlying API call succeeds, before onChange fires. Lets the parent play an exit animation. */
   onBeforeChange?: () => Promise<void> | void;
-  /** Called when marking done is blocked by unreviewed responses (409 conflict). */
-  onBlocked?: (jobId: string, unreviewed: number) => void;
+  /** Called when marking done is blocked by unreviewed responses (409 conflict).
+   *  `jobIds` are the blocked jobs, `unreviewed` their total, and `doneIds` any
+   *  jobs in the same By-PID group that were marked done before the block. */
+  onBlocked?: (jobIds: string[], unreviewed: number, doneIds: string[]) => void;
   /** Disable the button (used by parent when in processing state). */
   disabled?: boolean;
   /** Called when processing state changes (true when processing starts/ends). */
@@ -39,7 +42,9 @@ export function MarkDoneButton({
   // offer a "mark done anyway" override (e.g. responses unreviewable via the
   // FieldAgent alt-picture bug).
   const [blocked, setBlocked] = useState<number | null>(null);
-  const jobId = row.jobId || row.id;
+  // A By-PID group card stands for several jobs; its own id is the PID, which
+  // isn't a job, so completing it means completing each member job.
+  const jobIds = row.groupIds?.length ? row.groupIds : [row.jobId || row.id];
   const isDone = !!row.completedAt;
 
   const setProcessing = (state: ProcessingState) => {
@@ -54,30 +59,45 @@ export function MarkDoneButton({
     setError(null);
     setProcessing("processing");
     const completedAt = new Date().toISOString();
+    const doneIds: string[] = [];
+    const blockedIds: string[] = [];
+    let unreviewedTotal = 0;
     try {
-      await markTaskDone(jobId, undefined, override);
+      // One at a time: each completion makes several Storage API calls, and the
+      // Internal API is rate limited.
+      for (const id of jobIds) {
+        try {
+          await markTaskDone(id, undefined, override);
+          doneIds.push(id);
+        } catch (e) {
+          const unreviewed =
+            e instanceof ApiError && e.status === 409
+              ? (e.data as { unreviewed?: number } | null)?.unreviewed
+              : undefined;
+          if (typeof unreviewed !== "number") throw e;
+          blockedIds.push(id);
+          unreviewedTotal += unreviewed;
+        }
+      }
+      if (blockedIds.length > 0) {
+        // Notify parent to show blocked modal
+        if (onBlocked) onBlocked(blockedIds, unreviewedTotal, doneIds);
+        setProcessing("idle");
+        return;
+      }
       // Show success state
       setProcessing("approved");
       setBlocked(null);
       if (onBeforeChange) await onBeforeChange();
       // Wait a moment to show the approved state, then remove from list
       await new Promise((resolve) => setTimeout(resolve, 1200));
-      onChange(completedAt);
+      onChange(completedAt, doneIds);
       setProcessing("idle");
     } catch (e) {
-      const unreviewed =
-        e instanceof ApiError && e.status === 409
-          ? (e.data as { unreviewed?: number } | null)?.unreviewed
-          : undefined;
-      if (typeof unreviewed === "number") {
-        // Notify parent to show blocked modal
-        if (onBlocked) onBlocked(jobId, unreviewed);
-        setProcessing("idle");
-      } else {
-        // Handle actual errors
-        setError(e instanceof Error ? e.message : "Failed");
-        setProcessing("idle");
-      }
+      // Keep whatever went through before the failure.
+      if (doneIds.length > 0) onChange(completedAt, doneIds);
+      setError(e instanceof Error ? e.message : "Failed");
+      setProcessing("idle");
     } finally {
       setBusy(false);
     }
@@ -88,8 +108,8 @@ export function MarkDoneButton({
       setBusy(true);
       setError(null);
       try {
-        await unmarkTaskDone(jobId);
-        onChange(null);
+        for (const id of jobIds) await unmarkTaskDone(id);
+        onChange(null, jobIds);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed");
       } finally {

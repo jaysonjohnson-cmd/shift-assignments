@@ -1625,6 +1625,38 @@ def test_complete_requires_published_snapshot(client, monkeypatch):
     assert resp.status_code == 409
 
 
+def test_complete_refuses_a_job_not_on_the_reviewers_shift(client, monkeypatch):
+    """A By-PID group card used to send its PID as the job_id. Nothing is
+    recorded for an id that isn't one of the caller's rows — otherwise it's an
+    orphan completion credited to the leaderboard."""
+    c, token_file = client
+    _as_reviewer(token_file, "sam@storesight.com")
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(roles, "list_reviewers",
+                        lambda: [{"id": "r", "name": "Sam", "email": "sam@storesight.com"}])
+    snapshot_doc = {"id": "snap-1", "data": {"kind": "shift_snapshot"}}
+    reviewer_doc = {"id": "rs-1", "data": {"kind": "reviewer_shift",
+                    "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
+                    "rows": [{"jobId": "55", "id": "55", "projectId": "900"}], "part": 0}}
+    forced_reads = []
+
+    def fake_list(kind, force=False):
+        if kind == "reviewer_shift" and force:
+            forced_reads.append(1)
+        return {"shift_snapshot": [snapshot_doc],
+                "reviewer_shift": [reviewer_doc]}.get(kind, [])
+
+    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
+    posted = []
+    monkeypatch.setattr(internal_api, "post",
+                        lambda path, json=None: posted.append(json) or {"data": {"id": "x"}})
+
+    resp = c.post("/api/shifts/my/complete", json={"job_id": "900", "override": True})
+    assert resp.status_code == 404, resp.get_json()
+    assert posted == [], "no completion or leaderboard tally may be written"
+    assert forced_reads, "a miss must be confirmed against storage, not the warm cache"
+
+
 # /api/shifts/my/complete/<pid> — delete
 
 

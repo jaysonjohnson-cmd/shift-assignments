@@ -90,7 +90,9 @@ function groupByProject(rows: Row[]): Row[] {
       projectId: pid,
       projectName: namedProject?.projectName || "",
       jobId: null,
-      groupIds: [],
+      // The member jobs, so the checkmark completes each of them — the group's
+      // own id is the PID, which isn't a job and matches no completion.
+      groupIds: list.map((r) => r.jobId || r.id),
       priority,
       name: named?.name || "",
       unreviewedCount,
@@ -187,7 +189,11 @@ export default function MyTasksPage() {
   const [density, setDensity] = useState<Density>("comfortable");
   const [viewByPid, setViewByPid] = useState(false);
   const [emptyMsgIdx, setEmptyMsgIdx] = useState(() => pickRandomMessageIndex());
-  const [blockedModal, setBlockedModal] = useState<{ jobId: string; unreviewed: number } | null>(null);
+  const [blockedModal, setBlockedModal] = useState<{
+    jobIds: string[];
+    doneIds: string[];
+    unreviewed: number;
+  } | null>(null);
 
   useEffect(() => {
     try {
@@ -262,11 +268,13 @@ export default function MyTasksPage() {
     }
   };
 
-  const handleRowChange = (jobId: string, completedAt: string | null) => {
+  const handleRowChange = (jobIds: string[], completedAt: string | null) => {
+    if (jobIds.length === 0) return;
+    const ids = new Set(jobIds);
     setState((s) => ({
       ...s,
       rows: s.rows.map((r) =>
-        (r.jobId || r.id) === jobId ? { ...r, completedAt } : r,
+        ids.has(r.jobId || r.id) ? { ...r, completedAt } : r,
       ),
     }));
   };
@@ -446,10 +454,10 @@ export default function MyTasksPage() {
                 density={density}
                 grouped={viewByPid}
                 accentColor={reviewerColor({ color: state.color ?? undefined, email: user?.email })}
-                onChange={(iso) =>
-                  handleRowChange(row.jobId || row.id, iso)
+                onChange={(iso, jobIds) => handleRowChange(jobIds, iso)}
+                onBlocked={(jobIds, unreviewed, doneIds) =>
+                  setBlockedModal({ jobIds, doneIds, unreviewed })
                 }
-                onBlocked={(jobId, unreviewed) => setBlockedModal({ jobId, unreviewed })}
               />
             ))}
           </Section>
@@ -460,18 +468,25 @@ export default function MyTasksPage() {
       {blockedModal && (
         <BlockedConfirmationModal
           unreviewed={blockedModal.unreviewed}
-          jobId={blockedModal.jobId}
+          jobId={blockedModal.jobIds[0]}
           onConfirm={async () => {
             try {
-              await markTaskDone(blockedModal.jobId, undefined, true);
+              // One at a time: each completion makes several Storage API calls.
+              for (const id of blockedModal.jobIds) {
+                await markTaskDone(id, undefined, true);
+              }
+              handleRowChange(
+                [...blockedModal.doneIds, ...blockedModal.jobIds],
+                new Date().toISOString(),
+              );
               setBlockedModal(null);
             } catch {
               // Error handled by MarkDoneButton state
             }
           }}
           onCancel={() => {
-            // Undo the optimistic removal
-            handleRowChange(blockedModal.jobId, null);
+            // Jobs in a By-PID group that went through before the block stay done.
+            handleRowChange(blockedModal.doneIds, new Date().toISOString());
             setBlockedModal(null);
           }}
         />
@@ -745,13 +760,13 @@ function TaskCard({
   onBlocked,
 }: {
   row: Row;
-  onChange: (iso: string | null) => void;
+  onChange: (iso: string | null, jobIds: string[]) => void;
   completed?: boolean;
   density: Density;
   grouped?: boolean;
   /** Signed-in reviewer's color, used for the left accent bar. */
   accentColor?: string;
-  onBlocked?: (jobId: string, unreviewed: number) => void;
+  onBlocked?: (jobIds: string[], unreviewed: number, doneIds: string[]) => void;
 }) {
   const jobCount = grouped
     ? (typeof row.extras?.jobCount === "number" ? (row.extras.jobCount as number) : 1)
@@ -761,15 +776,15 @@ function TaskCard({
   const meta = priorityMeta(row.priority);
   const heading = primaryHeading(row, !!grouped);
 
-  const handleChange = (iso: string | null) => {
+  const handleChange = (iso: string | null, jobIds: string[]) => {
     if (iso) {
       setExiting(true);
       window.setTimeout(() => {
         setExiting(false);
-        onChange(iso);
+        onChange(iso, jobIds);
       }, 280);
     } else {
-      onChange(iso);
+      onChange(iso, jobIds);
     }
   };
 
@@ -943,7 +958,14 @@ function TaskCard({
       </div>
       <div className="flex flex-col items-end gap-1.5">
         {!completed && <OpenInReviewButton row={row} size="sm" variant="primary" disabled={isProcessing} />}
-        <MarkDoneButton row={row} onChange={handleChange} size="sm" variant="ghost" onProcessingChange={setIsProcessing} />
+        <MarkDoneButton
+          row={row}
+          onChange={handleChange}
+          size="sm"
+          variant="ghost"
+          onBlocked={onBlocked}
+          onProcessingChange={setIsProcessing}
+        />
       </div>
     </div>
   );
