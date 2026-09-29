@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { assignShift, evenSplit, evenDistribute } from "./assign";
+import {
+  assignShift,
+  evenDistribute,
+  evenSplit,
+  pinnedCountsByReviewer,
+  plannedTotal,
+} from "./assign";
 import type { Row, ShiftDraft } from "./types";
 
 // Helper to create a mock Row
@@ -250,5 +256,44 @@ describe("evenDistribute", () => {
 
     expect(result[0].count).toBe(2); // Locked, unchanged
     expect(result[1].count + result[2].count).toBe(8); // Split remainder
+  });
+});
+
+describe("pins add on top of the count", () => {
+  // A reviewer's count comes from the unpinned pool; every JID in their pinned
+  // projects is extra. Pinning the 14-JID Costco project to a reviewer set to
+  // 15 gives them 29, not 15.
+  const pool = [
+    ...Array.from({ length: 14 }, (_, i) => mockRow(`a${i}`, "1635268", `A${i}`, 1)),
+    ...Array.from({ length: 30 }, (_, i) => mockRow(`b${i}`, `P-${i}`, `B${i}`, 2)),
+  ];
+  const draftWith = (counts: Record<string, number>, pins: Record<string, string[]>): ShiftDraft => ({
+    slots: Object.entries(counts).map(([reviewerId, count]) => ({ reviewerId, count, locked: false })),
+    totalTarget: Object.values(counts).reduce((a, b) => a + b, 0),
+    assignAll: false,
+    projectPins: pins,
+  });
+
+  it("hands out the count plus the pinned project", () => {
+    const draft = draftWith({ r1: 15, r2: 5 }, { r1: ["1635268"] });
+    const { assignments } = assignShift(pool, draft);
+    expect(assignments.r1).toHaveLength(29);
+    expect(assignments.r1.filter((r) => r.projectId === "1635268")).toHaveLength(14);
+    expect(assignments.r2).toHaveLength(5);
+    expect(assignments.r2.some((r) => r.projectId === "1635268")).toBe(false);
+  });
+
+  it("includes pins in the planned total, matching what's handed out", () => {
+    const draft = draftWith({ r1: 15, r2: 5 }, { r1: ["1635268"] });
+    const planned = plannedTotal(draft, pinnedCountsByReviewer(pool, draft));
+    expect(planned).toBe(34);
+    const { assignments } = assignShift(pool, draft);
+    expect(assignments.r1.length + assignments.r2.length).toBe(planned);
+  });
+
+  it("gives a zero-count slot just its pinned project", () => {
+    const draft = draftWith({ r1: 0 }, { r1: ["1635268"] });
+    expect(plannedTotal(draft, pinnedCountsByReviewer(pool, draft))).toBe(14);
+    expect(assignShift(pool, draft).assignments.r1).toHaveLength(14);
   });
 });

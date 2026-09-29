@@ -46,22 +46,6 @@ export function ShiftComposer({
   const [showMultiSelect, setShowMultiSelect] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
 
-  // Keep totalTarget bound to the pool when "Assign All" is on.
-  useEffect(() => {
-    if (draft.assignAll && draft.totalTarget !== pool) {
-      const next: ShiftDraft = {
-        ...draft,
-        totalTarget: pool,
-        slots: evenDistribute(draft.slots, pool),
-      };
-      onChange(next);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pool, draft.assignAll]);
-
-  const planned = plannedTotal(draft);
-  const overflow = Math.max(0, pool - planned);
-
   const commit = (patch: Partial<ShiftDraft>) => onChange({ ...draft, ...patch });
 
   // Count a new reviewer should start with so they match a uniform crew: the
@@ -195,7 +179,7 @@ export function ShiftComposer({
   };
 
   const setTotalTarget = (raw: number) => {
-    const clamped = Math.min(Math.max(0, Math.floor(raw)), pool);
+    const clamped = Math.min(Math.max(0, Math.floor(raw)), unpinnedPool);
     commit({
       totalTarget: clamped,
       slots: evenDistribute(draft.slots, clamped),
@@ -204,7 +188,7 @@ export function ShiftComposer({
 
   const toggleAssignAll = () => {
     const nextAll = !draft.assignAll;
-    const target = nextAll ? pool : Math.min(draft.totalTarget, pool);
+    const target = nextAll ? unpinnedPool : Math.min(draft.totalTarget, unpinnedPool);
     commit({
       assignAll: nextAll,
       totalTarget: target,
@@ -242,6 +226,26 @@ export function ShiftComposer({
     return out;
   }, [draft.projectPins, poolRows, projectById]);
 
+  const planned = plannedTotal(draft, pinnedJidCountByReviewer);
+  const overflow = Math.max(0, pool - planned);
+  // Pinned JIDs are handed out on top of the counts, so the counts can only be
+  // filled from what's left once they're taken out.
+  const pinnedTotal = Object.values(pinnedJidCountByReviewer).reduce((a, n) => a + n, 0);
+  const unpinnedPool = Math.max(0, pool - pinnedTotal);
+
+  // Keep totalTarget bound to the unpinned pool when "Assign All" is on.
+  useEffect(() => {
+    if (draft.assignAll && draft.totalTarget !== unpinnedPool) {
+      const next: ShiftDraft = {
+        ...draft,
+        totalTarget: unpinnedPool,
+        slots: evenDistribute(draft.slots, unpinnedPool),
+      };
+      onChange(next);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unpinnedPool, draft.assignAll]);
+
   return (
     <section className="rounded-2xl border border-storesight-border bg-white/90 p-5 shadow-[0_1px_0_0_rgba(78,51,156,0.04),0_6px_24px_-12px_rgba(78,51,156,0.18)] dark:border-storesight-border-dark dark:bg-storesight-surface-dark/80">
       <header className="flex flex-wrap items-baseline justify-between gap-3 border-b border-storesight-border pb-3 dark:border-storesight-border-dark">
@@ -270,7 +274,7 @@ export function ShiftComposer({
           <input
             type="number"
             min={0}
-            max={pool}
+            max={unpinnedPool}
             value={draft.totalTarget || ""}
             placeholder=""
             disabled={draft.assignAll}
@@ -309,8 +313,7 @@ export function ShiftComposer({
           {draft.slots.map((slot, idx) => {
             const pinnedPids = draft.projectPins[slot.reviewerId] ?? [];
             const pinnedCount = pinnedJidCountByReviewer[slot.reviewerId] ?? 0;
-            const displayedCount = effectiveSlotCount(slot, pinnedCount);
-            const bumped = pinnedCount > slot.count;
+            const slotTotal = effectiveSlotCount(slot, pinnedCount);
             return (
               <li
                 key={idx}
@@ -333,21 +336,21 @@ export function ShiftComposer({
                     exclude={pickedIds.filter((id) => id !== slot.reviewerId)}
                   />
                   <CountEditor
-                    value={displayedCount}
-                    max={Math.max(draft.totalTarget, pinnedCount)}
-                    onChange={(v) => setCount(idx, Math.max(v, pinnedCount))}
+                    value={slot.count}
+                    max={draft.totalTarget}
+                    onChange={(v) => setCount(idx, v)}
                     disabled={
                       draft.assignAll &&
                       slot.locked === false &&
                       draft.slots.length === 1
                     }
                   />
-                  {bumped && (
+                  {pinnedCount > 0 && (
                     <span
                       className="rounded-full border border-storesight-accent/50 bg-storesight-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-storesight-primary dark:text-storesight-accent-light"
-                      title={`Auto-bumped from ${slot.count} to fit ${pinnedCount} pinned JIDs`}
+                      title={`${slot.count} from the count + ${pinnedCount} pinned JIDs`}
                     >
-                      bumped +{pinnedCount - slot.count}
+                      +{pinnedCount} pinned = {slotTotal}
                     </span>
                   )}
                   <button

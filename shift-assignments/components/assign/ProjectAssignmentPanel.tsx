@@ -12,8 +12,7 @@ import type {
  * Per-shift, searchable project picker. Lets the admin multi-select projects
  * and mass-assign them to one of the shift's reviewers. Pinned projects
  * appear as chips under the reviewer's slot (rendered in ShiftComposer) and
- * their JIDs count toward the reviewer's slot target — auto-bumping the
- * count if needed.
+ * their JIDs are added on top of the reviewer's count.
  */
 export function ProjectAssignmentPanel({
   draft,
@@ -115,8 +114,8 @@ export function ProjectAssignmentPanel({
             Assign projects
           </h3>
           <p className="text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-            Pinned projects go to the chosen reviewer first; the count
-            auto-bumps if their JIDs exceed the slot.
+            Pinned projects go to the chosen reviewer on top of their
+            count.
           </p>
         </div>
         <div className="flex items-center gap-2">

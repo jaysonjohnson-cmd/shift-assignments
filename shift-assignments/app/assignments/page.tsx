@@ -12,7 +12,7 @@ import { useStore } from "@/lib/store";
 import { useUser } from "@/lib/useUser";
 import { useReviewerSync } from "@/lib/useReviewerSync";
 import { getBloomJobs, getBloomProjects, publishShift, clearShift, getShiftJobs, getSubmissionAges, type ShiftJobs } from "@/lib/api";
-import { assignShift, plannedTotal } from "@/lib/assign";
+import { assignShift, pinnedCountsByReviewer, plannedTotal } from "@/lib/assign";
 import {
   emptyShiftDraft,
   EXCLUDED_CLIENTS,
@@ -315,7 +315,13 @@ export default function AssignmentsPage() {
       });
       setLastPublishedAt(resp.published_at);
       refreshLiveJobs();
-      const lines = summarizeShift("Shift", result.assignments, reviewers, draft);
+      const lines = summarizeShift(
+        "Shift",
+        result.assignments,
+        reviewers,
+        draft,
+        pinnedCountsByReviewer(poolWithDates, draft),
+      );
       setMode({
         kind: "summary",
         title: "Shift published",
@@ -524,7 +530,7 @@ export default function AssignmentsPage() {
           <button
             type="button"
             onClick={() => handlePublishShift(mode.draft)}
-            disabled={busy || !canPublishShift(mode.draft)}
+            disabled={busy || !canPublishShift(mode.draft, priorityPool)}
             className="rounded-lg border border-storesight-accent bg-storesight-accent/10 px-4 py-2 text-sm font-semibold text-storesight-primary transition hover:bg-storesight-accent/20 disabled:opacity-50 dark:border-storesight-accent-light dark:bg-storesight-accent/20 dark:text-storesight-accent-light"
           >
             {busy ? "Publishing…" : "Publish shift"}
@@ -591,10 +597,11 @@ export default function AssignmentsPage() {
   );
 }
 
-function canPublishShift(draft: ShiftDraft): boolean {
+function canPublishShift(draft: ShiftDraft, pool: Row[]): boolean {
   if (draft.slots.length === 0) return false;
-  if (!draft.slots.some((s) => s.reviewerId && s.count > 0)) return false;
-  return plannedTotal(draft) > 0;
+  // A reviewer whose only work is a pinned project still counts — their slot
+  // count can be 0 while the pins hand them every JID in it.
+  return plannedTotal(draft, pinnedCountsByReviewer(pool, draft)) > 0;
 }
 
 function toEmailMap(

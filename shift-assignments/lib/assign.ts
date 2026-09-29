@@ -129,9 +129,9 @@ function urgencyScore(row: Row): number {
 /**
  * Walk `pool` using round-robin distribution (pool is assumed to be sorted
  * highest-priority first). Pinned projects are honored first: any row whose
- * `projectId` is pinned to a reviewer goes to that reviewer, and the slot's
- * count auto-bumps to at least the pinned-row count. Remaining slot capacity
- * is filled by cycling through reviewers, spreading tasks evenly rather than
+ * `projectId` is pinned to a reviewer goes to that reviewer ON TOP OF the
+ * slot's count — a slot of 15 with a 14-JID project pinned gets 29. The count
+ * is then filled from the unpinned pool by cycling through reviewers, spreading tasks evenly rather than
  * frontloading early reviewers. Slots with empty reviewerId are dropped
  * (their would-be rows fall into leftover).
  */
@@ -190,9 +190,9 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
   for (const slot of draft.slots) {
     if (!slot.reviewerId) continue;
     const pinned = pinnedByReviewer[slot.reviewerId] ?? [];
-    const wanted = Math.max(Math.floor(slot.count), pinned.length);
-    const topUp = Math.max(0, wanted - pinned.length);
-    unpinnedNeeded[slot.reviewerId] = topUp;
+    // Pins are extra work, not part of the count: the whole count still comes
+    // from the unpinned pool.
+    unpinnedNeeded[slot.reviewerId] = Math.max(0, Math.floor(slot.count));
     assignments[slot.reviewerId] = [...pinned];
   }
 
@@ -204,7 +204,7 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
     // Calculate capacity weights for each reviewer (higher capacity = higher weight)
     const capacityWeights = new Map<string, number>();
     for (const slot of activeSlots) {
-      const capacity = Math.max(Math.floor(slot.count), (pinnedByReviewer[slot.reviewerId] ?? []).length);
+      const capacity = Math.floor(slot.count) + (pinnedByReviewer[slot.reviewerId] ?? []).length;
       capacityWeights.set(slot.reviewerId, capacity);
     }
 
@@ -465,16 +465,13 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
   return { assignments, leftover };
 }
 
-/**
- * Return the count a slot should display given its draft count and current
- * pinned-row total — used by the UI to show the auto-bumped value and a
- * "bumped" chip when `pinnedJidCount > draft.count`.
- */
+/** What a slot actually receives: its count plus every JID in its pinned
+ *  projects (pins add on top of the count, see assignShift). */
 export function effectiveSlotCount(
   slot: ReviewerSlot,
   pinnedJidCount: number,
 ): number {
-  return Math.max(Math.floor(slot.count), pinnedJidCount);
+  return Math.max(0, Math.floor(slot.count)) + Math.max(0, pinnedJidCount);
 }
 
 /** Count of pinned JIDs available in `pool` for the given project ids. */
@@ -491,7 +488,30 @@ export function countPinnedJids(
   return n;
 }
 
-/** Sum of slot counts (the "planned" total). */
-export function plannedTotal(draft: ShiftDraft): number {
-  return draft.slots.reduce((a, s) => a + Math.max(0, Math.floor(s.count)), 0);
+/** Pinned JIDs available in `pool` for each reviewer with pins. */
+export function pinnedCountsByReviewer(
+  pool: Row[],
+  draft: ShiftDraft,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [reviewerId, pids] of Object.entries(draft.projectPins ?? {})) {
+    out[reviewerId] = countPinnedJids(pool, pids);
+  }
+  return out;
+}
+
+/**
+ * The "planned" total: what each slot will actually receive. Pass the pinned
+ * JID counts so pins are included, the same count + pinned that assignShift
+ * hands out — without them a pinned project added nothing to the total.
+ */
+export function plannedTotal(
+  draft: ShiftDraft,
+  pinnedCounts: Record<string, number> = {},
+): number {
+  return draft.slots.reduce(
+    (a, s) =>
+      a + Math.max(0, effectiveSlotCount(s, (s.reviewerId && pinnedCounts[s.reviewerId]) || 0)),
+    0,
+  );
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { effectiveSlotCount } from "@/lib/assign";
 import type { Reviewer, Row, ShiftDraft } from "@/lib/types";
 
 export type SummaryLine = {
@@ -130,12 +131,14 @@ export function summarizeShift(
   assignments: Record<string, Row[]>,
   reviewers: Reviewer[],
   draft?: ShiftDraft,
+  /** Pinned JIDs per reviewer, which are asked for on top of the slot count. */
+  pinnedCounts: Record<string, number> = {},
 ): SummaryLine[] {
   const reviewerById = new Map(reviewers.map((r) => [r.id, r]));
   const requestedById = new Map(
     (draft?.slots ?? [])
       .filter((s) => s.reviewerId)
-      .map((s) => [s.reviewerId, Math.floor(s.count)] as const),
+      .map((s) => [s.reviewerId, effectiveSlotCount(s, pinnedCounts[s.reviewerId] ?? 0)] as const),
   );
   const lines: SummaryLine[] = [];
   for (const [reviewerId, rows] of Object.entries(assignments)) {

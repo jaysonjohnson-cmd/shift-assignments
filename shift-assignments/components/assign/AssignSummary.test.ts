@@ -68,6 +68,17 @@ describe("summarizeShift", () => {
   });
 });
 
+describe("summarizeShift with pinned projects", () => {
+  it("counts pinned JIDs as asked for on top of the slot count", () => {
+    // Slot of 5 with a 14-JID project pinned asked for 19, so 19 delivered is
+    // on target rather than "19 / 5".
+    const d = draft({ r1: 5 });
+    const rows = Array.from({ length: 19 }, (_, i) => row(String(i)));
+    const lines = summarizeShift("Shift", { r1: rows }, reviewers, d, { r1: 14 });
+    expect(lines[0].requested).toBe(19);
+  });
+});
+
 describe("the @/ alias resolves runtime imports", () => {
   it("imports a value, not just a type", async () => {
     // Guards vitest.config.ts: type-only imports would pass without it.
