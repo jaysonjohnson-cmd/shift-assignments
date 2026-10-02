@@ -409,22 +409,53 @@ def test_refill_reopens_a_job_once_every_holder_has_finished(monkeypatch):
 
     This is the behaviour the flat subtraction existed for: the feed takes new
     submissions all day, so a job everyone has finished must become reachable
-    again rather than staying excluded for the rest of the shift.
+    again rather than staying excluded for the rest of the shift. It comes back
+    to a reviewer who already held it, not a teammate.
     """
     feed = _feed({"shared": 1})
     added = _refill_with_team(
         monkeypatch, feed,
         holders={
-            REVIEWER: [],
-            "saylor@storesight.com": ["shared"],
+            REVIEWER: ["shared"],
             "hudson@storesight.com": ["shared"],
         },
-        completions=[("saylor@storesight.com", "shared"),
+        completions=[(REVIEWER, "shared"),
                      ("hudson@storesight.com", "shared")],
     )
     assert [r["jobId"] for r in added] == ["shared"], (
         "once every holder is done the job is assignable again"
     )
+
+
+def test_a_teammates_finished_job_is_not_handed_to_someone_else(monkeypatch):
+    """Production 1974127: Austin finished it, new responses landed, and
+    Elijah's top-up two minutes later took it — same JID in two queues."""
+    feed = _feed({"1974127": 3, "fresh": 1})
+    added = _refill_with_team(
+        monkeypatch, feed,
+        holders={REVIEWER: [], "austin@storesight.com": ["1974127"]},
+        completions=[("austin@storesight.com", "1974127")],
+    )
+    assert [r["jobId"] for r in added] == ["fresh"]
+
+
+def test_a_teammates_project_is_not_split_by_a_refill(monkeypatch):
+    """A job never handed out still belongs with the teammate who owns its
+    project — a By-PID card opens the whole project in Collection Review."""
+    feed = _feed({"new_in_p1": 2, "fresh": 1})
+    feed[0]["projectId"] = "p1"
+    added = _refill_with_team(
+        monkeypatch, feed,
+        holders={REVIEWER: [], "austin@storesight.com": []},
+        completions=[],
+    )
+    assert sorted(r["jobId"] for r in added) == ["fresh", "new_in_p1"], "sanity: no owner yet"
+
+    shift_docs = main.roles.list_docs_by_kind("reviewer_shift")
+    shift_docs[1]["data"]["rows"] = [{"jobId": "old_in_p1", "id": "old_in_p1",
+                                      "projectId": "p1", "unreviewedCount": 1}]
+    added = main._auto_refill_reviewer("snap1", REVIEWER, 5)
+    assert [r["jobId"] for r in added] == ["fresh"]
 
 
 def test_refill_retires_the_checkmark_when_a_job_comes_back(monkeypatch):

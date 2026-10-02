@@ -332,6 +332,14 @@ is the cost of refills being independent rather than planned as a batch.
 The job count always fills regardless — this only decides how much of the batch
 is heavy work.
 
+**Work stays with whoever had it first.** A top-up never takes a job or project
+already handed to a teammate this shift, even one they've checked off. The feed
+gets new responses all day, so a finished job comes back into the pool, and it
+used to go to whoever ran out next. That's how JID 1974127 ended up with two
+reviewers. It now goes back only to its own holder, on their next top-up.
+Closing out releases a reviewer's work, because it deletes their
+`reviewer_shift` docs.
+
 **Rollback:** Use Cloud Run revision traffic splitting in GCP console.
 
 ---

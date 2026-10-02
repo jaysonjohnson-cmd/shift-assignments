@@ -2406,6 +2406,12 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             roles.cache_upsert_doc("refill_lock", {"id": lock_id, "data": lock_doc})
 
         held_pairs = set()  # (reviewer_email, job_key) — who is holding what
+        # Every job and project a teammate has been handed this shift, finished
+        # or not. Work stays with whoever had it first; see the pool loop.
+        # Work the reviewer held themselves is exempt, so a job that somehow
+        # ended up with two people can still come back to either.
+        teammate_jobs, teammate_projects = set(), set()
+        own_jobs, own_projects = set(), set()
         own_rows = []
         shift_reviewers = set()
         max_part = -1
@@ -2445,6 +2451,13 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                 k = _job_key(r)
                 if k:
                     held_pairs.add((doc_reviewer, k))
+                pid = str(r.get("projectId") or "")
+                jobs, projects = ((own_jobs, own_projects) if doc_reviewer == norm
+                                  else (teammate_jobs, teammate_projects))
+                if k:
+                    jobs.add(k)
+                if pid:
+                    projects.add(pid)
             if doc_reviewer == norm:
                 own_rows.extend(data.get("rows") or [])
                 max_part = max(max_part, int(data.get("part") or 0))
@@ -2460,7 +2473,8 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         # A job is off-limits while it is actively sitting in someone's queue.
         # Once every holder has completed it, it drops out of the exclusion set
         # so fresh unreviewed responses that land on it later (this feed gets
-        # continuous new submissions all day) are reachable again. Without that
+        # continuous new submissions all day) are reachable again — by the
+        # reviewers who held it, never a teammate (see teammate_jobs). Without that
         # release, every job touched during the shift stayed excluded forever
         # and the "fresh" pool only ever shrank.
         #
@@ -2551,7 +2565,8 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         )
 
         eligible = []
-        skipped_reasons = {"no_key": 0, "already_assigned": 0, "excluded": 0,
+        skipped_reasons = {"no_key": 0, "already_assigned": 0, "teammates_work": 0,
+                           "excluded": 0,
                            "not_retail_pipeline": 0, "not_special_job_type": 0,
                            "not_pg_store_walk": 0,
                            "no_unreviewed": 0}
@@ -2562,6 +2577,20 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                     skipped_reasons["no_key"] += 1
                 else:
                     skipped_reasons["already_assigned"] += 1
+                continue
+            # A job or project already handed to a teammate this shift stays
+            # theirs, even after they've checked it off. New responses landing
+            # on a finished job used to send it to whoever ran out next, so two
+            # reviewers ended up with the same JID (production 1974127: Austin
+            # finished it at 9:04, Elijah's top-up took it at 9:06). Projects
+            # count too: a My Tasks "By PID" card opens the whole project, so a
+            # project split across reviewers shows each the other's responses.
+            # The owner gets it back on their own top-up; a reviewer who closes
+            # out has their shift docs deleted, which releases their work.
+            pid = str(r.get("projectId") or "")
+            if ((k in teammate_jobs and k not in own_jobs)
+                    or (pid in teammate_projects and pid not in own_projects)):
+                skipped_reasons["teammates_work"] += 1
                 continue
             if _is_excluded_job(r):
                 skipped_reasons["excluded"] += 1
