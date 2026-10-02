@@ -97,6 +97,10 @@ export const EXCLUDED_CLIENTS = new Set<string>(["joanna.riney@menasha.com"]);
  * in the current feed — the convention is "(Job 1/2)" — but they are kept for
  * older names. The slash is load-bearing: a bare "job 1" would match
  * "Advance Auto Parts - Job 1", which is an unrelated job type.
+ *
+ * "guest experience" catches both "Subway Guest Experience" and the
+ * "Competitive Program Guest Experience: <chain>" jobs; "competitive program"
+ * is listed too in case a name drops the second half.
  */
 export const SPECIAL_JOB_TYPE_FRAGMENTS = [
   "online",
@@ -110,6 +114,9 @@ export const SPECIAL_JOB_TYPE_FRAGMENTS = [
   "part 2",
   "job 1/2",
   "job 2/2",
+  "competitive program",
+  "guest experience",
+  "softsoap",
 ] as const;
 
 /** True when a job name matches the Special Job Types filter. */

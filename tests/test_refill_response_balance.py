@@ -689,6 +689,9 @@ def test_special_job_types_matches_the_real_feed_names():
         # Split jobs whose only qualifying signal is the slashed suffix.
         "Acme Shelf Audit (Job 1/2)",
         "Acme Shelf Audit (Job 2/2)",
+        "Competitive Program Guest Experience: Jersey Mike's",
+        "Subway Guest Experience (October)",
+        "Softsoap Pumpkin Harvest Hand Soap 11.25 fl oz",
     ]
     for name in matches:
         assert main._is_special_job_type(name), name

@@ -2152,6 +2152,9 @@ _SPECIAL_JOB_TYPE_FRAGMENTS = (
     "part 2",
     "job 1/2",
     "job 2/2",
+    "competitive program",
+    "guest experience",
+    "softsoap",
 )
 
 
