@@ -30,8 +30,11 @@ import internal_api
 ROOT_ADMIN_EMAIL = "jayson.johnson@storesight.com"
 
 _STORAGE_PATH = "/api/storage/qc-shift-assignments"
-_PAGE_SIZE = 100
-_MAX_PAGES = 500
+# The Storage API's max. The whole namespace (a few hundred docs, 10k cap) is
+# usually one request; at 100 a scan was 6+ requests plus pacing — ~5s, paid on
+# every checkmark by the forced read in /api/shifts/my/complete.
+_PAGE_SIZE = 1000
+_MAX_PAGES = 50
 
 # Per-kind document cache. {kind: {"data": [...], "fetched_at": float}}
 _DOC_CACHE: dict = {}
@@ -88,8 +91,12 @@ def _full_namespace_scan(want_kind=None, force=False):
     """Scan all namespace pages and populate every kind cache atomically.
 
     Protected by _SCAN_LOCK so it never runs more than once concurrently
-    (e.g. if two threads call this somehow). Each page is spaced 0.5 s apart
-    so 7 pages cost ~3.5 s and stay well under the 60 req/min limit.
+    (e.g. if two threads call this somehow). Pages are spaced 0.5 s apart to
+    stay under the 60 req/min limit, though at _PAGE_SIZE most scans are one.
+
+    Stops on an empty page, or once the response's `pagination.total` says
+    every doc is in hand. A short page alone is never the stop signal — that
+    early break once dropped the roster when a page came back short.
     """
     global _BG_STARTED  # keep lint happy; _SCAN_LOCK is the real guard
     with _SCAN_LOCK:
@@ -104,6 +111,7 @@ def _full_namespace_scan(want_kind=None, force=False):
                     return
         by_kind: dict = {}
         page = 1
+        seen = 0
         try:
             while page <= _MAX_PAGES:
                 resp = internal_api.get(
@@ -116,9 +124,13 @@ def _full_namespace_scan(want_kind=None, force=False):
                     kind = (doc.get("data") or {}).get("kind")
                     if kind:
                         by_kind.setdefault(kind, []).append(doc)
+                seen += len(docs)
+                total = ((resp.get("pagination") or {}).get("total")
+                         if isinstance(resp, dict) else None)
+                if isinstance(total, int) and seen >= total:
+                    break
                 page += 1
-                if docs:
-                    time.sleep(0.5)  # pace requests to stay under rate limit
+                time.sleep(0.5)  # pace requests to stay under rate limit
         except Exception as exc:
             logging.warning("Storage namespace scan failed (page %d): %s", page, exc)
             raise

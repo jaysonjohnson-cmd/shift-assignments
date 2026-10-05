@@ -334,3 +334,35 @@ def test_an_empty_kind_is_cached_not_rescanned_every_read(monkeypatch):
     roles.list_docs_by_kind("lead")
     roles.list_docs_by_kind("lead")
     assert len(calls) == scans_after_first, "an empty kind triggered a rescan"
+
+
+def test_scan_is_one_request_when_total_is_in_hand(monkeypatch):
+    """A forced scan runs on every checkmark, so it must not pay for an extra
+    empty-page request (plus pacing) once `pagination.total` is satisfied."""
+    calls = []
+
+    def fake_get(path, params=None):
+        calls.append(params["page"])
+        docs = [{"id": f"c{i}", "data": {"kind": "completion"}} for i in range(3)]
+        return {"data": docs, "pagination": {"total": 3}}
+
+    monkeypatch.setattr(roles.internal_api, "get", fake_get)
+    monkeypatch.setattr(roles.time, "sleep", lambda s: None)
+    roles._full_namespace_scan(want_kind="completion", force=True)
+    assert calls == [1]
+    assert len(roles._DOC_CACHE["completion"]["data"]) == 3
+
+
+def test_short_page_short_of_total_keeps_scanning(monkeypatch):
+    """A short page is not the end while `total` says more docs exist."""
+    pages = {
+        1: [{"id": "s1", "data": {"kind": "shift_snapshot"}}],
+        2: [{"id": "rev1", "data": {"kind": "reviewer", "name": "Deep", "email": "deep@storesight.com"}}],
+    }
+
+    def fake_get(path, params=None):
+        return {"data": pages.get(params["page"], []), "pagination": {"total": 2}}
+
+    monkeypatch.setattr(roles.internal_api, "get", fake_get)
+    monkeypatch.setattr(roles.time, "sleep", lambda s: None)
+    assert [r["email"] for r in roles.list_reviewers()] == ["deep@storesight.com"]
