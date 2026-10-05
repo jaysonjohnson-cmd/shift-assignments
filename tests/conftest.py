@@ -13,6 +13,10 @@ monkeypatch it (or `list_docs_by_kind`) in their own body, which overrides this.
 `main._self_heal_attempts` is module-level for the same reason and leaks the
 same way: a self-heal refill attempted in one test would put the next test's
 reviewer inside the cooldown window and silently skip its refill. Reset it too.
+
+The stale-shift purge deletes on a background thread. Tests mock `_try_delete`,
+and a thread outliving that mock would hit real Storage, so run it inline and
+unpaced.
 """
 
 import os
@@ -34,6 +38,7 @@ def _reset_doc_cache(monkeypatch):
         roles._DOC_CACHE.clear()
     monkeypatch.setattr(internal_api, "get", lambda *a, **k: {"data": []})
     _clear_self_heal_cooldown()
+    _run_purge_inline(monkeypatch)
     yield
     with roles._CACHE_LOCK:
         roles._DOC_CACHE.clear()
@@ -53,3 +58,13 @@ def _clear_self_heal_cooldown():
         return
     with main._self_heal_lock:
         main._self_heal_attempts.clear()
+
+
+def _run_purge_inline(monkeypatch):
+    try:
+        import main
+    except Exception:  # noqa: BLE001 — nothing to patch if main never loaded
+        return
+    monkeypatch.setattr(main, "_run_in_background", lambda fn, *a: fn(*a))
+    monkeypatch.setattr(main, "_BG_DELETE_INTERVAL", 0)
+    main._purge_running = False

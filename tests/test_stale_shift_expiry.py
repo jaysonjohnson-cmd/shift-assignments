@@ -115,13 +115,82 @@ def test_purge_deletes_only_stale_docs(monkeypatch):
         "shift_snapshot": snaps, "reviewer_shift": shifts, "completion": comps,
     }.get(kind, []))
     monkeypatch.setattr(main, "_try_delete", lambda did: deleted.append(did))
-    monkeypatch.setattr(main.roles, "invalidate_doc_cache", lambda *a, **k: None)
 
     n_snaps, n_rows, n_comps = main._purge_stale_shift_docs()
 
     assert (n_snaps, n_rows, n_comps) == (1, 3, 1)
     assert set(deleted) == {"old", "rs-old", "c-old"}
     assert "today" not in deleted and "rs-today" not in deleted and "c-new" not in deleted
+    assert deleted[-1] == "old", (
+        "snapshot must go last, or an interrupted purge orphans its children")
+
+
+def _seed_cache(kind, docs):
+    with main.roles._CACHE_LOCK:
+        main.roles._DOC_CACHE[kind] = {"data": list(docs), "fetched_at": 0}
+
+
+def _cached_ids(kind):
+    with main.roles._CACHE_LOCK:
+        return {d["id"] for d in main.roles._DOC_CACHE[kind]["data"]}
+
+
+def test_purge_does_not_block_on_deletes(monkeypatch):
+    """The first publish of the day must not wait on yesterday's deletes."""
+    started = []
+    monkeypatch.setattr(main, "_run_in_background", lambda fn, *a: started.append(fn))
+    monkeypatch.setattr(main, "_try_delete",
+                        lambda did: pytest.fail("deleted on the request path"))
+    _seed_cache("shift_snapshot", [_snap("old", _iso_days_ago(1))])
+    _seed_cache("reviewer_shift", [_shift("old")])
+    _seed_cache("completion", [])
+    _seed_cache("shift_closeout", [])
+
+    assert main._purge_stale_shift_docs() == (1, 1, 0)
+    assert len(started) == 1
+
+
+def test_purge_keeps_the_cache_warm(monkeypatch):
+    """Stale docs leave the cache, but the kinds must not go cold.
+
+    Invalidating them made the publish's next read a synchronous full scan.
+    """
+    monkeypatch.setattr(main, "_run_in_background", lambda fn, *a: None)
+    monkeypatch.setattr(main.roles, "invalidate_doc_cache",
+                        lambda *a, **k: pytest.fail("cache invalidated"))
+    _seed_cache("shift_snapshot", [_snap("old", _iso_days_ago(1)),
+                                   _snap("today", _iso_days_ago(0))])
+    _seed_cache("reviewer_shift", [_shift("old"), _shift("today")])
+    _seed_cache("completion", [
+        {"id": "c-old", "data": {"kind": "completion", "shift_snapshot_id": "old"}}])
+    _seed_cache("shift_closeout", [])
+
+    main._purge_stale_shift_docs()
+
+    assert _cached_ids("shift_snapshot") == {"today"}
+    assert _cached_ids("reviewer_shift") == {"rs-today"}
+    assert _cached_ids("completion") == set()
+
+
+def test_a_second_purge_waits_for_the_first(monkeypatch):
+    """Back-to-back publishes must not queue the same deletes twice."""
+    started = []
+    monkeypatch.setattr(main, "_run_in_background", lambda fn, *a: started.append(fn))
+    snaps = [_snap("old", _iso_days_ago(1))]
+    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind, force=False: {
+        "shift_snapshot": snaps, "reviewer_shift": [_shift("old")],
+    }.get(kind, []))
+
+    main._purge_stale_shift_docs()
+    assert main._purge_stale_shift_docs() == (0, 0, 0)
+    assert len(started) == 1
+
+    deleted = []
+    monkeypatch.setattr(main, "_try_delete", lambda did: deleted.append(did))
+    started[0]()  # first purge finishes
+    assert set(deleted) == {"rs-old", "old"}
+    main._purge_stale_shift_docs()
+    assert len(started) == 2, "a finished purge must release the guard"
 
 
 def test_purge_is_a_noop_when_nothing_is_stale(monkeypatch):

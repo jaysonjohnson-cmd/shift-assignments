@@ -1272,16 +1272,28 @@ def _try_delete(doc_id):
         logging.warning("rollback delete failed for doc_id=%s", doc_id)
 
 
+# Spacing between background deletes. ~30/min leaves half the 60 req/min
+# Internal API budget for the publish and refills running alongside it.
+_BG_DELETE_INTERVAL = 2.0
+
+
 def _delete_docs_bg(doc_ids):
     """Delete a batch of Storage docs off the request path.
 
     Used for cleanup that's already reflected in the warm cache (so reads are
     correct immediately) and only needs to happen in Storage eventually —
-    e.g. stale completions cleared on republish. Runs sequentially so it
-    shares the 60 req/min Storage limit gracefully instead of bursting it.
+    e.g. yesterday's shift docs reclaimed on publish. Runs sequentially and
+    paced so it shares the 60 req/min Storage limit instead of bursting it.
     """
-    for doc_id in doc_ids:
+    for i, doc_id in enumerate(doc_ids):
+        if i and _BG_DELETE_INTERVAL:
+            time.sleep(_BG_DELETE_INTERVAL)
         _try_delete(doc_id)
+
+
+def _run_in_background(fn, *args):
+    """Start `fn(*args)` on a daemon thread. Tests patch this to run inline."""
+    threading.Thread(target=fn, args=args, daemon=True).start()
 
 
 @app.route("/api/shifts/publish", methods=["POST"])
@@ -1635,44 +1647,85 @@ def _is_stale_snapshot(snapshot_data):
     return day < datetime.datetime.now(_SHIFT_TZ).date()
 
 
+# One purge at a time per instance. Back-to-back publishes (staggered
+# auto-publish runs, an admin top-up) would otherwise each queue the same
+# deletes and double the load on the rate limit.
+_purge_lock = threading.Lock()
+_purge_running = False
+
+
 def _purge_stale_shift_docs():
-    """Delete shift docs from earlier local days. Returns (snaps, rows, completions).
+    """Reclaim shift docs from earlier local days. Returns (snaps, rows, completions).
 
     The read paths hide a stale shift, but hiding alone would let docs pile up
     against the 10k-per-namespace Storage cap, so a publish also reclaims them.
-    Best-effort: a failed delete is logged and skipped rather than failing the
-    publish that triggered it.
+
+    The deletes run in the background. There's one Storage call per doc —
+    every completion from yesterday — and on the first publish of the day that
+    used to hold the publish for minutes behind the rate limit. Nothing has to
+    wait for them: the stale docs are dropped from the warm cache here, and the
+    read paths hide a stale shift anyway if a rescan brings some back before
+    they're gone. Children go first and the snapshot last, so an interrupted
+    run leaves the snapshot behind for the next publish to find and finish.
+
+    Best-effort: a failed delete is logged and skipped. The counts returned are
+    what was queued, not what was confirmed deleted.
     """
+    global _purge_running
     stale_ids = set()
-    snaps = rows = comps = 0
+    rows = 0
     for doc in roles.list_docs_by_kind("shift_snapshot"):
         if _is_stale_snapshot(doc.get("data") or {}):
             stale_ids.add(doc.get("id"))
     if not stale_ids:
         return 0, 0, 0
 
+    queued = []  # (kind, doc_id), deletion order
     for doc in roles.list_docs_by_kind("reviewer_shift"):
         data = doc.get("data") or {}
         if data.get("shift_snapshot_id") in stale_ids:
             rows += len(data.get("rows") or [])
-            _try_delete(doc.get("id"))
+            queued.append(("reviewer_shift", doc.get("id")))
+    comps = 0
     for doc in roles.list_docs_by_kind("completion"):
         if ((doc.get("data") or {}).get("shift_snapshot_id")) in stale_ids:
-            _try_delete(doc.get("id"))
+            queued.append(("completion", doc.get("id")))
             comps += 1
     for doc in roles.list_docs_by_kind("shift_closeout"):
         if ((doc.get("data") or {}).get("shift_snapshot_id")) in stale_ids:
-            _try_delete(doc.get("id"))
+            queued.append(("shift_closeout", doc.get("id")))
     for sid in stale_ids:
-        _try_delete(sid)
-        snaps += 1
+        queued.append(("shift_snapshot", sid))
 
-    roles.invalidate_doc_cache(
-        "shift_snapshot", "reviewer_shift", "completion", "shift_closeout"
-    )
-    logging.info("purged stale shift docs: snapshots=%d rows=%d completions=%d",
-                 snaps, rows, comps)
-    return snaps, rows, comps
+    with _purge_lock:
+        if _purge_running:
+            logging.info("stale-shift purge already running, skipping")
+            return 0, 0, 0
+        _purge_running = True
+
+    # Drop them from the warm cache rather than invalidating it: invalidating
+    # left these kinds cold, so the publish's next read paid a full
+    # synchronous namespace scan.
+    for kind, doc_id in queued:
+        roles.cache_remove_doc(kind, doc_id)
+
+    def run():
+        global _purge_running
+        try:
+            _delete_docs_bg([doc_id for _, doc_id in queued])
+            logging.info("purged stale shift docs: snapshots=%d rows=%d completions=%d",
+                         len(stale_ids), rows, comps)
+        finally:
+            with _purge_lock:
+                _purge_running = False
+
+    try:
+        _run_in_background(run)
+    except Exception:
+        with _purge_lock:
+            _purge_running = False
+        raise
+    return len(stale_ids), rows, comps
 
 
 def _latest_snapshot(reviewer_shift_docs=None, include_stale=False):

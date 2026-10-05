@@ -363,9 +363,16 @@ as current: hiding a live shift is worse than showing a stale one.
 
 Hiding alone would let docs accumulate against the 10k-per-namespace Storage
 cap, so both publish paths call `_purge_stale_shift_docs()` first to delete the
-previous day's snapshot, `reviewer_shift` and `completion` docs. It's
-best-effort — a failed delete is logged and skipped rather than failing the
-publish.
+previous day's snapshot, `reviewer_shift`, `completion` and `shift_closeout`
+docs. It's best-effort — a failed delete is logged and skipped rather than
+failing the publish.
+
+The deletes run on a background thread, paced at ~30/min. That's one Storage
+call per doc, and done inline it held the first publish of each day for minutes
+behind the 60 req/min limit. The stale docs are dropped from the warm cache up
+front instead of invalidating it, so the publish doesn't pay a cold rescan
+either. The snapshot is deleted last, so an interrupted run leaves it behind for
+the next publish to finish. Tests run the purge inline (see `tests/conftest.py`).
 
 **Don't hardcode `published_at` in a shift fixture.** A fixed date silently turns
 an "active shift" fixture into a finished one the day after it's written; three
