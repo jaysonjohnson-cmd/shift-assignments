@@ -98,7 +98,14 @@ function groupByProject(rows: Row[]): Row[] {
       unreviewedCount,
       autoRejected: list.reduce((s, r) => s + (r.autoRejected || 0), 0),
       oldestSubmission,
-      extras: { jobCount: list.length },
+      // Per-job rejects, so the badge can link each job's Responses page — the
+      // page only filters by job, and the group itself has no jobId.
+      extras: {
+        jobCount: list.length,
+        rejectsByJob: list
+          .filter((r) => (r.autoRejected || 0) > 0 && r.jobId)
+          .map((r) => ({ jobId: r.jobId as string, count: r.autoRejected as number })),
+      },
       completedAt,
     });
   }
@@ -160,6 +167,23 @@ function buildResponseSearchUrl(row: Row): string {
   if (!row.jobId) return RESPONSE_SEARCH_URL;
   const params = new URLSearchParams({ job_id: row.jobId, resp_status: "N" });
   return `${RESPONSE_SEARCH_URL}?${params.toString()}`;
+}
+
+type JobRejects = { jobId: string; count: number };
+
+/** One Responses link per job with auto-rejects. A By-PID group has no jobId,
+ *  so a single badge could only open an unfiltered Responses page. */
+function rejectLinks(row: Row): { href: string; count: number; jobId: string | null }[] {
+  if ((row.autoRejected || 0) <= 0) return [];
+  const perJob = (row.extras?.rejectsByJob as JobRejects[] | undefined) ?? [];
+  if (!row.jobId && perJob.length) {
+    return perJob.map((j) => ({
+      href: buildResponseSearchUrl({ ...row, jobId: j.jobId }),
+      count: j.count,
+      jobId: j.jobId,
+    }));
+  }
+  return [{ href: buildResponseSearchUrl(row), count: row.autoRejected || 0, jobId: null }];
 }
 
 function primaryHeading(row: Row, grouped: boolean): string {
@@ -829,17 +853,18 @@ function TaskCard({
             {row.unreviewedCount}
             {grouped && jobCount > 1 ? ` · ${jobCount}j` : ""}
           </span>
-          {(row.autoRejected || 0) > 0 && (
+          {rejectLinks(row).map((l) => (
             <a
-              href={buildResponseSearchUrl(row)}
+              key={l.jobId ?? "job"}
+              href={l.href}
               target="_blank"
               rel="noopener noreferrer"
-              title="Auto-rejected (e.g. distance) — clear on the Responses page, then check off."
+              title={`Auto-rejected (e.g. distance)${l.jobId ? ` on Job ${l.jobId}` : ""} — clear on the Responses page, then check off.`}
               className="inline-flex items-center gap-1 rounded border border-[#FFA500]/40 bg-[#FFA500]/10 px-1.5 py-0.5 font-medium text-[#B26A00] hover:bg-[#FFA500]/20 dark:text-[#FFA500]"
             >
-              {row.autoRejected} AR
+              {l.count} AR{l.jobId ? ` · ${truncate(l.jobId, 10)}` : ""}
             </a>
-          )}
+          ))}
           {row.jobId && (
             <>
               <a
@@ -940,20 +965,21 @@ function TaskCard({
             {row.unreviewedCount} unreviewed
             {grouped && jobCount > 1 ? ` · ${jobCount} jobs` : ""}
           </span>
-          {(row.autoRejected || 0) > 0 && (
+          {rejectLinks(row).map((l) => (
             <a
-              href={buildResponseSearchUrl(row)}
+              key={l.jobId ?? "job"}
+              href={l.href}
               target="_blank"
               rel="noopener noreferrer"
-              title="These can't be reviewed here (auto-rejected, e.g. distance) — clear them on the Responses page, then check the job off."
+              title={`These can't be reviewed here (auto-rejected, e.g. distance)${l.jobId ? ` on Job ${l.jobId}` : ""} — clear them on the Responses page, then check the job off.`}
               className="inline-flex items-center gap-1 rounded border border-[#FFA500]/40 bg-[#FFA500]/10 px-1.5 py-0.5 font-medium text-[#B26A00] hover:bg-[#FFA500]/20 dark:text-[#FFA500]"
             >
-              {row.autoRejected} to auto-reject
+              {l.count} to auto-reject{l.jobId ? ` · Job ${truncate(l.jobId, 14)}` : ""}
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>
                 <path d="M14 3h7v7M10 14 21 3M19 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </a>
-          )}
+          ))}
         </div>
       </div>
       <div className="flex flex-col items-end gap-1.5">
