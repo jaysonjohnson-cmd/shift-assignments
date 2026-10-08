@@ -2,7 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { getLeaderboard, type Leaderboard, type LeaderboardReviewer } from "@/lib/api";
+import {
+  getLeaderboard,
+  type Leaderboard,
+  type LeaderboardPeriod,
+  type LeaderboardReviewer,
+} from "@/lib/api";
 import { useUser } from "@/lib/useUser";
 import { reviewerColor } from "@/lib/types";
 import { MedalIcon, Podium, initials } from "@/components/leaderboard/Podium";
@@ -11,25 +16,49 @@ function colorFor(r: LeaderboardReviewer): string {
   return reviewerColor({ color: r.color ?? undefined, email: r.email });
 }
 
+/** Local "YYYY-MM-DD" for a Date. */
+function isoDay(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function currentMonthKey(): string {
+  return isoDay(new Date()).slice(0, 7);
+}
+
+/** Shift a "YYYY-MM" key by `delta` months. */
+function shiftMonth(key: string, delta: number): string {
+  const [y, m] = key.split("-").map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return isoDay(d).slice(0, 7);
+}
+
+function monthName(key: string, opts: Intl.DateTimeFormatOptions = { month: "long", year: "numeric" }): string {
+  const [y, m] = key.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString(undefined, opts);
+}
+
 export default function LeaderboardPage() {
   const { role, loading: userLoading } = useUser();
   const [data, setData] = useState<Leaderboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // "week" = whole week; a number 0–6 = a single weekday (Mon–Sun).
-  const [view, setView] = useState<"week" | number>("week");
+  // Weekly tab (resets Monday) or Monthly tab (calendar month, browsable).
+  const [period, setPeriod] = useState<LeaderboardPeriod>("week");
+  const [month, setMonth] = useState<string>(currentMonthKey);
+  // "all" = whole period; a number = a single day within it.
+  const [view, setView] = useState<"all" | number>("all");
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      setData(await getLeaderboard());
+      setData(await getLeaderboard(period === "month" ? { period, month } : {}));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load leaderboard");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [period, month]);
 
   useEffect(() => {
     if (!userLoading) load();
@@ -37,7 +66,7 @@ export default function LeaderboardPage() {
 
   const canView = role === "admin" || role === "lead";
 
-  if (userLoading || loading) {
+  if (userLoading || (loading && !data)) {
     return (
       <div className="flex flex-1 items-center justify-center py-20 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
         Loading…
@@ -59,38 +88,48 @@ export default function LeaderboardPage() {
   }
 
   const allReviewers = data?.reviewers ?? [];
-  // Day index of "today" within the shown week (0=Mon), or -1 if outside it.
-  const todayIdx = (() => {
-    if (!data?.week_start) return -1;
-    const start = new Date(data.week_start + "T00:00:00").getTime();
-    const diff = Math.floor((Date.now() - start) / 86_400_000);
-    return diff >= 0 && diff <= 6 ? diff : -1;
-  })();
+  const isMonth = period === "month";
+  // Day index of "today" within the shown period, or -1 if outside it.
+  const todayIdx = data?.day_keys?.indexOf(isoDay(new Date())) ?? -1;
+  const isCurrentMonth = month === currentMonthKey();
+  const periodLabel = isMonth ? (isCurrentMonth ? "this month" : `in ${monthName(month)}`) : "this week";
   // Metric for the active view: whole-week total, or a single day's count.
   const metric = (r: LeaderboardReviewer) =>
-    view === "week" ? r.total : r.days[view] ?? 0;
+    view === "all" ? r.total : r.days[view] ?? 0;
   // Responses (volume) for the active view, shown alongside the job count.
   const respMetric = (r: LeaderboardReviewer) =>
-    view === "week" ? r.responses : r.resp_days?.[view] ?? 0;
-  const scopeLabel = view === "week" ? "this week" : (data?.day_labels[view] ?? "");
+    view === "all" ? r.responses : r.resp_days?.[view] ?? 0;
+  const dayLabel = (i: number) =>
+    isMonth ? `${monthName(month, { month: "short" })} ${data?.day_labels[i] ?? ""}` : (data?.day_labels[i] ?? "");
+  const scopeLabel = view === "all" ? periodLabel : dayLabel(view);
   // Re-rank by the active metric. In day view, hide reviewers with nothing that day.
   const reviewers = [...allReviewers]
-    .filter((r) => (view === "week" ? true : metric(r) > 0))
+    .filter((r) => (view === "all" ? true : metric(r) > 0))
     .sort((a, b) => metric(b) - metric(a) || a.name.localeCompare(b.name));
   const top3 = reviewers.slice(0, 3);
   const max = (reviewers[0] ? metric(reviewers[0]) : 0) || 1;
   const maxDay = Math.max(1, ...(data?.totals_by_day ?? [0]));
   const teamTotal =
-    view === "week"
+    view === "all"
       ? data?.team_total ?? 0
       : reviewers.reduce((s, r) => s + metric(r), 0);
   const teamResponses =
-    view === "week"
+    view === "all"
       ? data?.team_responses ?? 0
       : reviewers.reduce((s, r) => s + respMetric(r), 0);
   const leader = reviewers[0];
   // Day highlighted in the daily chart: the selected day, else the best day.
-  const highlightDay = view === "week" ? data?.best_day ?? -1 : view;
+  const highlightDay = view === "all" ? data?.best_day ?? -1 : view;
+
+  const switchPeriod = (p: LeaderboardPeriod) => {
+    if (p === period) return;
+    setPeriod(p);
+    setView("all");
+  };
+  const stepMonth = (delta: number) => {
+    setMonth((m) => shiftMonth(m, delta));
+    setView("all");
+  };
 
   return (
     <div className="mx-auto w-full max-w-4xl flex-1 px-6 py-8">
@@ -104,12 +143,33 @@ export default function LeaderboardPage() {
           </Link>
           <h1 className="mt-1 flex items-center gap-2 text-2xl font-semibold tracking-tight text-storesight-ink dark:text-storesight-ink-dark">
             <TrophyIcon className="h-6 w-6 text-storesight-accent dark:text-storesight-accent-light" />
-            This week&apos;s leaderboard
+            {isMonth ? `${monthName(month)} leaderboard` : "This week\u2019s leaderboard"}
           </h1>
           <p className="mt-1 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-            Jobs completed · week of {data?.week_start ?? "—"} · resets Monday
+            {isMonth
+              ? "Jobs completed · full calendar month · the weekly board still resets Monday"
+              : `Jobs completed · week of ${data?.week_start ?? "—"} · resets Monday`}
           </p>
         </div>
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-lg border border-storesight-border p-0.5 dark:border-storesight-border-dark" role="tablist">
+            {(["week", "month"] as const).map((p) => (
+              <button
+                key={p}
+                type="button"
+                role="tab"
+                aria-selected={period === p}
+                onClick={() => switchPeriod(p)}
+                className={`rounded-md px-3 py-1 text-xs font-medium transition ${
+                  period === p
+                    ? "bg-storesight-primary/10 text-storesight-primary dark:bg-storesight-accent/20 dark:text-storesight-accent-light"
+                    : "text-storesight-ink-muted hover:text-storesight-primary dark:text-storesight-ink-muted-dark"
+                }`}
+              >
+                {p === "week" ? "Weekly" : "Monthly"}
+              </button>
+            ))}
+          </div>
         <button
           type="button"
           onClick={load}
@@ -117,7 +177,45 @@ export default function LeaderboardPage() {
         >
           Refresh
         </button>
+        </div>
       </div>
+
+      {isMonth && (
+        <div className="mb-4 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => stepMonth(-1)}
+            aria-label="Previous month"
+            className="rounded-lg border border-storesight-border px-2.5 py-1 text-xs font-medium text-storesight-ink-muted transition hover:border-storesight-primary/40 dark:border-storesight-border-dark dark:text-storesight-ink-muted-dark"
+          >
+            ←
+          </button>
+          <div className="min-w-32 text-center text-sm font-medium text-storesight-ink dark:text-storesight-ink-dark">
+            {monthName(month)}
+          </div>
+          <button
+            type="button"
+            onClick={() => stepMonth(1)}
+            disabled={isCurrentMonth}
+            aria-label="Next month"
+            className="rounded-lg border border-storesight-border px-2.5 py-1 text-xs font-medium text-storesight-ink-muted transition hover:border-storesight-primary/40 disabled:cursor-not-allowed disabled:opacity-40 dark:border-storesight-border-dark dark:text-storesight-ink-muted-dark"
+          >
+            →
+          </button>
+          {!isCurrentMonth && (
+            <button
+              type="button"
+              onClick={() => { setMonth(currentMonthKey()); setView("all"); }}
+              className="text-xs font-medium text-storesight-primary hover:underline dark:text-storesight-accent-light"
+            >
+              This month
+            </button>
+          )}
+          {loading && (
+            <span className="text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">Loading…</span>
+          )}
+        </div>
+      )}
 
       {error && (
         <div className="mb-4 rounded-lg border border-storesight-hot-pink/40 bg-storesight-hot-pink/10 px-4 py-2 text-sm text-storesight-hot-pink">
@@ -127,19 +225,32 @@ export default function LeaderboardPage() {
 
       {allReviewers.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-storesight-border bg-white p-10 text-center text-sm text-storesight-ink-muted dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark">
-          No reviews logged yet this week. Standings appear as reviewers mark jobs done.
+          No reviews logged {periodLabel}. Standings appear as reviewers mark jobs done.
         </div>
       ) : (
         <>
           <div className="mb-4 flex flex-wrap items-center gap-1.5">
-            <RangeChip active={view === "week"} onClick={() => setView("week")}>
-              Week
+            <RangeChip active={view === "all"} onClick={() => setView("all")}>
+              {isMonth ? "Month" : "Week"}
             </RangeChip>
-            {(data?.day_labels ?? []).map((lbl, i) => (
-              <RangeChip key={i} active={view === i} today={i === todayIdx} onClick={() => setView(i)}>
-                {lbl}
-              </RangeChip>
-            ))}
+            {isMonth ? (
+              // 31 chips would crowd the row; pick a day from the chart below.
+              view !== "all" ? (
+                <RangeChip active onClick={() => setView("all")}>
+                  {dayLabel(view)} ×
+                </RangeChip>
+              ) : (
+                <span className="ml-1 text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                  Click a day in the chart to see just that day
+                </span>
+              )
+            ) : (
+              (data?.day_labels ?? []).map((lbl, i) => (
+                <RangeChip key={i} active={view === i} today={i === todayIdx} onClick={() => setView(i)}>
+                  {lbl}
+                </RangeChip>
+              ))
+            )}
           </div>
 
           {reviewers.length === 0 ? (
@@ -179,16 +290,22 @@ export default function LeaderboardPage() {
               <div className="mb-4 text-xs font-medium uppercase tracking-wide text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
                 Daily team output
               </div>
-              <div className="flex items-end justify-between gap-2" style={{ height: 150 }}>
+              <div className={`flex items-end justify-between ${isMonth ? "gap-0.5" : "gap-2"}`} style={{ height: 150 }}>
                 {(data?.totals_by_day ?? []).map((v, i) => (
-                  <div key={i} className="flex flex-1 flex-col items-center justify-end gap-1.5">
-                    <div className="text-[11px] font-medium tabular-nums text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-                      {v}
-                    </div>
+                  <div
+                    key={i}
+                    className="flex min-w-0 flex-1 flex-col items-center justify-end gap-1.5"
+                    title={isMonth ? `${dayLabel(i)}: ${v} jobs` : undefined}
+                  >
+                    {!isMonth && (
+                      <div className="text-[11px] font-medium tabular-nums text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                        {v}
+                      </div>
+                    )}
                     <button
                       type="button"
                       onClick={() => setView(i)}
-                      aria-label={`Show ${data?.day_labels[i]}`}
+                      aria-label={`Show ${dayLabel(i)}`}
                       className={`w-full rounded-t-md transition-[height] ${
                         highlightDay === i
                           ? "bg-storesight-accent dark:bg-storesight-accent-light"
@@ -197,7 +314,8 @@ export default function LeaderboardPage() {
                       style={{ height: `${Math.max(4, (v / maxDay) * 110)}px` }}
                     />
                     <div className="text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-                      {data?.day_labels[i]}
+                      {/* Month view: label day 1 and every 5th so they don't collide. */}
+                      {isMonth ? (i === 0 || (i + 1) % 5 === 0 ? data?.day_labels[i] : "\u00a0") : data?.day_labels[i]}
                     </div>
                   </div>
                 ))}

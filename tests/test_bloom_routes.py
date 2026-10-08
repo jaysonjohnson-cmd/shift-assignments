@@ -2049,6 +2049,63 @@ def test_leaderboard_aggregates_current_week(client, monkeypatch):
     assert len(sam["days"]) == 7  # Mon–Sun breakdown
 
 
+def test_leaderboard_month_sums_days_across_weeks(client, monkeypatch):
+    """The monthly tab sums per-day counts inside the month: a week tally that
+    straddles the month boundary only contributes its in-month days, and
+    weeks from other months drop out entirely."""
+    c, token_file = client
+    _as_admin(token_file)
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(
+        roles, "list_reviewers",
+        lambda: [{"id": "r1", "name": "Sam", "email": "sam@storesight.com"}],
+    )
+    tallies = [
+        # 2026-W40 runs Mon Sep 28 – Sun Oct 4: only Oct 1–2 count for October.
+        {"id": "t1", "data": {"kind": "review_tally", "reviewer_email": "sam@storesight.com",
+                              "week": "2026-W40", "total": 10,
+                              "days": {"2026-09-29": 6, "2026-10-01": 3, "2026-10-02": 1},
+                              "resp_total": 100,
+                              "resp_days": {"2026-09-29": 60, "2026-10-01": 30, "2026-10-02": 10}}},
+        {"id": "t2", "data": {"kind": "review_tally", "reviewer_email": "sam@storesight.com",
+                              "week": "2026-W41", "total": 5, "days": {"2026-10-06": 5},
+                              "resp_total": 50, "resp_days": {"2026-10-06": 50}}},
+        # Another reviewer active only in September must not appear in October.
+        {"id": "t3", "data": {"kind": "review_tally", "reviewer_email": "alex@storesight.com",
+                              "week": "2026-W39", "total": 7, "days": {"2026-09-22": 7}}},
+    ]
+    monkeypatch.setattr(roles, "list_docs_by_kind",
+                        lambda kind, force=False: tallies if kind == "review_tally" else [])
+
+    resp = c.get("/api/shifts/leaderboard?period=month&month=2026-10")
+    assert resp.status_code == 200, resp.get_json()
+    body = resp.get_json()["data"]
+    assert body["period"] == "month" and body["month"] == "2026-10"
+    assert len(body["day_labels"]) == 31 and len(body["totals_by_day"]) == 31
+    assert [r["email"] for r in body["reviewers"]] == ["sam@storesight.com"]
+    sam = body["reviewers"][0]
+    assert sam["total"] == 9 and sam["responses"] == 90  # 3+1+5, 30+10+50
+    assert sam["days"][0] == 3 and sam["days"][5] == 5
+    assert body["best_day"] == 5  # Oct 6
+
+    sept = c.get("/api/shifts/leaderboard?period=month&month=2026-09").get_json()["data"]
+    assert len(sept["day_labels"]) == 30
+    assert {r["email"]: r["total"] for r in sept["reviewers"]} == {
+        "sam@storesight.com": 6, "alex@storesight.com": 7,
+    }
+
+
+def test_leaderboard_rejects_bad_period_and_month(client, monkeypatch):
+    c, token_file = client
+    _as_admin(token_file)
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(roles, "list_reviewers", lambda: [])
+    monkeypatch.setattr(roles, "list_docs_by_kind", lambda kind, force=False: [])
+    assert c.get("/api/shifts/leaderboard?period=year").status_code == 400
+    assert c.get("/api/shifts/leaderboard?period=month&month=2026-13").status_code == 400
+    assert c.get("/api/shifts/leaderboard?period=month&month=oct").status_code == 400
+
+
 def test_leaderboard_requires_admin(client, monkeypatch):
     c, token_file = client
     _as_reviewer(token_file, "nobody@storesight.com")

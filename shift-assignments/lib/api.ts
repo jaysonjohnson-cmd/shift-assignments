@@ -345,10 +345,20 @@ export type LeaderboardReviewer = {
   resp_days: number[];
 };
 
+export type LeaderboardPeriod = "week" | "month";
+
 export type Leaderboard = {
-  week: string;
-  week_start: string;
+  period: LeaderboardPeriod;
+  /** ISO week key ("2026-W41") — week period only. */
+  week?: string;
+  week_start?: string;
+  /** "YYYY-MM" — month period only. */
+  month?: string;
+  month_start?: string;
+  /** Mon–Sun for a week; "1".."31" for a month. */
   day_labels: string[];
+  /** ISO date for each entry in day_labels. */
+  day_keys: string[];
   reviewers: LeaderboardReviewer[];
   team_total: number;
   team_responses: number;
@@ -356,8 +366,19 @@ export type Leaderboard = {
   best_day: number | null;
 };
 
-export async function getLeaderboard(): Promise<Leaderboard> {
-  const resp = await call<{ data: Leaderboard }>("GET", "/api/shifts/leaderboard");
+/** Weekly standings by default (resets Monday); pass `period: "month"` and an
+ *  optional `month` ("YYYY-MM") for the monthly view. */
+export async function getLeaderboard(
+  opts: { period?: LeaderboardPeriod; month?: string } = {},
+): Promise<Leaderboard> {
+  const params = new URLSearchParams();
+  if (opts.period) params.set("period", opts.period);
+  if (opts.month) params.set("month", opts.month);
+  const qs = params.toString();
+  const resp = await call<{ data: Leaderboard }>(
+    "GET",
+    `/api/shifts/leaderboard${qs ? `?${qs}` : ""}`,
+  );
   return resp.data;
 }
 

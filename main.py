@@ -2952,23 +2952,57 @@ def _record_review_event(email, completed_at_iso, responses=0):
             roles.cache_upsert_doc("review_tally", {"id": new_id, "data": data})
 
 
+_DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+_MONTH_KEY_RE = re.compile(r"^(\d{4})-(\d{2})$")
+
+
 @app.route("/api/shifts/leaderboard", methods=["GET"])
 def api_shifts_leaderboard():
-    """Weekly reviewer leaderboard: jobs completed per reviewer for the current
-    ISO week, with a Mon–Sun daily breakdown. Visible to admins and leads."""
+    """Reviewer leaderboard: jobs completed per reviewer, with a daily
+    breakdown. Visible to admins and leads.
+
+    `period=week` (default) is the current ISO week, Mon–Sun — the board the
+    team competes on, which resets every Monday. `period=month` is a calendar
+    month (`month=YYYY-MM`, default the current one) for tracking over a longer
+    stretch. It's read from the same weekly tally docs, which are never
+    deleted, by summing their per-day counts that fall inside the month — a
+    week straddling two months contributes its days to each. The weekly reset
+    is unaffected."""
     denied = _require_admin_or_lead()
     if denied is not None:
         return denied
 
     now = datetime.datetime.now(datetime.timezone.utc)
-    week = _iso_week_key(now)
-    week_start = _week_start_utc(now)
-    day_keys = [(week_start + datetime.timedelta(days=i)).date().isoformat() for i in range(7)]
+    period = (request.args.get("period") or "week").strip().lower()
+    if period == "month":
+        month_arg = (request.args.get("month") or "").strip()
+        m = _MONTH_KEY_RE.match(month_arg)
+        if month_arg and not (m and 1 <= int(m.group(2)) <= 12):
+            return jsonify({"error": "month must be YYYY-MM"}), 400
+        year, mon = (int(m.group(1)), int(m.group(2))) if m else (now.year, now.month)
+        start = datetime.date(year, mon, 1)
+        next_start = datetime.date(year + (mon == 12), mon % 12 + 1, 1)
+        day_keys = [
+            (start + datetime.timedelta(days=i)).isoformat()
+            for i in range((next_start - start).days)
+        ]
+        day_labels = [str(i + 1) for i in range(len(day_keys))]
+        # A month spans several ISO weeks, so read every tally and let the
+        # per-day keys decide what counts.
+        keep = lambda data: True  # noqa: E731
+    elif period == "week":
+        week = _iso_week_key(now)
+        week_start = _week_start_utc(now)
+        day_keys = [(week_start + datetime.timedelta(days=i)).date().isoformat() for i in range(7)]
+        day_labels = _DAY_LABELS
+        keep = lambda data: data.get("week") == week  # noqa: E731
+    else:
+        return jsonify({"error": "period must be week or month"}), 400
 
     try:
         tallies = [
             d for d in roles.list_docs_by_kind("review_tally")
-            if (d.get("data") or {}).get("week") == week
+            if keep(d.get("data") or {})
         ]
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e)
@@ -2984,6 +3018,7 @@ def api_shifts_leaderboard():
     # Merge by reviewer: a race can leave more than one tally doc for the same
     # reviewer+week. Summing them on read means a reviewer always appears ONCE
     # with combined numbers, regardless of duplicate docs in storage.
+    n = len(day_keys)
     merged = {}
     for d in tallies:
         data = d.get("data") or {}
@@ -2992,13 +3027,22 @@ def api_shifts_leaderboard():
             continue
         days = data.get("days") or {}
         resp_days = data.get("resp_days") or {}
+        row_days = [int(days.get(k, 0)) for k in day_keys]
+        row_resp = [int(resp_days.get(k, 0)) for k in day_keys]
+        if period == "month" and not any(row_days) and not any(row_resp):
+            continue  # a tally from another month
         m = merged.setdefault(email, {"total": 0, "responses": 0,
-                                      "days": [0] * 7, "resp_days": [0] * 7})
-        m["total"] += int(data.get("total", 0))
-        m["responses"] += int(data.get("resp_total", 0))
-        for i, k in enumerate(day_keys):
-            m["days"][i] += int(days.get(k, 0))
-            m["resp_days"][i] += int(resp_days.get(k, 0))
+                                      "days": [0] * n, "resp_days": [0] * n})
+        if period == "week":
+            m["total"] += int(data.get("total", 0))
+            m["responses"] += int(data.get("resp_total", 0))
+        else:
+            # Only part of a week's tally may fall in this month.
+            m["total"] += sum(row_days)
+            m["responses"] += sum(row_resp)
+        for i in range(n):
+            m["days"][i] += row_days[i]
+            m["resp_days"][i] += row_resp[i]
 
     reviewers = []
     for email, m in merged.items():
@@ -3014,17 +3058,24 @@ def api_shifts_leaderboard():
         })
     reviewers.sort(key=lambda r: (-r["total"], r["name"]))
 
-    totals_by_day = [sum(r["days"][i] for r in reviewers) for i in range(7)]
-    return jsonify({"data": {
-        "week": week,
-        "week_start": week_start.date().isoformat(),
-        "day_labels": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+    totals_by_day = [sum(r["days"][i] for r in reviewers) for i in range(n)]
+    body = {
+        "period": period,
+        "day_labels": day_labels,
+        "day_keys": day_keys,
         "reviewers": reviewers,
         "team_total": sum(r["total"] for r in reviewers),
         "team_responses": sum(r["responses"] for r in reviewers),
         "totals_by_day": totals_by_day,
-        "best_day": max(range(7), key=lambda i: totals_by_day[i]) if any(totals_by_day) else None,
-    }})
+        "best_day": max(range(n), key=lambda i: totals_by_day[i]) if any(totals_by_day) else None,
+    }
+    if period == "week":
+        body["week"] = week
+        body["week_start"] = week_start.date().isoformat()
+    else:
+        body["month"] = f"{year:04d}-{mon:02d}"
+        body["month_start"] = day_keys[0]
+    return jsonify({"data": body})
 
 
 def _parse_iso_utc(value):
