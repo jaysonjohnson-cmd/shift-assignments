@@ -68,11 +68,13 @@ export function Podium({
   // Display order is 2nd, 1st, 3rd, but barHeights is indexed by RANK
   // (0 = winner → tallest), not by where it sits on screen.
   const order = [1, 0, 2].filter((i) => top3[i]);
-  const barHeights = compact ? [78, 53, 40] : [130, 88, 66];
-  const frameHeight = compact ? 140 : 190;
+  const barHeights = compact ? [60, 40, 28] : [110, 74, 52];
 
+  // No fixed height: each column is ~140px of medal/avatar/labels on top of
+  // its bar, so a fixed frame let the winner's column spill out the top of
+  // the tile. items-end keeps the bars sharing one baseline.
   return (
-    <div className="flex items-end justify-center gap-3" style={{ height: frameHeight }}>
+    <div className="flex items-end justify-center gap-3">
       {order.map((idx) => {
         const r = top3[idx];
         const c = podiumColor(r);
