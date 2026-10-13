@@ -6,6 +6,7 @@ import { closeMyShift, getMyTasks, markTaskDone } from "@/lib/api";
 import { useUser } from "@/lib/useUser";
 import { reviewerColor, type Row } from "@/lib/types";
 import { OpenInReviewButton } from "@/components/OpenInReviewButton";
+import { describeLoads, planLoads } from "@/lib/loadPlan";
 import { MarkDoneButton } from "@/components/MarkDoneButton";
 import { Confetti } from "@/components/Confetti";
 import { formatRelative, formatPending } from "@/lib/relativeTime";
@@ -219,6 +220,8 @@ export default function MyTasksPage() {
     jobIds: string[];
     doneIds: string[];
     unreviewed: number;
+    /** Teammates still on a split job — the block asks "finished your share?". */
+    splitPartners?: string[];
   } | null>(null);
 
   useEffect(() => {
@@ -482,7 +485,14 @@ export default function MyTasksPage() {
                 accentColor={reviewerColor({ color: state.color ?? undefined, email: user?.email })}
                 onChange={(iso, jobIds) => handleRowChange(jobIds, iso)}
                 onBlocked={(jobIds, unreviewed, doneIds) =>
-                  setBlockedModal({ jobIds, doneIds, unreviewed })
+                  setBlockedModal({
+                    jobIds,
+                    doneIds,
+                    unreviewed,
+                    splitPartners: (row.splitPartners ?? [])
+                      .filter((p) => !p.done)
+                      .map((p) => p.name || p.email.split("@")[0]),
+                  })
                 }
               />
             ))}
@@ -495,6 +505,7 @@ export default function MyTasksPage() {
         <BlockedConfirmationModal
           unreviewed={blockedModal.unreviewed}
           jobId={blockedModal.jobIds[0]}
+          splitPartners={blockedModal.splitPartners}
           onConfirm={async () => {
             try {
               // One at a time: each completion makes several Storage API calls.
@@ -524,11 +535,14 @@ export default function MyTasksPage() {
 function BlockedConfirmationModal({
   unreviewed,
   jobId,
+  splitPartners = [],
   onConfirm,
   onCancel,
 }: {
   unreviewed: number;
   jobId: string;
+  /** Teammates still sharing this job. Non-empty → "finished your share?". */
+  splitPartners?: string[];
   onConfirm: () => Promise<void>;
   onCancel: () => void;
 }) {
@@ -538,6 +552,9 @@ function BlockedConfirmationModal({
   // copy ("came in while marking this job done") read like a timing quirk
   // either way — one reviewer skipped 33 responses on that wording.
   const heavy = unreviewed >= SKIP_WARNING_THRESHOLD;
+  // On a shared job the remaining responses are expected — they're the
+  // teammates' share. The question is only whether this reviewer did theirs.
+  const shared = splitPartners.length > 0;
 
   const handleConfirm = async () => {
     setConfirming(true);
@@ -548,7 +565,7 @@ function BlockedConfirmationModal({
     }
   };
 
-  const tint = heavy ? "#FF4D4D" : "#FFA500";
+  const tint = heavy && !shared ? "#FF4D4D" : "#FFA500";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
@@ -561,10 +578,21 @@ function BlockedConfirmationModal({
           </div>
           <div className="min-w-0 flex-1">
             <h3 className="font-semibold text-storesight-ink-dark dark:text-storesight-ink-dark">
-              {heavy ? "This job isn't finished" : "Responses still unreviewed"}
+              {shared
+                ? "Finished your share?"
+                : heavy ? "This job isn't finished" : "Responses still unreviewed"}
             </h3>
             <p className="mt-1 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-              {heavy ? (
+              {shared ? (
+                <>
+                  <strong className="text-storesight-ink dark:text-storesight-ink-dark">
+                    {unreviewed} response{unreviewed === 1 ? "" : "s"}
+                  </strong>{" "}
+                  {unreviewed === 1 ? "is" : "are"} still pending on this shared job.
+                  Only confirm if you&apos;ve reviewed your whole share — what&apos;s
+                  left stays with {splitPartners.join(", ")}.
+                </>
+              ) : heavy ? (
                 <>
                   <strong className="text-storesight-ink dark:text-storesight-ink-dark">
                     {unreviewed} responses
@@ -580,7 +608,9 @@ function BlockedConfirmationModal({
               )}
             </p>
             <p className="mt-2 text-[12px] leading-snug text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-              {heavy
+              {shared
+                ? "If you pulled in responses you didn't review, your teammate may only see them with “Include in-review” ticked."
+                : heavy
                 ? "Only skip them if they can't be cleared in FieldAgent."
                 : "Clear them in FieldAgent, or skip them if they can't be cleared."}
             </p>
@@ -606,7 +636,9 @@ function BlockedConfirmationModal({
           >
             {confirming
               ? "…"
-              : heavy
+              : shared
+                ? "I finished my share"
+                : heavy
                 ? `Skip ${unreviewed} responses`
                 : "Mark done anyway"}
           </button>
@@ -776,24 +808,42 @@ function DensityToggle({
   );
 }
 
-/** "Split with Laurel, Austin (done)" chip for a job shared across reviewers. */
+/** "Split with Laurel · your share 75" chip for a job shared across reviewers. */
 function SplitBadge({ row, compact }: { row: Row; compact?: boolean }) {
   const partners = row.splitPartners ?? [];
   if (partners.length === 0) return null;
-  // Everyone still on it, you included, shares what's left.
-  const onIt = 1 + partners.filter((p) => !p.done).length;
-  const each = Math.ceil((row.unreviewedCount || 0) / onIt);
   const names = partners
     .map((p) => `${p.name || p.email.split("@")[0]}${p.done ? " (done)" : ""}`)
     .join(", ");
+  const share = row.splitShare ?? 0;
   return (
     <span
-      title={`Shared job — ${names} ${partners.length === 1 ? "is" : "are"} also on it. Collection Review keeps you off each other's responses.`}
+      title={`Shared job — ${names} ${partners.length === 1 ? "is" : "are"} also on it. Pull in only your share in Collection Review.`}
       className="inline-flex items-center gap-1 rounded border border-storesight-accent/40 bg-storesight-accent/10 px-1.5 py-0.5 font-medium normal-case text-storesight-primary dark:text-storesight-accent-light"
     >
-      {compact ? `Split ×${partners.length + 1}` : `Split with ${names}`}
-      {onIt > 1 && !compact ? ` · ≈${each} each` : ""}
+      {compact ? `Split · ${share}` : `Split with ${names} · your share ${share}`}
     </span>
+  );
+}
+
+/**
+ * How to pull in exactly your share of a split job. Collection Review checks
+ * out one Load size of responses per Search / Load more, and with "Include
+ * in-review" unticked nobody sees what a teammate already pulled — so the
+ * loads are what divide the job.
+ */
+function SplitLoadHint({ row }: { row: Row }) {
+  const partners = row.splitPartners ?? [];
+  if (partners.length === 0) return null;
+  const loads = planLoads(row.splitShare ?? 0);
+  const everyoneElseDone = partners.every((p) => p.done);
+  return (
+    <p className="mt-1.5 text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+      In Collection Review, leave <strong>Include in-review</strong> unticked.{" "}
+      {everyoneElseDone
+        ? "Your partner is done — pull in whatever is left."
+        : `${describeLoads(loads)}.`}
+    </p>
   );
 }
 
@@ -1006,6 +1056,7 @@ function TaskCard({
             </a>
           ))}
         </div>
+        <SplitLoadHint row={row} />
       </div>
       <div className="flex flex-col items-end gap-1.5">
         {!completed && <OpenInReviewButton row={row} size="sm" variant="primary" disabled={isProcessing} />}

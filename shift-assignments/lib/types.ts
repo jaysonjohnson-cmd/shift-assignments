@@ -19,6 +19,10 @@ export type Row = {
   /** My Tasks only: the teammates still sharing this job, and whether each
    *  has checked it off. */
   splitPartners?: { email: string; name: string; done: boolean }[];
+  /** My Tasks only: the job's response count when it was split. */
+  splitTotal?: number;
+  /** My Tasks only: this reviewer's cut of splitTotal — how much to pull in. */
+  splitShare?: number;
 };
 
 export type ProjectSummary = {

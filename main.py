@@ -1481,8 +1481,7 @@ def api_shifts_publish():
         for email in reviewer_emails:
             done = completed_by_email.get(email, set())
             # Jobs this publish splits with this reviewer.
-            split_here = {_job_key(r): _split_sharers(r)
-                          for r in normalized[email] if _split_sharers(r)}
+            split_here = {_job_key(r): r for r in normalized[email] if _split_sharers(r)}
             kept = []
             stamped = 0
             for r in _dedup_rows(existing_jobs_by_email.get(email, [])):
@@ -1491,9 +1490,13 @@ def api_shifts_publish():
                 if _job_key(r) in done or int(r.get("unreviewedCount") or 0) > 0:
                     # A job they already hold that is now being split: same
                     # row, newly marked as shared.
-                    sharers = split_here.get(_job_key(r))
+                    split_row = split_here.get(_job_key(r))
+                    sharers = _split_sharers(split_row)
                     if sharers and _job_key(r) not in done and _split_sharers(r) != sharers:
-                        r = {**r, "splitWith": sharers}
+                        # Take the split's count too, so every sharer's share
+                        # is cut from the same total.
+                        r = {**r, "splitWith": sharers,
+                             "unreviewedCount": split_row.get("unreviewedCount", r.get("unreviewedCount"))}
                         stamped += 1
                     kept.append(r)
             stamped_by_email[email] = stamped
@@ -2085,6 +2088,10 @@ def api_shifts_my():
             **row,
             "completedAt": completion.get("completed_at") if completion else None,
         }
+        if _split_sharers(row):
+            # Shares are cut from the count at hand-out, before the live overlay
+            # below replaces it — so a share doesn't shrink as the job is worked.
+            item["splitTotal"] = int(row.get("unreviewedCount") or 0)
         # Only override jobs we can identify in the live feed by jobId; rows
         # without a jobId (legacy) keep their stored count untouched.
         jid = str(row.get("jobId") or "")
@@ -2174,12 +2181,24 @@ def api_shifts_my():
     })
 
 
+def _split_shares(total, sharers):
+    """{email: responses} — `total` cut evenly across `sharers` in email order,
+    the first few taking one extra when it doesn't divide."""
+    base, extra = divmod(max(0, int(total)), len(sharers))
+    return {e: base + (1 if i < extra else 0) for i, e in enumerate(sorted(sharers))}
+
+
 def _attach_split_partners(snap_id, email, items, roster):
     """Give each split row in `items` a `splitPartners` list — the teammates
-    still sharing it, with whether they've checked it off — so My Tasks can say
-    who else is on the job. Teammates who no longer hold it (removed, closed
-    out) are left off; a split down to one person reads as a normal job.
-    Best-effort: a failed read leaves the rows without partners."""
+    still sharing it, with whether they've checked it off — and `splitShare`,
+    this reviewer's cut of the job's responses at hand-out.
+
+    Collection Review hands out responses in loads (Search / Load more), so
+    the share is what tells each sharer how much to pull in. It's cut across
+    whoever still holds the job: a teammate who was removed or closed out
+    drops off, and their share goes back to the rest. A split down to one
+    person reads as a normal job. Best-effort: a failed read leaves the rows
+    as they are."""
     if not any(_split_sharers(it) for it in items):
         return
     try:
@@ -2200,8 +2219,11 @@ def _attach_split_partners(snap_id, email, items, roster):
         ]
         if partners:
             it["splitPartners"] = partners
+            sharers = [email] + [p["email"] for p in partners]
+            it["splitShare"] = _split_shares(it.get("splitTotal", 0), sharers)[email]
         else:
             it.pop("splitWith", None)
+            it.pop("splitTotal", None)
 
 
 def _job_key(row):
@@ -3333,9 +3355,13 @@ def api_shifts_my_complete():
     if row is None:
         return jsonify({"error": "That job isn't on your shift."}), 404
 
-    # A split job still has responses while a teammate works their half, so the
-    # unreviewed guard below would block the first sharer to finish. It only
-    # applies to whoever is last on the job.
+    # A split job still has responses while a teammate works their half, so
+    # the guard below can't tell a finished share from an untouched one — and
+    # Bloom doesn't record who reviewed what, so nothing else can either. A
+    # sharer with teammates still on the job therefore gets a "finished your
+    # share?" confirmation instead of the plain block; confirming is the same
+    # override, recorded on the completion. (Skipping the guard outright let
+    # a sharer check off a job with nothing reviewed — production 2026-10-13.)
     open_partners = []
     if _split_sharers(row):
         try:
@@ -3349,10 +3375,20 @@ def api_shifts_my_complete():
     # can lag, so only block after confirming against a fresh pull. The reviewer
     # can override (e.g. when responses are unreviewable due to the FieldAgent
     # alt-picture bug) by re-submitting with override=true.
-    if not body.get("override") and not open_partners:
+    if not body.get("override"):
         remaining = _live_unreviewed_count(job_id)
         if remaining:
             remaining = _live_unreviewed_count(job_id, force=True)
+        if remaining and open_partners:
+            return jsonify({
+                "error": (
+                    f"This shared job still has {remaining} unreviewed "
+                    f"response{'s' if remaining != 1 else ''} — confirm you've "
+                    "finished your share before marking it done."
+                ),
+                "unreviewed": remaining,
+                "split": True,
+            }), 409
         if remaining:
             return jsonify({
                 "error": (

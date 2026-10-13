@@ -180,12 +180,20 @@ def _live_split_shift(storage, monkeypatch, live_unreviewed, reviewed_total=None
     return credited
 
 
-def test_first_sharer_can_check_off_while_teammate_works(client, storage, monkeypatch):
+def test_first_sharer_confirms_their_share_while_teammate_works(client, storage, monkeypatch):
+    """Bloom can't say who reviewed what, so a sharer checking off with responses
+    left is asked to confirm their share is done — never waved through, which
+    let a sharer check off a job with nothing reviewed."""
     c, token_file = client
     credited = _live_split_shift(storage, monkeypatch, live_unreviewed=40, reviewed_total=60)
     token_file.write_text(_token(SAM))
-    resp = c.post("/api/shifts/my/complete", json={"job_id": "BIG"})
+    blocked = c.post("/api/shifts/my/complete", json={"job_id": "BIG"})
+    assert blocked.status_code == 409
+    assert blocked.get_json()["split"] is True
+    assert blocked.get_json()["unreviewed"] == 40
+    resp = c.post("/api/shifts/my/complete", json={"job_id": "BIG", "override": True})
     assert resp.status_code == 201, resp.get_json()
+    assert resp.get_json()["data"]["overridden"] is True
     # 60 reviewed so far, Alex still on it: Sam takes half.
     assert credited == [(SAM, 30)]
 
@@ -194,18 +202,20 @@ def test_last_sharer_is_still_held_to_the_guard(client, storage, monkeypatch):
     c, token_file = client
     _live_split_shift(storage, monkeypatch, live_unreviewed=40, reviewed_total=60)
     token_file.write_text(_token(SAM))
-    assert c.post("/api/shifts/my/complete", json={"job_id": "BIG"}).status_code == 201
+    assert c.post("/api/shifts/my/complete",
+                  json={"job_id": "BIG", "override": True}).status_code == 201
     token_file.write_text(_token(ALEX))
     resp = c.post("/api/shifts/my/complete", json={"job_id": "BIG"})
     assert resp.status_code == 409
     assert resp.get_json()["unreviewed"] == 40
+    assert "split" not in resp.get_json()  # last one on it: the normal block
 
 
 def test_last_sharer_is_credited_the_remainder(client, storage, monkeypatch):
     c, token_file = client
     credited = _live_split_shift(storage, monkeypatch, live_unreviewed=40, reviewed_total=60)
     token_file.write_text(_token(SAM))
-    c.post("/api/shifts/my/complete", json={"job_id": "BIG"})
+    c.post("/api/shifts/my/complete", json={"job_id": "BIG", "override": True})
     # Alex clears the rest: 100 reviewed in all, 30 already credited to Sam.
     monkeypatch.setattr(main, "_live_unreviewed_count", lambda job_id, force=False: 0)
     monkeypatch.setattr(main.bloom, "count_reviewed_since", lambda job_id, since: 100)
@@ -221,6 +231,33 @@ def test_my_tasks_names_split_partners(client, storage, monkeypatch):
     token_file.write_text(_token(SAM))
     rows = c.get("/api/shifts/my").get_json()["data"]["rows"]
     assert rows[0]["splitPartners"] == [{"email": ALEX, "name": "Alex", "done": False}]
+    assert rows[0]["splitShare"] == 50
+
+
+def test_split_share_holds_while_the_job_is_worked(client, storage, monkeypatch):
+    """Shares come from the count at hand-out: reviewing doesn't shrink them."""
+    c, token_file = client
+    _live_split_shift(storage, monkeypatch, live_unreviewed=40)
+    monkeypatch.setattr(main, "_live_counts_by_job", lambda: {
+        "BIG": {"reviewable": 40, "new": 40, "aged": 0, "possibleReject": 0}})
+    token_file.write_text(_token(ALEX))
+    row = c.get("/api/shifts/my").get_json()["data"]["rows"][0]
+    assert row["unreviewedCount"] == 40
+    assert row["splitShare"] == 50
+
+
+def test_uneven_split_gives_the_extra_response_to_one_sharer():
+    assert main._split_shares(151, [SAM, ALEX]) == {ALEX: 76, SAM: 75}
+
+
+def test_merge_split_cuts_every_share_from_the_same_total(client, storage):
+    c, token_file = client
+    token_file.write_text(_token(roles.ROOT_ADMIN_EMAIL))
+    c.post("/api/shifts/publish", json={"assignments": {SAM: [_job("BIG", 90)]}})
+    split = [SAM, ALEX]
+    c.post("/api/shifts/publish", json={"assignments": {
+        SAM: [_job("BIG", 150, split=split)], ALEX: [_job("BIG", 150, split=split)]}})
+    assert _rows_of(storage, SAM)[0]["unreviewedCount"] == 150
 
 
 def test_partner_who_left_the_job_drops_off_the_split(client, storage, monkeypatch):
@@ -232,3 +269,4 @@ def test_partner_who_left_the_job_drops_off_the_split(client, storage, monkeypat
     rows = c.get("/api/shifts/my").get_json()["data"]["rows"]
     assert "splitPartners" not in rows[0]
     assert "splitWith" not in rows[0]
+    assert "splitShare" not in rows[0]

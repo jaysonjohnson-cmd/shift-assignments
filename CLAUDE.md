@@ -426,8 +426,15 @@ to let the job sit on several shifts.
   cross-reviewer dedupe lets a job repeat only when every copy agrees on that
   list and names its own reviewer; anything else is deduped as before. A
   merge-publish never splits a job without everyone already holding it.
-- The "still has unreviewed responses" guard on check-off is skipped while a
-  teammate is still on the job, and applies to whoever is last.
+- Collection Review divides the work by *loads*: each Search / Load more
+  checks out one Load size (25/50/100/200) to whoever clicked, and with
+  "Include in-review" unticked nobody sees a teammate's loads. So My Tasks
+  gives each sharer a fixed share (`splitShare`, cut from the count at
+  hand-out) and the loads that add up to it (`lib/loadPlan.ts`).
+- Checking off while teammates are still on the job asks "finished your
+  share?" (a 409 with `split: true`; confirming is the normal override). It
+  used to skip the guard outright, and a sharer checked off a job with nothing
+  reviewed. Whoever is last gets the plain unreviewed-responses block.
 - Bloom's reviewed count isn't per-person, so leaderboard credit is divided:
   each finisher takes an even share of what's not yet credited, the last takes
   the remainder (`credited_responses` on the completion doc).
