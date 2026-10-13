@@ -17,3 +17,6 @@ venv/
 
 # Accidentally-committed nested git backup dir
 .git.backup-parent/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
