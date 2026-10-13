@@ -12,7 +12,7 @@ import { useStore } from "@/lib/store";
 import { useUser } from "@/lib/useUser";
 import { useReviewerSync } from "@/lib/useReviewerSync";
 import { getBloomJobs, getBloomProjects, publishShift, clearShift, getShiftJobs, getSubmissionAges, type ShiftJobs } from "@/lib/api";
-import { assignShift, pinnedCountsByReviewer, plannedTotal } from "@/lib/assign";
+import { activeSplitSharers, assignShift, pinnedCountsByReviewer, plannedTotal, splitJidCounts } from "@/lib/assign";
 import {
   emptyShiftDraft,
   EXCLUDED_CLIENTS,
@@ -301,7 +301,7 @@ export default function AssignmentsPage() {
         oldestSubmission: agedSubDates[String(r.jobId || r.id || "")] || r.oldestSubmission || "",
       }));
       const result = assignShift(poolWithDates, draft, prioritizeFilter, balanceByResponses, prioritizeUrgency, prioritizeAged);
-      const byEmail = toEmailMap(result.assignments, reviewers);
+      const byEmail = toEmailMap(result.assignments, reviewers, draft);
       const resp = await publishShift(byEmail, {
         prioritizeNew: prioritizeFilter,
         balanceByResponses,
@@ -320,7 +320,7 @@ export default function AssignmentsPage() {
         result.assignments,
         reviewers,
         draft,
-        pinnedCountsByReviewer(poolWithDates, draft),
+        withSplitCounts(pinnedCountsByReviewer(poolWithDates, draft), splitJidCounts(poolWithDates, draft).byReviewer),
       );
       setMode({
         kind: "summary",
@@ -607,14 +607,33 @@ function canPublishShift(draft: ShiftDraft, pool: Row[]): boolean {
 function toEmailMap(
   byReviewerId: Record<string, Row[]>,
   reviewers: Reviewer[],
+  draft: ShiftDraft,
 ): Record<string, Row[]> {
   const byId = new Map(reviewers.map((r) => [r.id, r.email]));
   const out: Record<string, Row[]> = {};
   for (const [reviewerId, rows] of Object.entries(byReviewerId)) {
     const email = byId.get(reviewerId);
     if (!email) continue;
-    out[email] = [...(out[email] ?? []), ...rows];
+    // Each copy of a split job names everyone sharing it, which is what lets
+    // the backend accept the same job on more than one reviewer.
+    const stamped = rows.map((r) => {
+      const sharers = activeSplitSharers(draft, String(r.jobId || r.id || ""))
+        .map((id) => byId.get(id))
+        .filter((e): e is string => !!e);
+      return sharers.length >= 2 ? { ...r, splitWith: sharers } : r;
+    });
+    out[email] = [...(out[email] ?? []), ...stamped];
   }
+  return out;
+}
+
+/** Pinned JID counts plus split JIDs, per reviewer — everything on top of the count. */
+function withSplitCounts(
+  pinned: Record<string, number>,
+  split: Record<string, number>,
+): Record<string, number> {
+  const out = { ...pinned };
+  for (const [id, n] of Object.entries(split)) out[id] = (out[id] ?? 0) + n;
   return out;
 }
 

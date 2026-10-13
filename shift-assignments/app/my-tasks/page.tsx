@@ -57,7 +57,9 @@ function pickRandomMessageIndex(): number {
 function groupByProject(rows: Row[]): Row[] {
   const buckets = new Map<string, Row[]>();
   for (const r of rows) {
-    const key = r.projectId || r.id;
+    // A split job always stays its own card: the group would open the whole
+    // project in Collection Review, and teammates may hold its other jobs.
+    const key = r.splitPartners?.length ? `split:${r.jobId || r.id}` : r.projectId || r.id;
     const list = buckets.get(key);
     if (list) list.push(r);
     else buckets.set(key, [r]);
@@ -774,6 +776,27 @@ function DensityToggle({
   );
 }
 
+/** "Split with Laurel, Austin (done)" chip for a job shared across reviewers. */
+function SplitBadge({ row, compact }: { row: Row; compact?: boolean }) {
+  const partners = row.splitPartners ?? [];
+  if (partners.length === 0) return null;
+  // Everyone still on it, you included, shares what's left.
+  const onIt = 1 + partners.filter((p) => !p.done).length;
+  const each = Math.ceil((row.unreviewedCount || 0) / onIt);
+  const names = partners
+    .map((p) => `${p.name || p.email.split("@")[0]}${p.done ? " (done)" : ""}`)
+    .join(", ");
+  return (
+    <span
+      title={`Shared job — ${names} ${partners.length === 1 ? "is" : "are"} also on it. Collection Review keeps you off each other's responses.`}
+      className="inline-flex items-center gap-1 rounded border border-storesight-accent/40 bg-storesight-accent/10 px-1.5 py-0.5 font-medium normal-case text-storesight-primary dark:text-storesight-accent-light"
+    >
+      {compact ? `Split ×${partners.length + 1}` : `Split with ${names}`}
+      {onIt > 1 && !compact ? ` · ≈${each} each` : ""}
+    </span>
+  );
+}
+
 function TaskCard({
   row,
   onChange,
@@ -853,6 +876,7 @@ function TaskCard({
             {row.unreviewedCount}
             {grouped && jobCount > 1 ? ` · ${jobCount}j` : ""}
           </span>
+          <SplitBadge row={row} compact />
           {rejectLinks(row).map((l) => (
             <a
               key={l.jobId ?? "job"}
@@ -965,6 +989,7 @@ function TaskCard({
             {row.unreviewedCount} unreviewed
             {grouped && jobCount > 1 ? ` · ${jobCount} jobs` : ""}
           </span>
+          <SplitBadge row={row} />
           {rejectLinks(row).map((l) => (
             <a
               key={l.jobId ?? "job"}

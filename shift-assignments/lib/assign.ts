@@ -164,6 +164,20 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
     dedupedPool.push(row);
   }
 
+  // Split jobs go to every reviewer sharing them, on top of their count like a
+  // pin, and leave the pool so nobody else is handed them. This is the one
+  // place a job deliberately lands on more than one reviewer — Collection
+  // Review keeps the sharers off each other's responses.
+  const splitByReviewer: Record<string, Row[]> = {};
+  const splitKeys = new Set<string>();
+  for (const row of dedupedPool) {
+    const key = String(row.jobId || row.id || "");
+    const sharers = activeSplitSharers(draft, key);
+    if (sharers.length < 2) continue;
+    splitKeys.add(key);
+    for (const rid of sharers) (splitByReviewer[rid] ??= []).push(row);
+  }
+
   // reviewerId for each pinned projectId (first slot wins if somehow dup'd).
   const pinOwner = new Map<string, string>();
   for (const slot of draft.slots) {
@@ -176,6 +190,7 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
   const pinnedByReviewer: Record<string, Row[]> = {};
   const unpinned: Row[] = [];
   for (const row of dedupedPool) {
+    if (splitKeys.has(String(row.jobId || row.id || ""))) continue;
     const owner = pinOwner.get(row.projectId);
     if (owner) {
       (pinnedByReviewer[owner] ??= []).push(row);
@@ -193,7 +208,7 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
     // Pins are extra work, not part of the count: the whole count still comes
     // from the unpinned pool.
     unpinnedNeeded[slot.reviewerId] = Math.max(0, Math.floor(slot.count));
-    assignments[slot.reviewerId] = [...pinned];
+    assignments[slot.reviewerId] = [...pinned, ...(splitByReviewer[slot.reviewerId] ?? [])];
   }
 
   // Weighted Round-Robin with optional two-tier distribution:
@@ -260,7 +275,15 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
           (sum, row) => sum + (row.unreviewedCount ?? 0),
           0
         );
-        responseCountByReviewer.set(slot.reviewerId, pinnedCount);
+        // A split job weighs on each sharer by their share of it, not all of it.
+        const splitShare = (splitByReviewer[slot.reviewerId] ?? []).reduce(
+          (sum, row) =>
+            sum +
+            (row.unreviewedCount ?? 0) /
+              activeSplitSharers(draft, String(row.jobId || row.id || "")).length,
+          0,
+        );
+        responseCountByReviewer.set(slot.reviewerId, pinnedCount + splitShare);
       }
 
       // A project belongs to whoever gets its first job; the rest follow, so a
@@ -463,6 +486,43 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
     return !placedKeys.has(key);
   });
   return { assignments, leftover };
+}
+
+/**
+ * The reviewers sharing a split job who are actually on this shift, in slot
+ * order. Fewer than two means the job isn't split (a sharer was removed).
+ */
+export function activeSplitSharers(draft: ShiftDraft, jobKey: string): string[] {
+  const wanted = new Set(draft.jobSplits?.[jobKey] ?? []);
+  if (wanted.size === 0) return [];
+  const out: string[] = [];
+  for (const slot of draft.slots) {
+    if (slot.reviewerId && wanted.has(slot.reviewerId) && !out.includes(slot.reviewerId)) {
+      out.push(slot.reviewerId);
+    }
+  }
+  return out;
+}
+
+/**
+ * Split jobs in effect for this pool: how many there are (each counted once,
+ * for the shift total) and how many each reviewer receives on top of their count.
+ */
+export function splitJidCounts(
+  pool: Row[],
+  draft: ShiftDraft,
+): { jobs: number; byReviewer: Record<string, number> } {
+  const byReviewer: Record<string, number> = {};
+  const seen = new Set<string>();
+  for (const row of pool) {
+    const key = String(row.jobId || row.id || "");
+    if (!key || seen.has(key)) continue;
+    const sharers = activeSplitSharers(draft, key);
+    if (sharers.length < 2) continue;
+    seen.add(key);
+    for (const rid of sharers) byReviewer[rid] = (byReviewer[rid] ?? 0) + 1;
+  }
+  return { jobs: seen.size, byReviewer };
 }
 
 /** What a slot actually receives: its count plus every JID in its pinned

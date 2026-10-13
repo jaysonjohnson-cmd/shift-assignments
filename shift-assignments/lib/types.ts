@@ -13,6 +13,12 @@ export type Row = {
   oldestSubmission: string;
   extras: Record<string, unknown>;
   completedAt?: string | null;
+  /** Emails of everyone sharing this job when an admin split it across
+   *  reviewers (the holder included). Absent on a normal, single-owner job. */
+  splitWith?: string[];
+  /** My Tasks only: the teammates still sharing this job, and whether each
+   *  has checked it off. */
+  splitPartners?: { email: string; name: string; done: boolean }[];
 };
 
 export type ProjectSummary = {
@@ -69,6 +75,12 @@ export type ShiftDraft = {
    * pool first before priority top-up.
    */
   projectPins: Record<string, string[]>;
+  /**
+   * Jobs split across several reviewers. Keyed by job key (jobId, else id) →
+   * the reviewerIds sharing it. Each sharer gets the job on top of their count,
+   * like a pin; Collection Review keeps them off each other's responses.
+   */
+  jobSplits?: Record<string, string[]>;
 };
 
 /**
@@ -182,5 +194,6 @@ export function emptyShiftDraft(): ShiftDraft {
     totalTarget: 0,
     assignAll: false,
     projectPins: {},
+    jobSplits: {},
   };
 }

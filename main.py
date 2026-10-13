@@ -1066,6 +1066,8 @@ _PUBLISHED_ROW_FIELDS = (
     "name",
     "unreviewedCount",
     "oldestSubmission",
+    # Emails sharing a split job (see _split_sharers). Absent on normal rows.
+    "splitWith",
 )
 
 
@@ -1340,7 +1342,14 @@ def api_shifts_publish():
             # Only assign jobs with actual reviewable responses. Jobs with only
             # auto-rejected responses (from CF) have nothing for the reviewer to do.
             if unreviewable > 0:
-                valid_rows.append(_compact_row(r))
+                row = _compact_row(r)
+                # Keep a split only if it's real and names this reviewer.
+                sharers = _split_sharers(row)
+                if sharers and key in sharers:
+                    row["splitWith"] = sharers
+                else:
+                    row.pop("splitWith", None)
+                valid_rows.append(row)
             else:
                 filtered_jobs.append((job_id, f"zero_reviewable(count={unreviewable})"))
         if filtered_jobs:
@@ -1366,13 +1375,33 @@ def api_shifts_publish():
     # Cross-reviewer dedup: if the same job somehow appears in multiple reviewers'
     # lists, keep it only for the first reviewer (alphabetical). This is a safety
     # net — the frontend already deduplicates, but belt-and-suspenders here.
+    #
+    # A split job is the one sanctioned repeat: it may appear for each reviewer
+    # its splitWith names, provided every copy agrees on who that is. A copy
+    # that disagrees is treated as an accidental duplicate and dropped.
+    split_of: dict = {}  # job key -> sharers, when every copy agrees
+    unshareable: set = set()
+    for email in sorted(normalized.keys()):
+        for r in normalized[email]:
+            jk, sharers = _job_key(r), _split_sharers(r)
+            if not jk:
+                continue
+            if jk in split_of or jk in unshareable:
+                if split_of.get(jk) != sharers:
+                    split_of.pop(jk, None)
+                    unshareable.add(jk)
+            elif sharers:
+                split_of[jk] = sharers
+            else:
+                unshareable.add(jk)  # an unsplit copy: no repeats allowed
     seen_job_keys: set = set()
     reviewer_emails = sorted(normalized.keys())
     for email in reviewer_emails:
         deduped = []
         for r in normalized[email]:
             jk = str(r.get("jobId") or r.get("id") or "")
-            if not jk or jk not in seen_job_keys:
+            shared = bool(jk) and _split_sharers(r) == split_of.get(jk) and email in split_of.get(jk, [])
+            if not jk or jk not in seen_job_keys or shared:
                 deduped.append(r)
                 if jk:
                     seen_job_keys.add(jk)
@@ -1419,6 +1448,7 @@ def api_shifts_publish():
         existing_jobs_by_email: dict = {}
         old_doc_ids_by_email: dict = {}
         all_existing_keys: set = set()
+        existing_holders: dict = {}  # job key -> emails holding it now
         for doc in all_shift_docs:
             doc_data = doc.get("data") or {}
             if doc_data.get("shift_snapshot_id") != existing_snap_id:
@@ -1430,6 +1460,7 @@ def api_shifts_publish():
             for r in rows:
                 if _job_key(r):
                     all_existing_keys.add(_job_key(r))
+                    existing_holders.setdefault(_job_key(r), set()).add(reviewer_email)
 
         try:
             all_completions = _list_completions_for_snapshot(existing_snap_id)
@@ -1446,15 +1477,39 @@ def api_shifts_publish():
 
         added_by_email: dict = {}
         live_count_by_email: dict = {}
+        stamped_by_email: dict = {}
         for email in reviewer_emails:
             done = completed_by_email.get(email, set())
+            # Jobs this publish splits with this reviewer.
+            split_here = {_job_key(r): _split_sharers(r)
+                          for r in normalized[email] if _split_sharers(r)}
             kept = []
+            stamped = 0
             for r in _dedup_rows(existing_jobs_by_email.get(email, [])):
                 if _is_excluded_job(r):
                     continue
                 if _job_key(r) in done or int(r.get("unreviewedCount") or 0) > 0:
+                    # A job they already hold that is now being split: same
+                    # row, newly marked as shared.
+                    sharers = split_here.get(_job_key(r))
+                    if sharers and _job_key(r) not in done and _split_sharers(r) != sharers:
+                        r = {**r, "splitWith": sharers}
+                        stamped += 1
                     kept.append(r)
-            new_jobs = [r for r in normalized[email] if _job_key(r) not in all_existing_keys]
+            stamped_by_email[email] = stamped
+
+            def _is_new(r):
+                k = _job_key(r)
+                if k not in all_existing_keys:
+                    return True
+                # Already on the shift: only a split adds it here, and only when
+                # this reviewer doesn't hold it yet and everyone who does is
+                # part of the split — never take a job out from under someone.
+                sharers = _split_sharers(r)
+                holders = existing_holders.get(k, set())
+                return bool(sharers) and email not in holders and holders <= set(sharers)
+
+            new_jobs = [r for r in normalized[email] if _is_new(r)]
             added_by_email[email] = new_jobs
             live_count_by_email[email] = (
                 sum(1 for r in kept if _job_key(r) not in done) + len(new_jobs)
@@ -1464,7 +1519,8 @@ def api_shifts_publish():
         # A reviewer whose picks were all already assigned (often their own
         # held or completed jobs, which the composer keeps visible for re-cuts)
         # gains nothing. Leave them untouched instead of rewriting their docs.
-        unchanged = [e for e in reviewer_emails if not added_by_email[e]]
+        unchanged = [e for e in reviewer_emails
+                     if not added_by_email[e] and not stamped_by_email[e]]
         for email in unchanged:
             logging.warning(
                 "publish: every job picked for %s is already assigned — "
@@ -1792,15 +1848,74 @@ def _rows_for_reviewer(snapshot_id, email, force=False):
     return _dedup_rows(out)
 
 
-def _job_on_reviewer_shift(snapshot_id, email, job_id):
-    """True when `job_id` is one of the reviewer's rows under this snapshot.
+def _reviewer_row_for_job(snapshot_id, email, job_id):
+    """The reviewer's row for `job_id` under this snapshot, or None.
     Checks the warm cache first and confirms a miss with a forced read."""
     target = str(job_id)
     for force in (False, True):
-        rows = _rows_for_reviewer(snapshot_id, email, force=force) or []
-        if any(_row_job_key(r) == target for r in rows):
-            return True
-    return False
+        for r in _rows_for_reviewer(snapshot_id, email, force=force) or []:
+            if _row_job_key(r) == target:
+                return r
+    return None
+
+
+def _job_on_reviewer_shift(snapshot_id, email, job_id):
+    """True when `job_id` is one of the reviewer's rows under this snapshot."""
+    return _reviewer_row_for_job(snapshot_id, email, job_id) is not None
+
+
+# ── Split JIDs ──────────────────────────────────────────────────────────────
+#
+# An admin can hand one big job to several reviewers at once. Collection Review
+# keeps them from opening the same response, so all this tool has to do is let
+# the job sit on more than one reviewer's shift. Every copy of the row carries
+# `splitWith`: the emails of everyone sharing it, the holder included.
+#
+# Anywhere that guarantees one-job-one-reviewer (publish dedupe, the refill
+# exclusion) only lets a job repeat for reviewers its splitWith names, so an
+# accidental duplicate is still caught.
+
+def _split_sharers(row):
+    """Lowercased emails sharing this row's job, or an empty list when it
+    isn't split. A split of fewer than two people isn't a split."""
+    raw = (row or {}).get("splitWith")
+    if not isinstance(raw, list):
+        return []
+    out = sorted({str(e).strip().lower() for e in raw if str(e or "").strip()})
+    return out if len(out) >= 2 else []
+
+
+def _job_holders(snapshot_id, force=False):
+    """{job_key: {email, ...}} — who holds each job on this snapshot's shift."""
+    holders = {}
+    for doc in roles.list_docs_by_kind("reviewer_shift", force=force):
+        data = doc.get("data") or {}
+        if data.get("shift_snapshot_id") != snapshot_id:
+            continue
+        email = (data.get("reviewer_email") or "").strip().lower()
+        for r in data.get("rows") or []:
+            k = _job_key(r)
+            if k:
+                holders.setdefault(k, set()).add(email)
+    return holders
+
+
+def _open_split_partners(snapshot_id, email, row, completions, force=False):
+    """Sharers of a split row, other than `email`, still working the job:
+    they hold it on this shift and haven't checked it off. Someone who was
+    removed from the job or closed out no longer holds it, so they drop out."""
+    sharers = _split_sharers(row)
+    if not sharers:
+        return []
+    holders = _job_holders(snapshot_id, force=force).get(_job_key(row), set())
+    k = _job_key(row)
+    done = {
+        (c.get("reviewer_email") or "").strip().lower()
+        for c in completions or []
+        if _completion_job_key(c) == k
+    }
+    norm = (email or "").strip().lower()
+    return [e for e in sharers if e != norm and e in holders and e not in done]
 
 
 def _dedup_rows(rows):
@@ -2032,12 +2147,11 @@ def api_shifts_my():
         else:
             logging.warning("self-heal: no eligible jobs to refill for %s", email)
     try:
-        color = next(
-            (r.get("color") for r in roles.list_reviewers() if r["email"] == email),
-            None,
-        )
-    except Exception:  # noqa: BLE001 — color lookup is best-effort
-        color = None
+        roster = roles.list_reviewers()
+    except Exception:  # noqa: BLE001 — color/name lookup is best-effort
+        roster = []
+    color = next((r.get("color") for r in roster if r["email"] == email), None)
+    _attach_split_partners(snap_id, email, enriched, roster)
     # Close-out deletes every row the reviewer had, so rows existing again means
     # someone put them back to work (an admin reassigned, or a new batch landed
     # on this snapshot). Having work outranks the mark: drop it so they get a
@@ -2058,6 +2172,36 @@ def api_shifts_my():
             "closed_out": closed_out,
         }
     })
+
+
+def _attach_split_partners(snap_id, email, items, roster):
+    """Give each split row in `items` a `splitPartners` list — the teammates
+    still sharing it, with whether they've checked it off — so My Tasks can say
+    who else is on the job. Teammates who no longer hold it (removed, closed
+    out) are left off; a split down to one person reads as a normal job.
+    Best-effort: a failed read leaves the rows without partners."""
+    if not any(_split_sharers(it) for it in items):
+        return
+    try:
+        holders = _job_holders(snap_id)
+        completions = _list_completions_for_snapshot(snap_id)
+    except Exception as exc:  # noqa: BLE001 — a read must not fail on labels
+        logging.warning("split partners lookup failed for %s: %s", email, exc)
+        return
+    names = {(r.get("email") or "").lower(): r.get("name") or "" for r in roster}
+    done = {((c.get("reviewer_email") or "").strip().lower(), _completion_job_key(c))
+            for c in completions}
+    for it in items:
+        k = _job_key(it)
+        partners = [
+            {"email": e, "name": names.get(e, ""), "done": (e, k) in done}
+            for e in _split_sharers(it)
+            if e != email and e in holders.get(k, set())
+        ]
+        if partners:
+            it["splitPartners"] = partners
+        else:
+            it.pop("splitWith", None)
 
 
 def _job_key(row):
@@ -3087,7 +3231,7 @@ def _parse_iso_utc(value):
     return ts if ts.tzinfo else ts.replace(tzinfo=datetime.timezone.utc)
 
 
-def _responses_to_credit(snap_id, snap_data, email, job_id, completion_id):
+def _responses_to_credit(snap_id, snap_data, email, job_id, completion_id, row=None):
     """How many responses a completed job is worth on the leaderboard.
 
     Counts what was actually reviewed in Bloom — approved, denied, or
@@ -3100,7 +3244,11 @@ def _responses_to_credit(snap_id, snap_data, email, job_id, completion_id):
     on this job in the same shift if there was one — a job handed back after
     new responses arrived is credited only for the new ones, not recounted.
     Falls back to the stored row count if Bloom can't be read.
+
+    A split job (pass its `row`) is credited by _split_responses_to_credit.
     """
+    if _split_sharers(row):
+        return _split_responses_to_credit(snap_id, snap_data, email, job_id, completion_id, row)
     since = _parse_iso_utc((snap_data or {}).get("published_at"))
     try:
         earlier = _list_completions_for_snapshot(snap_id, include_superseded=True)
@@ -3120,6 +3268,37 @@ def _responses_to_credit(snap_id, snap_data, email, job_id, completion_id):
         if _row_job_key(r) == job_id:
             return int(r.get("unreviewedCount") or 0)
     return 0
+
+
+def _split_responses_to_credit(snap_id, snap_data, email, job_id, completion_id, row):
+    """Leaderboard credit for one sharer of a split job.
+
+    Bloom counts every human review on the job, not who did it, so crediting
+    each sharer the plain count would pay the job out once per sharer. Instead
+    the reviews not yet credited to a teammate are divided among the sharers
+    still on the job: finishing first takes an even share of what's been done
+    so far, and the last one to finish takes whatever remains. The total paid
+    out matches what Bloom counted; who did slightly more is approximate.
+    """
+    sharers = _split_sharers(row)
+    try:
+        completions = _list_completions_for_snapshot(snap_id)
+    except requests.exceptions.HTTPError:
+        completions = []
+    already = sum(
+        int(c.get("credited_responses") or 0)
+        for c in completions
+        if _completion_job_key(c) == job_id
+        and c.get("id") != completion_id
+        and (c.get("reviewer_email") or "").strip().lower() in sharers
+    )
+    on_job = 1 + len(_open_split_partners(snap_id, email, row, completions))
+    since = _parse_iso_utc((snap_data or {}).get("published_at"))
+    reviewed = bloom.count_reviewed_since(job_id, since) if since is not None else None
+    if reviewed is None:
+        # Bloom unreachable: an even share of the count at hand-out.
+        return -(-int(row.get("unreviewedCount") or 0) // len(sharers))
+    return int(round(max(0, reviewed - already) / on_job))
 
 
 @app.route("/api/shifts/my/complete", methods=["POST"])
@@ -3150,15 +3329,27 @@ def api_shifts_my_complete():
     # it would write an orphan completion that credits the leaderboard for work
     # that doesn't exist. Re-read authoritatively before refusing: a refill that
     # just landed may not be in the warm cache yet.
-    if not _job_on_reviewer_shift(snap_id, email, job_id):
+    row = _reviewer_row_for_job(snap_id, email, job_id)
+    if row is None:
         return jsonify({"error": "That job isn't on your shift."}), 404
+
+    # A split job still has responses while a teammate works their half, so the
+    # unreviewed guard below would block the first sharer to finish. It only
+    # applies to whoever is last on the job.
+    open_partners = []
+    if _split_sharers(row):
+        try:
+            open_partners = _open_split_partners(
+                snap_id, email, row, _list_completions_for_snapshot(snap_id, force=True))
+        except requests.exceptions.HTTPError:
+            open_partners = []  # can't tell — fall back to the normal guard
 
     # Guard against marking a job done while it still has unreviewed responses —
     # that usually means the reviewer hasn't actually cleared it. The cached feed
     # can lag, so only block after confirming against a fresh pull. The reviewer
     # can override (e.g. when responses are unreviewable due to the FieldAgent
     # alt-picture bug) by re-submitting with override=true.
-    if not body.get("override"):
+    if not body.get("override") and not open_partners:
         remaining = _live_unreviewed_count(job_id)
         if remaining:
             remaining = _live_unreviewed_count(job_id, force=True)
@@ -3218,8 +3409,13 @@ def api_shifts_my_complete():
     # a shift never erases the week's standings. Best-effort. See
     # _responses_to_credit for how the response count is arrived at.
     try:
-        responses = _responses_to_credit(snap_id, snap_data, email, job_id, doc_id)
+        responses = _responses_to_credit(snap_id, snap_data, email, job_id, doc_id, row=row)
         _record_review_event(email, completed_at, responses)
+        if _split_sharers(row):
+            # Recorded so the next sharer to finish is credited only for what's left.
+            doc["credited_responses"] = responses
+            internal_api.put(f"{_STORAGE_PATH}/{doc_id}", json={"data": doc})
+            roles.cache_upsert_doc("completion", {"id": doc_id, "data": doc})
     except Exception as exc:  # noqa: BLE001 — leaderboard must not break completion
         logging.warning("review tally failed for %s: %s", email, exc)
     logging.warning(
@@ -3705,6 +3901,7 @@ def api_shifts_jobs():
                 "completed": completed,
                 "oldestSubmission": r.get("oldestSubmission", ""),
                 "groupIds": r.get("groupIds", []),
+                "splitWith": _split_sharers(r),
             })
         info = roster.get(email) or {}
         jobs_by_reviewer.append({

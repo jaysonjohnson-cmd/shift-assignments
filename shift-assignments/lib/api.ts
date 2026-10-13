@@ -392,6 +392,8 @@ export type ShiftJob = {
   completed: boolean;
   oldestSubmission: string;
   groupIds: string[];
+  /** Emails sharing this job when it was split across reviewers; empty otherwise. */
+  splitWith?: string[];
 };
 
 export type ReviewerJobs = {

@@ -415,6 +415,25 @@ reviewer closing out isn't messaged. Note the Slack proxy (`/api/slack/post`)
 is channel-only by spec; passing a *user* id works because Slack routes it to
 the bot's IM with that person, which is the only DM a bot can send.
 
+## Split JIDs
+
+An admin can share one large job between two or more reviewers ("Split a JID"
+in the shift composer). It's the one sanctioned exception to one-job-one-reviewer:
+Collection Review keeps sharers off each other's responses, so the tool only has
+to let the job sit on several shifts.
+
+- Every copy of the row carries `splitWith` (all sharers' emails). Publish's
+  cross-reviewer dedupe lets a job repeat only when every copy agrees on that
+  list and names its own reviewer; anything else is deduped as before. A
+  merge-publish never splits a job without everyone already holding it.
+- The "still has unreviewed responses" guard on check-off is skipped while a
+  teammate is still on the job, and applies to whoever is last.
+- Bloom's reviewed count isn't per-person, so leaderboard credit is divided:
+  each finisher takes an even share of what's not yet credited, the last takes
+  the remainder (`credited_responses` on the completion doc).
+- After every sharer finishes, new responses on the job can come back to any of
+  them through refill, as a normal unsplit row.
+
 ## Key Files and Their Roles
 
 | File | Purpose |

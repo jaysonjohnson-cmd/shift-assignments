@@ -8,6 +8,7 @@ import {
   evenSplit,
   plannedTotal,
   rebalance,
+  splitJidCounts,
 } from "@/lib/assign";
 import {
   MAX_SLOTS_PER_SHIFT,
@@ -22,6 +23,7 @@ import {
 import { ReviewerPicker } from "./ReviewerPicker";
 import { CountEditor } from "./CountEditor";
 import { ProjectAssignmentPanel } from "./ProjectAssignmentPanel";
+import { JobSplitPanel } from "./JobSplitPanel";
 import { ReviewerMultiSelectModal } from "./ReviewerMultiSelectModal";
 
 export function ShiftComposer({
@@ -121,7 +123,7 @@ export function ShiftComposer({
   };
 
   const clearAllSlots = () => {
-    commit({ slots: [], projectPins: {} });
+    commit({ slots: [], projectPins: {}, jobSplits: {} });
     setShowClearConfirm(false);
   };
 
@@ -226,12 +228,19 @@ export function ShiftComposer({
     return out;
   }, [draft.projectPins, poolRows, projectById]);
 
-  const planned = plannedTotal(draft, pinnedJidCountByReviewer);
+  // Split JIDs ride on top of each sharer's count like pins, but leave the pool
+  // once — a job shared three ways is still one job.
+  const splitCounts = useMemo(
+    () => splitJidCounts(poolRows ?? [], draft),
+    [poolRows, draft],
+  );
+
+  const planned = plannedTotal(draft, pinnedJidCountByReviewer) + splitCounts.jobs;
   const overflow = Math.max(0, pool - planned);
-  // Pinned JIDs are handed out on top of the counts, so the counts can only be
-  // filled from what's left once they're taken out.
+  // Pinned and split JIDs are handed out on top of the counts, so the counts
+  // can only be filled from what's left once they're taken out.
   const pinnedTotal = Object.values(pinnedJidCountByReviewer).reduce((a, n) => a + n, 0);
-  const unpinnedPool = Math.max(0, pool - pinnedTotal);
+  const unpinnedPool = Math.max(0, pool - pinnedTotal - splitCounts.jobs);
 
   // Keep totalTarget bound to the unpinned pool when "Assign All" is on.
   useEffect(() => {
@@ -313,7 +322,8 @@ export function ShiftComposer({
           {draft.slots.map((slot, idx) => {
             const pinnedPids = draft.projectPins[slot.reviewerId] ?? [];
             const pinnedCount = pinnedJidCountByReviewer[slot.reviewerId] ?? 0;
-            const slotTotal = effectiveSlotCount(slot, pinnedCount);
+            const splitCount = splitCounts.byReviewer[slot.reviewerId] ?? 0;
+            const slotTotal = effectiveSlotCount(slot, pinnedCount) + splitCount;
             return (
               <li
                 key={idx}
@@ -350,7 +360,15 @@ export function ShiftComposer({
                       className="rounded-full border border-storesight-accent/50 bg-storesight-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-storesight-primary dark:text-storesight-accent-light"
                       title={`${slot.count} from the count + ${pinnedCount} pinned JIDs`}
                     >
-                      +{pinnedCount} pinned = {slotTotal}
+                      +{pinnedCount} pinned{splitCount > 0 ? "" : ` = ${slotTotal}`}
+                    </span>
+                  )}
+                  {splitCount > 0 && (
+                    <span
+                      className="rounded-full border border-storesight-accent/50 bg-storesight-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-storesight-primary dark:text-storesight-accent-light"
+                      title={`${splitCount} JID${splitCount === 1 ? "" : "s"} shared with other reviewers, on top of the count`}
+                    >
+                      +{splitCount} shared = {slotTotal}
                     </span>
                   )}
                   <button
@@ -421,6 +439,15 @@ export function ShiftComposer({
           reviewers={reviewers}
           pinsForOtherShift={pinsForOtherShift ?? new Set()}
           onChange={(nextPins) => commit({ projectPins: nextPins })}
+        />
+      )}
+
+      {poolRows && (
+        <JobSplitPanel
+          draft={draft}
+          poolRows={poolRows}
+          reviewers={reviewers}
+          onChange={(jobSplits) => commit({ jobSplits })}
         />
       )}
 

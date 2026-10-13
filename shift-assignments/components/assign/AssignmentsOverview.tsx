@@ -273,6 +273,14 @@ export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
                               </div>
                               <div className="flex items-center gap-4 shrink-0">
                                 <span className="text-right font-medium text-storesight-ink dark:text-storesight-ink-dark tabular-nums">
+                                  {(job.splitWith?.length ?? 0) > 1 && (
+                                    <span
+                                      title={`Split JID — shared by ${job.splitWith!.join(", ")}`}
+                                      className="mr-1.5 inline-flex items-center rounded-full border border-storesight-accent/40 bg-storesight-accent/10 px-1.5 py-0.5 text-[10px] font-semibold text-storesight-primary dark:text-storesight-accent-light"
+                                    >
+                                      Shared ×{job.splitWith!.length}
+                                    </span>
+                                  )}
                                   {job.unreviewedCount}
                                 </span>
                                 {job.completed ? (

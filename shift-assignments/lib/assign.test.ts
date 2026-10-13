@@ -5,6 +5,7 @@ import {
   evenSplit,
   pinnedCountsByReviewer,
   plannedTotal,
+  splitJidCounts,
 } from "./assign";
 import type { Row, ShiftDraft } from "./types";
 
@@ -295,5 +296,40 @@ describe("pins add on top of the count", () => {
     const draft = draftWith({ r1: 0 }, { r1: ["1635268"] });
     expect(plannedTotal(draft, pinnedCountsByReviewer(pool, draft))).toBe(14);
     expect(assignShift(pool, draft).assignments.r1).toHaveLength(14);
+  });
+});
+
+describe("split JIDs", () => {
+  const pool: Row[] = [
+    { ...mockRow("1", "PID-1", "BIG", 1), unreviewedCount: 240 },
+    mockRow("2", "PID-2", "JID-2", 2),
+    mockRow("3", "PID-3", "JID-3", 3),
+    mockRow("4", "PID-4", "JID-4", 4),
+    mockRow("5", "PID-5", "JID-5", 5),
+  ];
+
+  it("gives a split job to every sharer, on top of their count", () => {
+    const draft = { ...mockShift(["Saylor", "Laurel", "Austin"]), jobSplits: { BIG: ["Saylor", "Laurel"] } };
+    const { assignments } = assignShift(pool, draft);
+    const has = (who: string) => assignments[who].some((r) => r.jobId === "BIG");
+    expect(has("Saylor")).toBe(true);
+    expect(has("Laurel")).toBe(true);
+    expect(has("Austin")).toBe(false);
+    // Count of 2 each is still filled from the rest of the pool (4 jobs, 3 reviewers).
+    const others = Object.values(assignments).flat().filter((r) => r.jobId !== "BIG");
+    expect(new Set(others.map((r) => r.jobId)).size).toBe(others.length);
+    expect(others).toHaveLength(4);
+  });
+
+  it("ignores a split until two sharers are on the shift", () => {
+    const draft = { ...mockShift(["Saylor", "Laurel"]), jobSplits: { BIG: ["Saylor", "Gone"] } };
+    const { assignments } = assignShift(pool, draft);
+    const holders = Object.entries(assignments).filter(([, rows]) => rows.some((r) => r.jobId === "BIG"));
+    expect(holders.length).toBeLessThanOrEqual(1);
+  });
+
+  it("counts a split job once for the shift and once per sharer", () => {
+    const draft = { ...mockShift(["Saylor", "Laurel", "Austin"]), jobSplits: { BIG: ["Saylor", "Laurel", "Austin"] } };
+    expect(splitJidCounts(pool, draft)).toEqual({ jobs: 1, byReviewer: { Saylor: 1, Laurel: 1, Austin: 1 } });
   });
 });
