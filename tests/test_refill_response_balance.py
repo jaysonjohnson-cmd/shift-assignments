@@ -37,14 +37,21 @@ def refill(monkeypatch):
     """Wire up a reviewer with a stamped batch, returning the stored rows."""
     stored = []
 
-    def setup(feed, batch_size, batch_responses, flags=None, teammates=0):
-        """`teammates` puts others on shift; the large-job cap divides by that."""
+    def setup(feed, batch_size, batch_responses, flags=None, teammates=0,
+              own_flags=None):
+        """`teammates` puts others on shift; the large-job cap divides by that.
+
+        `flags` sits on the snapshot, as on shifts published before filters
+        were stamped per reviewer; `own_flags` stamps the reviewer's own doc.
+        """
         setup.stored = stored
         shift_docs = [{"id": "rs-0", "data": {
             "kind": "reviewer_shift", "shift_snapshot_id": "snap1",
             "reviewer_email": REVIEWER, "rows": [], "part": 0,
             "batch_size": batch_size, "batch_responses": batch_responses,
         }}]
+        if own_flags is not None:
+            shift_docs[0]["data"]["prioritization_flags"] = own_flags
         shift_docs += [{"id": f"rs-mate{i}", "data": {
             "kind": "reviewer_shift", "shift_snapshot_id": "snap1",
             "reviewer_email": f"mate{i}@storesight.com", "rows": [], "part": 0,
@@ -692,6 +699,12 @@ def test_special_job_types_matches_the_real_feed_names():
         "Competitive Program Guest Experience: Jersey Mike's",
         "Subway Guest Experience (October)",
         "Softsoap Pumpkin Harvest Hand Soap 11.25 fl oz",
+        "Walmart Delivery Mystery Shop - Standard Alcohol Purchase - October",
+        "Station Italian Sub Product Eval",
+        "Candied Baconator (Sept 2026)- DINE-IN",
+        "Candied Baconator (Sept 2026)- DRIVE-THRU",
+        # TRURANCH jobs are all Ratings & Reviews, though neither name says so.
+        'TRURANCH Collagen Sticks - 5" Collagen Sticks for Dogs - Long Lasting Healthy Joint Support Dog Trea',
     ]
     for name in matches:
         assert main._is_special_job_type(name), name
@@ -699,6 +712,8 @@ def test_special_job_types_matches_the_real_feed_names():
     # Bare-word fragments would have swept these in.
     non_matches = [
         "Storesight - September 2026 - Best Buy - Best Buy",
+        # Only the delivery mystery shops count; this one is neither R&R nor
+        # Buy & Try, and "buy" alone must not pull it in.
         "Ultrahuman Best Buy Mystery Shop US - Sept '26",
         "Storesight - September 2026 - Napa Auto Parts - Napa Auto Parts",
         # "Job 1" without the slash is a different job type entirely — this is
@@ -709,6 +724,106 @@ def test_special_job_types_matches_the_real_feed_names():
     ]
     for name in non_matches:
         assert not main._is_special_job_type(name), name
+
+
+def test_special_job_types_matches_the_public_name():
+    """The internal name often lacks the phrase; the public name agents see has
+    it. Both are live examples (JIDs 1974749 and 1975141)."""
+    assert not main._is_special_job_type(
+        "Irish Spring Original Body Wash Holiday Gift Set")
+    assert main._is_special_job_type(
+        "Irish Spring Original Body Wash Holiday Gift Set",
+        "Irish Spring: Ratings & Review")
+    assert main._is_special_job_type(
+        "Desi Natural Low Fat Milk Dahi Yogurt 32 oz Walmart RARS Template 2.0 - Alpha",
+        "Desi Natural Low Fat Milk Dahi Yogurt 32 oz: Ratings & Review")
+    assert not main._is_special_job_type("Acme Shelf Check", "FREE FOOD!")
+    assert not main._is_special_job_type("Acme Shelf Check", None)
+
+
+def test_special_job_types_refill_takes_jobs_matched_by_public_name(refill):
+    feed = _feed({"public_rr": 10, "ordinary": 10})
+    feed[0]["name"] = "Irish Spring Original Body Wash Holiday Gift Set"
+    feed[0]["publicName"] = "Irish Spring: Ratings & Review"
+    feed[1]["name"] = "Acme Shelf Check"
+    feed[1]["publicName"] = "FREE FOOD!"
+
+    added = refill(feed, batch_size=20, batch_responses=300,
+                   flags={"specialJobTypes": True})
+
+    assert [r["jobId"] for r in added] == ["public_rr"]
+
+
+def test_public_name_search_terms_cover_every_fragment():
+    """A fragment no search term contains is never fetched, so a job whose
+    public name is its only match would silently never qualify."""
+    for frag in main._SPECIAL_JOB_TYPE_FRAGMENTS:
+        assert any(term in frag for term in main.bloom.PUBLIC_NAME_SEARCH_TERMS), frag
+
+
+def test_fetch_public_names_pages_and_keeps_old_names_on_failure(monkeypatch):
+    calls = []
+
+    def fake_get(path, params=None):
+        calls.append(params)
+        assert path == "/api/jobs" and params["status"] == "A"
+        if params["public_name"] == "rating":
+            if params["page"] == 1:
+                return {"data": [{"id": i, "public_name": f"P{i}: Ratings & Review"}
+                                 for i in range(100)]}
+            return {"data": [{"id": 100, "public_name": "P100: Ratings & Review"}]}
+        if params["public_name"] == "online":
+            raise RuntimeError("upstream 500")
+        return {"data": []}
+
+    monkeypatch.setattr(internal_api, "get", fake_get)
+    monkeypatch.setitem(main.bloom._PUBLIC_NAME_CACHE, "names", {"9999": "old online job"})
+
+    names = main.bloom._fetch_public_names()
+
+    assert names["100"] == "P100: Ratings & Review"
+    assert names["5"] == "P5: Ratings & Review"
+    # "online" failed, so the previous map is carried forward under the new one.
+    assert names["9999"] == "old online job"
+    assert [c["page"] for c in calls if c["public_name"] == "rating"] == [1, 2]
+
+
+def _special_and_ordinary_feed():
+    feed = _feed({"special": 10, "ordinary": 10})
+    feed[0]["name"] = "Acme Ratings & Reviews"
+    feed[1]["name"] = "Acme Shelf Check"
+    return feed
+
+
+def test_refill_follows_the_reviewers_own_filters_over_the_snapshot(refill):
+    """A later publish for a teammate rewrites the snapshot's flags; this
+    reviewer was published on Special Job Types and must stay on it."""
+    added = refill(_special_and_ordinary_feed(), batch_size=20,
+                   batch_responses=300, flags={"specialJobTypes": False},
+                   own_flags={"specialJobTypes": True})
+    assert [r["jobId"] for r in added] == ["special"]
+
+
+def test_refill_ignores_a_teammates_special_snapshot(refill):
+    added = refill(_special_and_ordinary_feed(), batch_size=20,
+                   batch_responses=300, flags={"specialJobTypes": True},
+                   own_flags={"specialJobTypes": False})
+    assert sorted(r["jobId"] for r in added) == ["ordinary", "special"]
+
+
+def test_refill_falls_back_to_snapshot_flags_for_older_docs(refill):
+    added = refill(_special_and_ordinary_feed(), batch_size=20,
+                   batch_responses=300, flags={"specialJobTypes": True})
+    assert [r["jobId"] for r in added] == ["special"]
+
+
+def test_refill_carries_the_reviewers_filters_forward(refill):
+    own = {"specialJobTypes": True, "balanceByResponses": True}
+    refill(_special_and_ordinary_feed(), batch_size=20, batch_responses=300,
+           flags={}, own_flags=own)
+    written = [d["data"] for d in refill.stored
+               if d["data"].get("kind") == "reviewer_shift"]
+    assert written and all(d["prioritization_flags"] == own for d in written)
 
 
 def test_special_job_types_off_leaves_the_pool_alone(refill):

@@ -202,7 +202,7 @@ export default function AssignmentsPage() {
       filtered = filtered.filter((r) => Number(r.extras?.agedCount ?? 0) > 0);
     }
     if (specialJobTypes) {
-      filtered = filtered.filter((r) => isSpecialJobType(r.name));
+      filtered = filtered.filter((r) => isSpecialJobType(r.name, r.publicName));
     }
     if (pgStoreWalkOnly) {
       // Keyed off the feed's own png_store_walk flag rather than the job name,
@@ -483,7 +483,7 @@ export default function AssignmentsPage() {
                   <button
                     type="button"
                     onClick={() => setSpecialJobTypes(!specialJobTypes)}
-                    title="Only assign Ratings & Reviews, Part 1/2, Part 2/2, and other special job types"
+                    title="Only assign jobs whose internal or public name mentions Ratings & Reviews, Online, Buy & Try, Part/Job 1/2 or 2/2, Competitive Program, Guest Experience, Softsoap, Delivery Mystery Shop, Product Eval, Dine-In, Drive-Thru or TRURANCH"
                     className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
                       specialJobTypes
                         ? "border border-storesight-primary bg-storesight-primary/10 text-storesight-primary dark:border-storesight-accent-light dark:bg-storesight-accent/20 dark:text-storesight-accent-light"

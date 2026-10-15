@@ -10,7 +10,7 @@ Response shape — one Row per job with unreviewed submissions:
 
     {
       id, jobId, projectId, projectName,
-      priority, name,
+      priority, name, publicName,
       unreviewedCount, oldestSubmission,
       groupIds, extras,
     }
@@ -84,6 +84,48 @@ def _ensure_warmer_started():
         _WARMER_STARTED = True
 # Project-name cache: {project_id: name}. Shares the 60s TTL pattern.
 _PROJECT_NAME_CACHE = {"fetched_at": 0.0, "names": {}}
+
+# Public-name cache: {job_id: public_name} — the name agents see, which
+# /api/prioritized-jobs doesn't carry. The Special Job Types filter reads it
+# because the internal name often lacks the phrase: JID 1974749 is "Irish
+# Spring Original Body Wash Holiday Gift Set" internally and "Irish Spring:
+# Ratings & Review" publicly.
+#
+# Fetched by searching /api/jobs for each PUBLIC_NAME_SEARCH_TERMS entry
+# rather than paging every active job: there are ~930 of those and each page
+# takes 10-13s (one returned a 500 mid-sweep), while a search scoped to active
+# jobs returns well under 100 rows in ~10s. Even so a full refresh is a couple
+# of minutes, so it runs on a background thread and rows use whatever is
+# cached; a cold start just matches on internal names until it lands.
+_PUBLIC_NAME_CACHE = {"fetched_at": 0.0, "names": {}, "refreshing": False}
+_PUBLIC_NAME_CACHE_TTL_SECONDS = 900
+_PUBLIC_NAME_LOCK = threading.Lock()
+MAX_PUBLIC_NAME_PAGES = 5
+
+# Searched against public_name (case-insensitive substring). Must cover every
+# fragment in main._SPECIAL_JOB_TYPE_FRAGMENTS — each fragment has to contain
+# one of these, or a job whose public name is the only match is never fetched.
+# Broader than the fragments on purpose ("rating" covers all four review
+# spellings); the exact fragments are applied afterwards, so over-fetching
+# only costs a few rows. tests/test_refill_response_balance.py pins coverage.
+PUBLIC_NAME_SEARCH_TERMS = (
+    "online",
+    "rating",
+    "buy & try",
+    "buy and try",
+    "part 1",
+    "part 2",
+    "job 1/2",
+    "job 2/2",
+    "competitive program",
+    "guest experience",
+    "softsoap",
+    "delivery mystery shop",
+    "product eval",
+    "dine-in",
+    "drive-thru",
+    "truranch",
+)
 # Constants for project name pagination
 PAGE_SIZE = 100
 MAX_RG_PAGES = 50
@@ -386,6 +428,65 @@ def fetch_project_names(project_ids):
     cache["names"] = names
     cache["fetched_at"] = now
     return {pid: names.get(pid, "") for pid in ids}
+
+
+def _fetch_public_names():
+    """Search /api/jobs by public name and return {job_id: public_name}.
+
+    A term that fails is skipped, and the previous map is carried forward
+    underneath the new results so one bad search doesn't drop its jobs from
+    the filter until the next refresh.
+    """
+    names = {}
+    failed = False
+    for term in PUBLIC_NAME_SEARCH_TERMS:
+        try:
+            for page in range(1, MAX_PUBLIC_NAME_PAGES + 1):
+                resp = internal_api.get("/api/jobs", params={
+                    "public_name": term, "status": "A",
+                    "page": page, "per_page": PAGE_SIZE,
+                })
+                batch = resp.get("data", []) if isinstance(resp, dict) else []
+                for job in batch:
+                    if isinstance(job, dict) and job.get("id") not in (None, ""):
+                        names[str(job["id"])] = str(job.get("public_name") or "")
+                if len(batch) < PAGE_SIZE:
+                    break
+        except Exception as exc:  # noqa: BLE001 — public names are best-effort
+            logging.warning("public-name search %r failed: %s", term, exc)
+            failed = True
+    if failed:
+        names = {**_PUBLIC_NAME_CACHE["names"], **names}
+    return names
+
+
+def _refresh_public_names():
+    try:
+        names = _fetch_public_names()
+        _PUBLIC_NAME_CACHE["names"] = names
+        _PUBLIC_NAME_CACHE["fetched_at"] = time.time()
+        logging.info("bloom.public_names jobs=%d", len(names))
+    finally:
+        _PUBLIC_NAME_CACHE["refreshing"] = False
+
+
+def public_names():
+    """Return the cached {job_id: public_name} map, refreshing it in the
+    background when stale. Never blocks on the upstream searches.
+
+    BLOOM_WARMER=0 (tests) turns the refresh off along with the warmer.
+    """
+    if os.environ.get("BLOOM_WARMER") != "0":
+        with _PUBLIC_NAME_LOCK:
+            stale = (time.time() - _PUBLIC_NAME_CACHE["fetched_at"]
+                     >= _PUBLIC_NAME_CACHE_TTL_SECONDS)
+            if stale and not _PUBLIC_NAME_CACHE["refreshing"]:
+                _PUBLIC_NAME_CACHE["refreshing"] = True
+                threading.Thread(
+                    target=_refresh_public_names, daemon=True,
+                    name="bloom-public-names",
+                ).start()
+    return _PUBLIC_NAME_CACHE["names"]
 
 
 def clear_project_name_cache():
@@ -697,6 +798,12 @@ def _fetch_and_cache_prioritized_jobs():
         if isinstance(job, dict) and job.get("id") not in (None, "")
         and (_safe_int(job.get("new")) or 0) > 0
     ]
+
+    # The name agents see, for the Special Job Types filter. '' until the
+    # background search has found it (see _PUBLIC_NAME_CACHE).
+    names_by_job = public_names()
+    for row in rows:
+        row["publicName"] = names_by_job.get(row["jobId"], "")
 
     # Skip project name fetching on cache misses to reduce rate limit pressure.
     # Project names are nice-to-have; the UI can fall back to "Project {id}" if needed.

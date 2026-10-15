@@ -648,6 +648,12 @@ def _distribute_evenly(rows, reviewers):
     return assignments
 
 
+# Filters a scheduled publish runs with. Auto-published shifts used to carry no
+# flags at all, so every refill on them fell back to defaults; response
+# balancing is what the team wants on a scheduled run.
+_AUTO_PUBLISH_FLAGS = {"balanceByResponses": True}
+
+
 @app.route("/api/shifts/auto-publish", methods=["POST"])
 def api_shifts_auto_publish():
     """Automatically create and publish a shift.
@@ -784,10 +790,7 @@ def api_shifts_auto_publish():
             "published_at": published_at,
             "published_by": published_by,
             "reviewer_emails": list(normalized.keys()),
-            # Auto-published shifts had no flags at all, so every refill on them
-            # fell back to defaults. Response balancing is what the team wants on
-            # a scheduled run, so record it rather than leaving it implicit.
-            "prioritization_flags": {"balanceByResponses": True},
+            "prioritization_flags": _AUTO_PUBLISH_FLAGS,
         }
 
         snap_resp = internal_api.post(_STORAGE_PATH, json={"data": snapshot_data})
@@ -804,6 +807,7 @@ def api_shifts_auto_publish():
                     "part": part_num,
                     "total_parts": len(chunks),
                     "rows": chunk,
+                    "prioritization_flags": _AUTO_PUBLISH_FLAGS,
                 }
                 try:
                     internal_api.post(_STORAGE_PATH, json={"data": doc})
@@ -1556,6 +1560,10 @@ def api_shifts_publish():
                     # Response total, not just job count — auto-refill tops up to
                     # a comparable amount of work rather than a job count.
                     "batch_responses": sum(_row_responses(r) for r in live_rows),
+                    # This reviewer's own filters, so a later publish for
+                    # someone else can't rescope their top-ups. See
+                    # _auto_refill_reviewer.
+                    "prioritization_flags": flags,
                 }
                 try:
                     r = internal_api.post(_STORAGE_PATH, json={"data": doc})
@@ -1645,6 +1653,7 @@ def api_shifts_publish():
                 # Response total, not just job count — auto-refill tops up to a
                 # comparable amount of work rather than a job count.
                 "batch_responses": sum(_row_responses(r) for r in normalized[email]),
+                "prioritization_flags": flags,
             }
             try:
                 r = internal_api.post(_STORAGE_PATH, json={"data": doc})
@@ -2341,7 +2350,8 @@ _REFILL_MAX_LARGE_JOBS = 3
 _RETAIL_PIPELINE_CLIENT = "retailpipeline@fieldagent.net"
 
 # Name fragments behind the composer's "Special Job Types" filter — a
-# case-insensitive substring match on the job name. Kept in sync with
+# case-insensitive substring match on the job's internal name or its public
+# name (the one agents see), either one being enough. Kept in sync with
 # SPECIAL_JOB_TYPE_FRAGMENTS in shift-assignments/lib/types.ts; the two lists
 # must stay identical or the composer and auto-refill scope a shift
 # differently. tests/test_refill_response_balance.py pins the contents.
@@ -2374,13 +2384,22 @@ _SPECIAL_JOB_TYPE_FRAGMENTS = (
     "competitive program",
     "guest experience",
     "softsoap",
+    "delivery mystery shop",
+    "product eval",
+    "dine-in",
+    "drive-thru",
+    "truranch",
 )
 
 
-def _is_special_job_type(job_name) -> bool:
-    """True if this job name matches the composer's Special Job Types filter."""
-    name = str(job_name or "").lower()
-    return any(frag in name for frag in _SPECIAL_JOB_TYPE_FRAGMENTS)
+def _is_special_job_type(*job_names) -> bool:
+    """True if any of these names (internal, public) matches the composer's
+    Special Job Types filter."""
+    return any(
+        frag in str(name or "").lower()
+        for name in job_names
+        for frag in _SPECIAL_JOB_TYPE_FRAGMENTS
+    )
 
 # A job counts as large at 3x the eligible pool's median, floored so that a
 # queue of 1-2 response jobs doesn't make a 6-response job "large".
@@ -2653,7 +2672,15 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             _clear_refill_attempt(snap_id, norm)
             return []
 
-        # Read snapshot data to get prioritization flags for consistent refilling
+        # Filters come from the reviewer's own shift docs, stamped at publish, so
+        # one shift can hold a Special-Job-Types reviewer alongside reviewers on
+        # ordinary work. The snapshot's flags are only whatever the latest
+        # publish used, for everyone in it — reading those let a publish for one
+        # reviewer rescope everyone else's top-ups. They remain the fallback for
+        # docs written before the per-reviewer stamp.
+        own_flags = None
+        own_flags_part = -1
+
         try:
             for snap in roles.list_docs_by_kind("shift_snapshot"):
                 if snap.get("id") == snap_id:
@@ -2682,7 +2709,10 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                     projects.add(pid)
             if doc_reviewer == norm:
                 own_rows.extend(data.get("rows") or [])
-                max_part = max(max_part, int(data.get("part") or 0))
+                part = int(data.get("part") or 0)
+                max_part = max(max_part, part)
+                if isinstance(data.get("prioritization_flags"), dict) and part >= own_flags_part:
+                    own_flags, own_flags_part = data["prioritization_flags"], part
                 bs = data.get("batch_size")
                 if bs:
                     batch_size = bs if batch_size is None else min(batch_size, bs)
@@ -2691,6 +2721,9 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                     batch_responses = br if batch_responses is None else min(batch_responses, br)
                 for row in data.get("rows") or []:
                     current_queue_responses += _row_responses(row)
+
+        if own_flags is not None:
+            prioritization_flags = own_flags
 
         # A job is off-limits while it is actively sitting in someone's queue.
         # Once every holder has completed it, it drops out of the exclusion set
@@ -2826,7 +2859,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             # "Special Job Types" is likewise a hard filter on the pool at publish.
             # Without it a shift scoped to Ratings & Reviews / Part 1-2 jobs would
             # top up with everything else in the feed.
-            if special_job_types and not _is_special_job_type(r.get("name")):
+            if special_job_types and not _is_special_job_type(r.get("name"), r.get("publicName")):
                 skipped_reasons["not_special_job_type"] += 1
                 continue
             # "P&G Display Store Walk only" — same contract. Keyed off the feed's
@@ -2930,6 +2963,8 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                     "part_count": next_part + len(chunks),
                     "batch_size": count,
                     "batch_responses": base_responses,
+                    # Carried forward so the next top-up reads the same filters.
+                    "prioritization_flags": prioritization_flags,
                 }
                 try:
                     r = internal_api.post(_STORAGE_PATH, json={"data": doc})

@@ -332,6 +332,25 @@ is the cost of refills being independent rather than planned as a batch.
 The job count always fills regardless — this only decides how much of the batch
 is heavy work.
 
+**Filters are per reviewer.** The Options-panel filters (Special Job Types,
+Retail Pipeline only, P&G Store Walk, balancing, …) are stamped on each
+reviewer's own `reviewer_shift` docs at publish as `prioritization_flags`, and
+refill reads them from there — then carries them forward onto the docs it
+writes. So publishing one reviewer on Special Job Types and then a teammate on
+ordinary work keeps both as published. The snapshot's `prioritization_flags`
+still gets the latest publish's flags, but refill only falls back to it for
+docs written before the per-reviewer stamp. Re-publishing a reviewer replaces
+their filters.
+
+**Special Job Types matches two names.** A job qualifies when its internal
+name *or* its public name (the one agents see) contains a fragment from
+`_SPECIAL_JOB_TYPE_FRAGMENTS` (mirrored in `lib/types.ts`). The feed doesn't
+carry public names, so `bloom.public_names()` builds them by searching
+`/api/jobs` for each `PUBLIC_NAME_SEARCH_TERMS` entry, on a background thread
+with a 15-minute cache — ~75s a refresh, so a cold start matches internal
+names only until it lands. Adding a fragment means adding a search term that
+covers it; a test enforces that.
+
 **Work stays with whoever had it first.** A top-up never takes a job or project
 already handed to a teammate this shift, even one they've checked off. The feed
 gets new responses all day, so a finished job comes back into the pool, and it

@@ -6,6 +6,9 @@ export type Row = {
   groupIds: string[];
   priority: number;
   name: string;
+  /** The name agents see. Read by the Special Job Types filter; '' until the
+   *  backend's background public-name search has found the job. */
+  publicName?: string;
   unreviewedCount: number;
   /** Responses that can't be reviewed here (auto-rejected for distance, etc.) —
    *  cleared on the Responses page. unreviewedCount counts only reviewable work. */
@@ -96,7 +99,8 @@ export const EXCLUDED_CLIENTS = new Set<string>(["joanna.riney@menasha.com"]);
 
 /**
  * Name fragments behind the composer's "Special Job Types" filter — a
- * case-insensitive substring match on the job name. Keep in sync with
+ * case-insensitive substring match on the job's internal name or its public
+ * name (the one agents see), either one being enough. Keep in sync with
  * _SPECIAL_JOB_TYPE_FRAGMENTS in main.py, which auto-refill uses to scope a
  * Special-Job-Types shift the same way.
  *
@@ -133,12 +137,20 @@ export const SPECIAL_JOB_TYPE_FRAGMENTS = [
   "competitive program",
   "guest experience",
   "softsoap",
+  "delivery mystery shop",
+  "product eval",
+  "dine-in",
+  "drive-thru",
+  "truranch",
 ] as const;
 
-/** True when a job name matches the Special Job Types filter. */
-export function isSpecialJobType(name: string | null | undefined): boolean {
-  const n = String(name ?? "").toLowerCase();
-  return SPECIAL_JOB_TYPE_FRAGMENTS.some((f) => n.includes(f));
+/** True when any of a job's names (internal, public) matches the Special Job
+ *  Types filter. */
+export function isSpecialJobType(...names: (string | null | undefined)[]): boolean {
+  return names.some((name) => {
+    const n = String(name ?? "").toLowerCase();
+    return SPECIAL_JOB_TYPE_FRAGMENTS.some((f) => n.includes(f));
+  });
 }
 
 export const MAX_SLOTS_PER_SHIFT = 100;
