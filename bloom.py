@@ -222,6 +222,43 @@ def fetch_job_pending_count(job_id):
     return max(0, total - parked)
 
 
+MAX_PENDING_BEFORE_PAGES = 10
+
+
+def fetch_job_pending_count_before(job_id, cutoff):
+    """Pending submissions on a job that were already in by `cutoff` (aware
+    datetime) and are ours to review — fetch_job_pending_count, minus anything
+    submitted since.
+
+    A split job keeps taking submissions after it's handed out, and those
+    belong to nobody's share; counting them left the last sharer unable to
+    ever clear the job (production 2026-10-19: 160 pending, 157 of them new).
+    Pages oldest-first and stops at the first submission past the cutoff, so
+    it reads only as far as the original batch. Returns None if Bloom can't be
+    read (or the batch runs past the page cap), so the caller can fall back.
+    """
+    count = 0
+    try:
+        for page in range(1, MAX_PENDING_BEFORE_PAGES + 1):
+            resp = internal_api.get("/api/responsegroups", params={
+                "job_id": job_id, "status": "N", "sort": "submission_date",
+                "page": page, "per_page": PAGE_SIZE,
+            })
+            batch = resp.get("data", []) if isinstance(resp, dict) else []
+            for rg in batch:
+                submitted = _parse_submission_date(rg.get("submission_date"))
+                if submitted is not None and submitted > cutoff:
+                    return count
+                if rg.get("tp_review_status") != "N":  # N = parked at a third party
+                    count += 1
+            if len(batch) < PAGE_SIZE:
+                return count
+    except Exception as exc:  # noqa: BLE001 — caller falls back to the live count
+        logging.warning("pending-before lookup failed for job %s: %s", job_id, exc)
+        return None
+    return None
+
+
 # FieldAgent's automation account. Its auto-approves and auto-denies land on the
 # same response groups as human reviews, but nobody on the team did that work.
 SYSTEM_REVIEWER_ID = 90

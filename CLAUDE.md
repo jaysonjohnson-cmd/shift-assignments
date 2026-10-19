@@ -464,6 +464,12 @@ to let the job sit on several shifts.
   It once skipped the guard outright and a sharer checked off a job with
   nothing reviewed; then it asked every time and sharers sat stuck on their
   last job. Whoever is last gets the plain unreviewed-responses block.
+- "What's left" on a split job only counts responses that were in when it was
+  split (`splitAt` on the row, else the shift's publish time;
+  `bloom.fetch_job_pending_count_before`). Big jobs keep taking submissions,
+  and counting those meant the last sharer could never clear it — 160 pending,
+  157 of them new, on 2026-10-19. New arrivals go back out through refill as
+  a normal job.
 - Bloom's reviewed count isn't per-person, so leaderboard credit is divided:
   each finisher takes an even share of what's not yet credited, the last takes
   the remainder (`credited_responses` on the completion doc).

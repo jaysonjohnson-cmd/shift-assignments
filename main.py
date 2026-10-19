@@ -1072,6 +1072,8 @@ _PUBLISHED_ROW_FIELDS = (
     "oldestSubmission",
     # Emails sharing a split job (see _split_sharers). Absent on normal rows.
     "splitWith",
+    # When it was split — check-off only counts responses that were in by then.
+    "splitAt",
 )
 
 
@@ -1323,6 +1325,7 @@ def api_shifts_publish():
     if not isinstance(assignments, dict):
         return jsonify({"error": "assignments must be an object"}), 400
     flags = body.get("flags") or {}
+    split_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     normalized = {}
     for email, rows in assignments.items():
@@ -1351,8 +1354,10 @@ def api_shifts_publish():
                 sharers = _split_sharers(row)
                 if sharers and key in sharers:
                     row["splitWith"] = sharers
+                    row["splitAt"] = split_at
                 else:
                     row.pop("splitWith", None)
+                    row.pop("splitAt", None)
                 valid_rows.append(row)
             else:
                 filtered_jobs.append((job_id, f"zero_reviewable(count={unreviewable})"))
@@ -1499,7 +1504,7 @@ def api_shifts_publish():
                     if sharers and _job_key(r) not in done and _split_sharers(r) != sharers:
                         # Take the split's count too, so every sharer's share
                         # is cut from the same total.
-                        r = {**r, "splitWith": sharers,
+                        r = {**r, "splitWith": sharers, "splitAt": split_row.get("splitAt"),
                              "unreviewedCount": split_row.get("unreviewedCount", r.get("unreviewedCount"))}
                         stamped += 1
                     kept.append(r)
@@ -1910,6 +1915,23 @@ def _job_holders(snapshot_id, force=False):
             if k:
                 holders.setdefault(k, set()).add(email)
     return holders
+
+
+def _split_pending_from_handout(snap_data, row, job_id):
+    """Unreviewed responses on a split job that were already in when it was
+    split — the only ones that are anybody's share. Submissions since then
+    are new work: they go back out through refill as a normal job, and
+    counting them left the last sharer unable to ever clear it.
+
+    Rows split before `splitAt` was recorded fall back to the shift's publish
+    time. If Bloom can't be read, falls back to the plain live count."""
+    cutoff = _parse_iso_utc(row.get("splitAt")) or _parse_iso_utc(
+        (snap_data or {}).get("published_at"))
+    if cutoff is not None:
+        n = bloom.fetch_job_pending_count_before(job_id, cutoff)
+        if n is not None:
+            return n
+    return _live_unreviewed_count(job_id, force=True)
 
 
 def _teammates_share_left(snapshot_id, email, row, open_partners):
@@ -3423,9 +3445,12 @@ def api_shifts_my_complete():
     # can override (e.g. when responses are unreviewable due to the FieldAgent
     # alt-picture bug) by re-submitting with override=true.
     if not body.get("override"):
-        remaining = _live_unreviewed_count(job_id)
-        if remaining:
-            remaining = _live_unreviewed_count(job_id, force=True)
+        if _split_sharers(row):
+            remaining = _split_pending_from_handout(snap_data, row, job_id)
+        else:
+            remaining = _live_unreviewed_count(job_id)
+            if remaining:
+                remaining = _live_unreviewed_count(job_id, force=True)
         if remaining and open_partners and remaining <= _teammates_share_left(
                 snap_id, email, row, open_partners):
             # Everything left fits inside what teammates still have to do, so

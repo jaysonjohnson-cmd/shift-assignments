@@ -172,6 +172,9 @@ def _live_split_shift(storage, monkeypatch, live_unreviewed, reviewed_total=None
     monkeypatch.setattr(main, "_latest_snapshot", lambda **k: (
         "snap1", {"published_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}))
     monkeypatch.setattr(main, "_live_unreviewed_count", lambda job_id, force=False: live_unreviewed)
+    # No submissions since the split unless a test says otherwise.
+    monkeypatch.setattr(main.bloom, "fetch_job_pending_count_before",
+                        lambda job_id, cutoff: live_unreviewed)
     monkeypatch.setattr(main.bloom, "count_reviewed_since", lambda job_id, since: reviewed_total)
     monkeypatch.setattr(main, "_auto_refill_reviewer", lambda *a, **k: [])
     credited = []
@@ -243,6 +246,7 @@ def test_last_sharer_is_credited_the_remainder(client, storage, monkeypatch):
     c.post("/api/shifts/my/complete", json={"job_id": "BIG", "override": True})
     # Alex clears the rest: 100 reviewed in all, 30 already credited to Sam.
     monkeypatch.setattr(main, "_live_unreviewed_count", lambda job_id, force=False: 0)
+    monkeypatch.setattr(main.bloom, "fetch_job_pending_count_before", lambda job_id, cutoff: 0)
     monkeypatch.setattr(main.bloom, "count_reviewed_since", lambda job_id, since: 100)
     token_file.write_text(_token(ALEX))
     assert c.post("/api/shifts/my/complete", json={"job_id": "BIG"}).status_code == 201
@@ -295,3 +299,63 @@ def test_partner_who_left_the_job_drops_off_the_split(client, storage, monkeypat
     assert "splitPartners" not in rows[0]
     assert "splitWith" not in rows[0]
     assert "splitShare" not in rows[0]
+
+
+# ---------- new arrivals after the split ----------
+
+def test_split_rows_record_when_they_were_split(client, storage):
+    c, token_file = client
+    token_file.write_text(_token(roles.ROOT_ADMIN_EMAIL))
+    split = [SAM, ALEX]
+    c.post("/api/shifts/publish", json={"assignments": {
+        SAM: [_job("BIG", split=split)], ALEX: [_job("BIG", split=split), _job("J2", 5)]}})
+    stamps = {r.get("splitAt") for e in (SAM, ALEX) for r in _rows_of(storage, e)
+              if r["jobId"] == "BIG"}
+    assert len(stamps) == 1 and None not in stamps
+    assert "splitAt" not in _rows_of(storage, ALEX)[1]  # J2 isn't split
+
+
+def test_new_arrivals_do_not_block_the_last_sharer(client, storage, monkeypatch):
+    """160 pending, but only 3 were in when the job was split: the last sharer
+    is held to those 3, not to work that arrived afterwards."""
+    c, token_file = client
+    _live_split_shift(storage, monkeypatch, live_unreviewed=160, reviewed_total=60)
+    cutoffs = []
+    monkeypatch.setattr(main.bloom, "fetch_job_pending_count_before",
+                        lambda job_id, cutoff: cutoffs.append(cutoff) or 3)
+    storage[:] = [d for d in storage if d["id"] != f"rs-{ALEX}"]  # Alex is gone
+    token_file.write_text(_token(SAM))
+    resp = c.post("/api/shifts/my/complete", json={"job_id": "BIG"})
+    assert resp.status_code == 409
+    assert resp.get_json()["unreviewed"] == 3
+    assert cutoffs  # counted from the hand-out, not the live total
+    monkeypatch.setattr(main.bloom, "fetch_job_pending_count_before", lambda job_id, cutoff: 0)
+    assert c.post("/api/shifts/my/complete", json={"job_id": "BIG"}).status_code == 201
+
+
+def test_split_count_falls_back_to_live_when_bloom_is_down(client, storage, monkeypatch):
+    c, token_file = client
+    _live_split_shift(storage, monkeypatch, live_unreviewed=40, reviewed_total=60)
+    monkeypatch.setattr(main.bloom, "fetch_job_pending_count_before", lambda job_id, cutoff: None)
+    storage[:] = [d for d in storage if d["id"] != f"rs-{ALEX}"]
+    token_file.write_text(_token(SAM))
+    resp = c.post("/api/shifts/my/complete", json={"job_id": "BIG"})
+    assert resp.status_code == 409
+    assert resp.get_json()["unreviewed"] == 40
+
+
+def test_pending_before_stops_at_the_cutoff_and_skips_third_party(monkeypatch):
+    def rg(day, hour, tp=""):
+        return {"submission_date": f"{day} Oct 2026 {hour:02d}:00:00 GMT", "tp_review_status": tp}
+    rows = [rg("Mon, 19", 10), rg("Mon, 19", 11, tp="N"), rg("Mon, 19", 12),
+            rg("Mon, 19", 19), rg("Mon, 19", 20)]
+    calls = []
+
+    def fake_get(path, params=None):
+        calls.append(params)
+        return {"data": rows}
+
+    monkeypatch.setattr(internal_api, "get", fake_get)
+    cutoff = datetime.datetime(2026, 10, 19, 18, 0, tzinfo=datetime.timezone.utc)
+    assert main.bloom.fetch_job_pending_count_before("BIG", cutoff) == 2
+    assert calls[0]["sort"] == "submission_date"
