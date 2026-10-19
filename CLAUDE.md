@@ -449,13 +449,14 @@ to let the job sit on several shifts.
   checks out one Load size (25/50/100/200) to whoever clicked, and with
   "Include in-review" unticked nobody sees a teammate's loads. So My Tasks
   gives each sharer a fixed share (`splitShare`, cut from the count at
-  hand-out) and the loads that add up to it (`lib/loadPlan.ts`).
+  hand-out).
 - That alone didn't hold: on 2026-10-14 one sharer's mass-approve export pulled
   the whole job, teammate's in-review share included. FieldAgent then added a
   `work_max` param to Collection Review links, so a sharer's Open in Review
   link carries `&work_max=<splitShare>` while a teammate is still on the job
-  (`lib/reviewLink.ts`, the one place reviewer-facing CR links are built). The
-  load steps stay on the card as a fallback.
+  (`lib/reviewLink.ts`, the one place reviewer-facing CR links are built).
+  Confirmed working live 2026-10-19; the card's old load-size steps were
+  dropped once it was.
 - Checking off while teammates are still on the job asks "finished your
   share?" (a 409 with `split: true`; confirming is the normal override). It
   used to skip the guard outright, and a sharer checked off a job with nothing

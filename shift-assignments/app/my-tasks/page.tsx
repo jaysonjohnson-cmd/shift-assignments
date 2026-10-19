@@ -6,7 +6,6 @@ import { closeMyShift, getMyTasks, markTaskDone } from "@/lib/api";
 import { useUser } from "@/lib/useUser";
 import { reviewerColor, type Row } from "@/lib/types";
 import { OpenInReviewButton } from "@/components/OpenInReviewButton";
-import { describeLoads, planLoads } from "@/lib/loadPlan";
 import { collectionReviewUrl } from "@/lib/reviewLink";
 import { MarkDoneButton } from "@/components/MarkDoneButton";
 import { Confetti } from "@/components/Confetti";
@@ -817,8 +816,6 @@ function SplitBadge({ row, compact }: { row: Row; compact?: boolean }) {
 /**
  * How to pull in exactly your share of a split job. Open in Review carries
  * `work_max` (see collectionReviewUrl), which caps the reviewer at their share.
- * The load steps stay as a fallback: Collection Review checks out one Load
- * size per Search / Load more, so they add up to the same share by hand.
  */
 function SplitLoadHint({ row }: { row: Row }) {
   const partners = row.splitPartners ?? [];
@@ -832,8 +829,7 @@ function SplitLoadHint({ row }: { row: Row }) {
       ) : (
         <>
           Open in Review caps you at your {share}. Leave{" "}
-          <strong>Include in-review</strong> unticked. If the cap doesn&apos;t hold:{" "}
-          {describeLoads(planLoads(share))}.
+          <strong>Include in-review</strong> unticked.
         </>
       )}
     </p>
