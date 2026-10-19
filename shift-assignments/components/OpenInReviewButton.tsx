@@ -1,10 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { collectionReviewUrl } from "@/lib/reviewLink";
 import type { Row } from "@/lib/types";
-
-const COLLECTION_REVIEW_URL =
-  "https://prod.fieldagent.net/admin/fieldagent/collection-review/";
 
 type Props = {
   row: Row;
@@ -21,22 +19,6 @@ function buildClipboardPayload(row: Row): string {
   return `${row.projectId || row.id}`;
 }
 
-function buildUrl(row: Row): string {
-  // Scope to the EXACT job when we have one — passing the project param too
-  // makes Collection Review pull the whole project (every JID), which had
-  // reviewers overlapping on the same project's responses. Only fall back to
-  // the project for a multi-job "By PID" group that has no single jobId.
-  const params = new URLSearchParams();
-  if (row.jobId) {
-    params.set("job", row.jobId);
-  } else {
-    const pid = row.projectId || row.id;
-    if (pid) params.set("project", pid);
-  }
-  const qs = params.toString();
-  return qs ? `${COLLECTION_REVIEW_URL}?${qs}#/` : COLLECTION_REVIEW_URL;
-}
-
 export function OpenInReviewButton({ row, size = "md", variant = "default", disabled = false }: Props) {
   const [copied, setCopied] = useState(false);
 
@@ -50,7 +32,7 @@ export function OpenInReviewButton({ row, size = "md", variant = "default", disa
     } catch {
       // Clipboard permission denied — still open the tab.
     }
-    window.open(buildUrl(row), "_blank", "noopener,noreferrer");
+    window.open(collectionReviewUrl(row), "_blank", "noopener,noreferrer");
   };
 
   const sizeClass =

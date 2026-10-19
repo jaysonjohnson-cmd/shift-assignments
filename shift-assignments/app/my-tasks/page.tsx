@@ -7,6 +7,7 @@ import { useUser } from "@/lib/useUser";
 import { reviewerColor, type Row } from "@/lib/types";
 import { OpenInReviewButton } from "@/components/OpenInReviewButton";
 import { describeLoads, planLoads } from "@/lib/loadPlan";
+import { collectionReviewUrl } from "@/lib/reviewLink";
 import { MarkDoneButton } from "@/components/MarkDoneButton";
 import { Confetti } from "@/components/Confetti";
 import { formatRelative, formatPending } from "@/lib/relativeTime";
@@ -150,19 +151,6 @@ function truncate(value: string | null | undefined, max: number): string {
   return value.length > max ? `${value.slice(0, max)}…` : value;
 }
 
-function buildJobUrl(row: Row): string {
-  const COLLECTION_REVIEW_URL =
-    "https://prod.fieldagent.net/admin/fieldagent/collection-review/";
-  // Scope to the exact job. Passing the project param too makes Collection
-  // Review open the whole project (every JID) and reviewers overlap. Only a
-  // multi-job "By PID" group (no jobId) falls back to the project.
-  if (row.jobId) {
-    return `${COLLECTION_REVIEW_URL}?${new URLSearchParams({ job: row.jobId }).toString()}#/`;
-  }
-  const pid = row.projectId || row.id;
-  if (!pid) return COLLECTION_REVIEW_URL;
-  return `${COLLECTION_REVIEW_URL}?${new URLSearchParams({ project: pid }).toString()}#/`;
-}
 
 function buildResponseSearchUrl(row: Row): string {
   const RESPONSE_SEARCH_URL =
@@ -827,22 +815,27 @@ function SplitBadge({ row, compact }: { row: Row; compact?: boolean }) {
 }
 
 /**
- * How to pull in exactly your share of a split job. Collection Review checks
- * out one Load size of responses per Search / Load more, and with "Include
- * in-review" unticked nobody sees what a teammate already pulled — so the
- * loads are what divide the job.
+ * How to pull in exactly your share of a split job. Open in Review carries
+ * `work_max` (see collectionReviewUrl), which caps the reviewer at their share.
+ * The load steps stay as a fallback: Collection Review checks out one Load
+ * size per Search / Load more, so they add up to the same share by hand.
  */
 function SplitLoadHint({ row }: { row: Row }) {
   const partners = row.splitPartners ?? [];
   if (partners.length === 0) return null;
-  const loads = planLoads(row.splitShare ?? 0);
+  const share = row.splitShare ?? 0;
   const everyoneElseDone = partners.every((p) => p.done);
   return (
     <p className="mt-1.5 text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-      In Collection Review, leave <strong>Include in-review</strong> unticked.{" "}
-      {everyoneElseDone
-        ? "Your partner is done — pull in whatever is left."
-        : `${describeLoads(loads)}.`}
+      {everyoneElseDone ? (
+        "Your partner is done — pull in whatever is left."
+      ) : (
+        <>
+          Open in Review caps you at your {share}. Leave{" "}
+          <strong>Include in-review</strong> unticked. If the cap doesn&apos;t hold:{" "}
+          {describeLoads(planLoads(share))}.
+        </>
+      )}
     </p>
   );
 }
@@ -942,7 +935,7 @@ function TaskCard({
           {row.jobId && (
             <>
               <a
-                href={buildJobUrl(row)}
+                href={collectionReviewUrl(row)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="ml-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-storesight-primary hover:bg-storesight-accent/10 dark:text-storesight-accent-light dark:hover:bg-storesight-accent/20"
@@ -1007,7 +1000,7 @@ function TaskCard({
             <>
               <span>·</span>
               <a
-                href={buildJobUrl(row)}
+                href={collectionReviewUrl(row)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-storesight-primary hover:bg-storesight-accent/10 dark:text-storesight-accent-light dark:hover:bg-storesight-accent/20"
