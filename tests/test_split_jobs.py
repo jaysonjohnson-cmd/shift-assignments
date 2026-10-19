@@ -185,17 +185,42 @@ def test_first_sharer_confirms_their_share_while_teammate_works(client, storage,
     left is asked to confirm their share is done — never waved through, which
     let a sharer check off a job with nothing reviewed."""
     c, token_file = client
-    credited = _live_split_shift(storage, monkeypatch, live_unreviewed=40, reviewed_total=60)
+    # 100 at hand-out, 50 each; 60 left is more than Alex's 50, so some of it
+    # may be Sam's.
+    credited = _live_split_shift(storage, monkeypatch, live_unreviewed=60, reviewed_total=60)
     token_file.write_text(_token(SAM))
     blocked = c.post("/api/shifts/my/complete", json={"job_id": "BIG"})
     assert blocked.status_code == 409
     assert blocked.get_json()["split"] is True
-    assert blocked.get_json()["unreviewed"] == 40
+    assert blocked.get_json()["unreviewed"] == 60
     resp = c.post("/api/shifts/my/complete", json={"job_id": "BIG", "override": True})
     assert resp.status_code == 201, resp.get_json()
     assert resp.get_json()["data"]["overridden"] is True
     # 60 reviewed so far, Alex still on it: Sam takes half.
     assert credited == [(SAM, 30)]
+
+
+def test_sharer_checks_off_without_asking_when_teammate_covers_the_rest(
+        client, storage, monkeypatch):
+    """What's left fits inside the teammate's share, so none of it is Sam's:
+    no confirmation, which used to leave sharers stuck on their last job."""
+    c, token_file = client
+    _live_split_shift(storage, monkeypatch, live_unreviewed=40, reviewed_total=60)
+    token_file.write_text(_token(SAM))
+    resp = c.post("/api/shifts/my/complete", json={"job_id": "BIG"})
+    assert resp.status_code == 201, resp.get_json()
+    assert resp.get_json()["data"]["overridden"] is False
+
+
+def test_teammate_who_left_does_not_cover_the_rest(client, storage, monkeypatch):
+    """Alex closed out, so nobody else is on the job: the plain guard applies."""
+    c, token_file = client
+    _live_split_shift(storage, monkeypatch, live_unreviewed=40, reviewed_total=60)
+    storage[:] = [d for d in storage if d["id"] != f"rs-{ALEX}"]
+    token_file.write_text(_token(SAM))
+    resp = c.post("/api/shifts/my/complete", json={"job_id": "BIG"})
+    assert resp.status_code == 409
+    assert "split" not in resp.get_json()
 
 
 def test_last_sharer_is_still_held_to_the_guard(client, storage, monkeypatch):

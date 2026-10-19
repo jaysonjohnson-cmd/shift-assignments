@@ -1912,6 +1912,18 @@ def _job_holders(snapshot_id, force=False):
     return holders
 
 
+def _teammates_share_left(snapshot_id, email, row, open_partners):
+    """Responses the teammates still on a split job are down to do: the sum of
+    their shares, cut the same way My Tasks shows them (see
+    _attach_split_partners) — the hand-out count across everyone who still
+    holds the job."""
+    holders = _job_holders(snapshot_id).get(_job_key(row), set())
+    norm = (email or "").strip().lower()
+    on_job = [e for e in _split_sharers(row) if e == norm or e in holders]
+    shares = _split_shares(int(row.get("unreviewedCount") or 0), on_job or [norm])
+    return sum(shares.get(e, 0) for e in open_partners)
+
+
 def _open_split_partners(snapshot_id, email, row, completions, force=False):
     """Sharers of a split row, other than `email`, still working the job:
     they hold it on this shift and haven't checked it off. Someone who was
@@ -3414,6 +3426,13 @@ def api_shifts_my_complete():
         remaining = _live_unreviewed_count(job_id)
         if remaining:
             remaining = _live_unreviewed_count(job_id, force=True)
+        if remaining and open_partners and remaining <= _teammates_share_left(
+                snap_id, email, row, open_partners):
+            # Everything left fits inside what teammates still have to do, so
+            # none of it can be this reviewer's share. No question to ask —
+            # asking anyway left sharers stuck on their last job (production
+            # 2026-10-19: 124 left, teammate's share 178).
+            remaining = 0
         if remaining and open_partners:
             return jsonify({
                 "error": (

@@ -457,10 +457,13 @@ to let the job sit on several shifts.
   (`lib/reviewLink.ts`, the one place reviewer-facing CR links are built).
   Confirmed working live 2026-10-19; the card's old load-size steps were
   dropped once it was.
-- Checking off while teammates are still on the job asks "finished your
-  share?" (a 409 with `split: true`; confirming is the normal override). It
-  used to skip the guard outright, and a sharer checked off a job with nothing
-  reviewed. Whoever is last gets the plain unreviewed-responses block.
+- Checking off while teammates are still on the job goes straight through
+  when what's left fits inside their shares (`_teammates_share_left`) — none
+  of it can be this reviewer's. Only when more is left does it ask "finished
+  your share?" (a 409 with `split: true`; confirming is the normal override).
+  It once skipped the guard outright and a sharer checked off a job with
+  nothing reviewed; then it asked every time and sharers sat stuck on their
+  last job. Whoever is last gets the plain unreviewed-responses block.
 - Bloom's reviewed count isn't per-person, so leaderboard credit is divided:
   each finisher takes an even share of what's not yet credited, the last takes
   the remainder (`credited_responses` on the completion doc).
