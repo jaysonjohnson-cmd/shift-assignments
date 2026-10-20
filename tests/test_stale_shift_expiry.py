@@ -111,16 +111,22 @@ def test_purge_deletes_only_stale_docs(monkeypatch):
         {"id": "c-old", "data": {"kind": "completion", "shift_snapshot_id": "old"}},
         {"id": "c-new", "data": {"kind": "completion", "shift_snapshot_id": "today"}},
     ]
+    opens = [
+        {"id": "so-old", "data": {"kind": "split_open", "shift_snapshot_id": "old"}},
+        {"id": "so-new", "data": {"kind": "split_open", "shift_snapshot_id": "today"}},
+    ]
     monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind, force=False: {
         "shift_snapshot": snaps, "reviewer_shift": shifts, "completion": comps,
+        "split_open": opens,
     }.get(kind, []))
     monkeypatch.setattr(main, "_try_delete", lambda did: deleted.append(did))
 
     n_snaps, n_rows, n_comps = main._purge_stale_shift_docs()
 
     assert (n_snaps, n_rows, n_comps) == (1, 3, 1)
-    assert set(deleted) == {"old", "rs-old", "c-old"}
+    assert set(deleted) == {"old", "rs-old", "c-old", "so-old"}
     assert "today" not in deleted and "rs-today" not in deleted and "c-new" not in deleted
+    assert "so-new" not in deleted
     assert deleted[-1] == "old", (
         "snapshot must go last, or an interrupted purge orphans its children")
 
@@ -164,6 +170,7 @@ def test_purge_keeps_the_cache_warm(monkeypatch):
     _seed_cache("completion", [
         {"id": "c-old", "data": {"kind": "completion", "shift_snapshot_id": "old"}}])
     _seed_cache("shift_closeout", [])
+    _seed_cache("split_open", [])
 
     main._purge_stale_shift_docs()
 

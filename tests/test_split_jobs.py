@@ -359,3 +359,88 @@ def test_pending_before_stops_at_the_cutoff_and_skips_third_party(monkeypatch):
     cutoff = datetime.datetime(2026, 10, 19, 18, 0, tzinfo=datetime.timezone.utc)
     assert main.bloom.fetch_job_pending_count_before("BIG", cutoff) == 2
     assert calls[0]["sort"] == "submission_date"
+
+
+# ---------- staggering opens ----------
+
+def _open(c, token_file, email, job="BIG"):
+    token_file.write_text(_token(email))
+    resp = c.post("/api/shifts/my/split-open", json={"job_id": job})
+    assert resp.status_code == 200, resp.get_json()
+    return resp.get_json()["data"]
+
+
+def _split_opens(storage):
+    return [d for d in storage if d["data"].get("kind") == "split_open"]
+
+
+def test_first_sharer_to_open_goes_straight_in(client, storage, monkeypatch):
+    c, token_file = client
+    _live_split_shift(storage, monkeypatch, live_unreviewed=40)
+    assert _open(c, token_file, SAM) == {"wait": 0}
+    assert [d["data"]["reviewer_email"] for d in _split_opens(storage)] == [SAM]
+
+
+def test_teammate_opening_right_after_waits_and_records_nothing(client, storage, monkeypatch):
+    c, token_file = client
+    _live_split_shift(storage, monkeypatch, live_unreviewed=40)
+    _open(c, token_file, SAM)
+    got = _open(c, token_file, ALEX)
+    assert 1 <= got["wait"] <= main._SPLIT_OPEN_STAGGER_SECONDS
+    assert got["teammate"] == "Sam"
+    assert len(_split_opens(storage)) == 1
+
+
+def test_teammate_can_open_once_the_window_passes(client, storage, monkeypatch):
+    c, token_file = client
+    _live_split_shift(storage, monkeypatch, live_unreviewed=40)
+    long_ago = (datetime.datetime.now(datetime.timezone.utc)
+                - datetime.timedelta(seconds=main._SPLIT_OPEN_STAGGER_SECONDS + 5))
+    storage.append({"id": "old-open", "data": {
+        "kind": "split_open", "shift_snapshot_id": "snap1", "job_id": "BIG",
+        "reviewer_email": SAM, "opened_at": long_ago.isoformat()}})
+    assert _open(c, token_file, ALEX) == {"wait": 0}
+
+
+def test_same_instant_tie_sends_the_later_one_back(client, storage, monkeypatch):
+    """Both pass the first check; the one whose write lands behind a teammate's
+    backs out and withdraws its open."""
+    c, token_file = client
+    _live_split_shift(storage, monkeypatch, live_unreviewed=40)
+    earlier = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=1)
+    real_recent = main._recent_split_opens
+    calls = {"n": 0}
+
+    def racing(snap_id, job_id, now):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return []  # Sam's write hasn't landed yet on the first read
+        storage.append({"id": "sam-open", "data": {
+            "kind": "split_open", "shift_snapshot_id": "snap1", "job_id": "BIG",
+            "reviewer_email": SAM, "opened_at": earlier.isoformat()}})
+        return real_recent(snap_id, job_id, now)
+
+    monkeypatch.setattr(main, "_recent_split_opens", racing)
+    deleted = []
+    monkeypatch.setattr(main, "_try_delete", lambda doc_id: deleted.append(doc_id))
+    got = _open(c, token_file, ALEX)
+    assert got["wait"] >= 1
+    assert len(deleted) == 1  # Alex's own open, withdrawn
+
+
+def test_no_stagger_once_the_teammate_has_checked_off(client, storage, monkeypatch):
+    c, token_file = client
+    _live_split_shift(storage, monkeypatch, live_unreviewed=40)
+    storage.append({"id": "c-alex", "data": {
+        "kind": "completion", "shift_snapshot_id": "snap1", "job_id": "BIG",
+        "reviewer_email": ALEX, "completed_at": "2026-10-20T14:00:00+00:00"}})
+    _open(c, token_file, SAM)
+    assert _open(c, token_file, SAM) == {"wait": 0}  # own opens never hold you back
+    assert len(_split_opens(storage)) == 0
+
+
+def test_unshared_job_never_waits(client, storage, monkeypatch):
+    c, token_file = client
+    _live_split_shift(storage, monkeypatch, live_unreviewed=40)
+    assert _open(c, token_file, SAM, job="NOT-MINE") == {"wait": 0}
+    assert _split_opens(storage) == []

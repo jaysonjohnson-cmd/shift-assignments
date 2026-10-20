@@ -5,7 +5,7 @@ import Link from "next/link";
 import { closeMyShift, getMyTasks, markTaskDone } from "@/lib/api";
 import { useUser } from "@/lib/useUser";
 import { reviewerColor, type Row } from "@/lib/types";
-import { OpenInReviewButton } from "@/components/OpenInReviewButton";
+import { OpenInReviewButton, isLiveSplit } from "@/components/OpenInReviewButton";
 import { collectionReviewUrl } from "@/lib/reviewLink";
 import { MarkDoneButton } from "@/components/MarkDoneButton";
 import { Confetti } from "@/components/Confetti";
@@ -836,6 +836,46 @@ function SplitLoadHint({ row }: { row: Row }) {
   );
 }
 
+/**
+ * The job's Collection Review link. While a teammate is still on a split job
+ * it's plain text: opening there would skip Open in Review's stagger, and two
+ * sharers loading at the same moment get the same responses.
+ */
+function JobLink({
+  row,
+  className,
+  children,
+}: {
+  row: Row;
+  className: string;
+  children: React.ReactNode;
+}) {
+  if (isLiveSplit(row)) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 px-1 py-0.5"
+        title="Shared job — use Open in Review, so you and your teammate don't load the same responses"
+      >
+        {children}
+      </span>
+    );
+  }
+  return (
+    <a
+      href={collectionReviewUrl(row)}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={className}
+      title={`Open Job ${row.jobId} in Collection Review`}
+    >
+      {children}
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>
+        <path d="M14 3h7v7M10 14 21 3M19 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </a>
+  );
+}
+
 function TaskCard({
   row,
   onChange,
@@ -930,18 +970,12 @@ function TaskCard({
           ))}
           {row.jobId && (
             <>
-              <a
-                href={collectionReviewUrl(row)}
-                target="_blank"
-                rel="noopener noreferrer"
+              <JobLink
+                row={row}
                 className="ml-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-storesight-primary hover:bg-storesight-accent/10 dark:text-storesight-accent-light dark:hover:bg-storesight-accent/20"
-                title={`Open Job ${row.jobId} in Collection Review`}
               >
                 {truncate(row.jobId, 10)}
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>
-                  <path d="M14 3h7v7M10 14 21 3M19 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </a>
+              </JobLink>
               <a
                 href={buildResponseSearchUrl(row)}
                 target="_blank"
@@ -995,18 +1029,12 @@ function TaskCard({
           {row.jobId && (
             <>
               <span>·</span>
-              <a
-                href={collectionReviewUrl(row)}
-                target="_blank"
-                rel="noopener noreferrer"
+              <JobLink
+                row={row}
                 className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-storesight-primary hover:bg-storesight-accent/10 dark:text-storesight-accent-light dark:hover:bg-storesight-accent/20"
-                title={`Open Job ${row.jobId} in Collection Review`}
               >
                 Job {truncate(row.jobId, 14)}
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>
-                  <path d="M14 3h7v7M10 14 21 3M19 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </a>
+              </JobLink>
               <span>·</span>
               <a
                 href={buildResponseSearchUrl(row)}

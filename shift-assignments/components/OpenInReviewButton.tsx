@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { checkSplitOpen } from "@/lib/api";
 import { collectionReviewUrl } from "@/lib/reviewLink";
 import type { Row } from "@/lib/types";
 
@@ -19,20 +20,79 @@ function buildClipboardPayload(row: Row): string {
   return `${row.projectId || row.id}`;
 }
 
+/** A teammate is still on this split job, so opening it is staggered. */
+export function isLiveSplit(row: Row): boolean {
+  return !!row.jobId && (row.splitPartners ?? []).some((p) => !p.done);
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export function OpenInReviewButton({ row, size = "md", variant = "default", disabled = false }: Props) {
   const [copied, setCopied] = useState(false);
+  // Seconds left while a teammate's load registers (split jobs only).
+  const [waiting, setWaiting] = useState<{ seconds: number; teammate: string } | null>(null);
+
+  /**
+   * Two sharers loading a split job at the same moment both get the same
+   * responses — Collection Review's in-review hold only protects whoever loads
+   * second. So a split job asks the server first and holds back while a
+   * teammate's load registers.
+   *
+   * The tab opens immediately, on the click: browsers block a tab opened from
+   * a timer, so it's opened blank with a note and pointed at Collection
+   * Review once it's this reviewer's turn.
+   */
+  const openStaggered = async (url: string) => {
+    const tab = window.open("", "_blank");
+    if (tab) {
+      tab.opener = null;
+      tab.document.title = "Waiting for your teammate…";
+      tab.document.body.style.cssText =
+        "font-family:system-ui,sans-serif;padding:2rem;color:#4e339c";
+      tab.document.body.textContent = "Checking whether your teammate is loading this job…";
+    }
+    try {
+      // Re-ask after each wait: a third sharer may have slipped in meanwhile.
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const check = await checkSplitOpen(row.jobId as string);
+        if (!check.wait) break;
+        const teammate = check.teammate || "Your teammate";
+        if (tab) {
+          tab.document.body.textContent =
+            `${teammate} just opened this job. Opening yours in ${check.wait}s so you don't get the same responses — keep this tab open.`;
+        }
+        for (let s = check.wait; s > 0; s--) {
+          setWaiting({ seconds: s, teammate });
+          await sleep(1000);
+        }
+      }
+    } catch {
+      // Never stop someone working over this check — open anyway.
+    } finally {
+      setWaiting(null);
+    }
+    if (tab && !tab.closed) tab.location.href = url;
+    else if (!tab) window.open(url, "_blank", "noopener,noreferrer");
+  };
 
   const handleClick = async () => {
-    if (disabled) return;
+    if (disabled || waiting) return;
     const payload = buildClipboardPayload(row);
+    const url = collectionReviewUrl(row);
+    if (isLiveSplit(row)) {
+      // Before any await, so the tab opens while the click still counts as a
+      // user gesture.
+      void openStaggered(url);
+    } else {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
     try {
       await navigator.clipboard.writeText(payload);
       setCopied(true);
       setTimeout(() => setCopied(false), 2500);
     } catch {
-      // Clipboard permission denied — still open the tab.
+      // Clipboard permission denied — the tab is open regardless.
     }
-    window.open(collectionReviewUrl(row), "_blank", "noopener,noreferrer");
   };
 
   const sizeClass =
@@ -53,7 +113,7 @@ export function OpenInReviewButton({ row, size = "md", variant = "default", disa
     <button
       type="button"
       onClick={handleClick}
-      disabled={disabled}
+      disabled={disabled || !!waiting}
       title={
         disabled
           ? "Processing approval — wait until complete before opening"
@@ -70,7 +130,11 @@ export function OpenInReviewButton({ row, size = "md", variant = "default", disa
           strokeLinejoin="round"
         />
       </svg>
-      {copied ? "Copied — paste in tab" : "Open in Review"}
+      {waiting
+        ? `${waiting.teammate} is loading · ${waiting.seconds}s`
+        : copied
+          ? "Copied — paste in tab"
+          : "Open in Review"}
     </button>
   );
 }

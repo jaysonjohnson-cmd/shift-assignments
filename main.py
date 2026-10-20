@@ -1764,9 +1764,10 @@ def _purge_stale_shift_docs():
         if ((doc.get("data") or {}).get("shift_snapshot_id")) in stale_ids:
             queued.append(("completion", doc.get("id")))
             comps += 1
-    for doc in roles.list_docs_by_kind("shift_closeout"):
-        if ((doc.get("data") or {}).get("shift_snapshot_id")) in stale_ids:
-            queued.append(("shift_closeout", doc.get("id")))
+    for kind in ("shift_closeout", "split_open"):
+        for doc in roles.list_docs_by_kind(kind):
+            if ((doc.get("data") or {}).get("shift_snapshot_id")) in stale_ids:
+                queued.append((kind, doc.get("id")))
     for sid in stale_ids:
         queued.append(("shift_snapshot", sid))
 
@@ -3390,6 +3391,99 @@ def _split_responses_to_credit(snap_id, snap_data, email, job_id, completion_id,
         # Bloom unreachable: an even share of the count at hand-out.
         return -(-int(row.get("unreviewedCount") or 0) // len(sharers))
     return int(round(max(0, reviewed - already) / on_job))
+
+
+# ── Staggering split-job opens ──────────────────────────────────────────────
+#
+# Collection Review's in-review hold only protects whoever loads second. Two
+# sharers who load a split job at the same moment both get their responses
+# picked before either is marked in review, so both see the same list
+# (production 2026-10-20, job 1974866: opened together, "Include in-review"
+# unticked). Until FieldAgent makes that claim atomic, Open in Review asks here
+# first and holds a sharer back while a teammate's load registers.
+
+_SPLIT_OPEN_STAGGER_SECONDS = 30
+
+
+def _recent_split_opens(snap_id, job_id, now):
+    """[(opened_at, email, doc_id)] for this split job within the stagger
+    window, read authoritatively — the teammate is usually on another instance."""
+    out = []
+    for doc in roles.list_docs_by_kind("split_open", force=True):
+        data = doc.get("data") or {}
+        if data.get("shift_snapshot_id") != snap_id or str(data.get("job_id")) != job_id:
+            continue
+        ts = _parse_iso_utc(data.get("opened_at"))
+        if ts is not None and 0 <= (now - ts).total_seconds() < _SPLIT_OPEN_STAGGER_SECONDS:
+            out.append((ts, (data.get("reviewer_email") or "").lower(), doc.get("id")))
+    return out
+
+
+@app.route("/api/shifts/my/split-open", methods=["POST"])
+def api_shifts_my_split_open():
+    """Before a sharer opens a split job in Collection Review: `{"wait": 0}` to
+    go ahead (their open is recorded), or `{"wait": n, "teammate": name}` when a
+    teammate opened it within the last _SPLIT_OPEN_STAGGER_SECONDS and should
+    get their load in first. Anything that isn't a live split answers 0 and
+    writes nothing.
+
+    Two clicks in the same instant both pass the first check, so each writes
+    its open and then re-reads: whoever is later — by time, then email — backs
+    out and waits. Fails open: an error here must never stop anyone working.
+    """
+    body = request.get_json(silent=True) or {}
+    job_id = str(body.get("job_id") or "").strip()
+    if not job_id:
+        return jsonify({"error": "job_id is required"}), 400
+    email = (g.user.get("email") or "").strip().lower()
+    try:
+        snap_id, _ = _latest_snapshot()
+        row = _reviewer_row_for_job(snap_id, email, job_id) if snap_id else None
+        partners = (_open_split_partners(
+            snap_id, email, row, _list_completions_for_snapshot(snap_id))
+            if row and _split_sharers(row) else [])
+        if not partners:
+            return jsonify({"data": {"wait": 0}})
+
+        def first_ahead(opens, mine=None):
+            ahead = [(ts, e) for ts, e, _ in opens if e in partners and (mine is None or (ts, e) < mine)]
+            return min(ahead) if ahead else None
+
+        def wait_for(ahead, now):
+            try:
+                names = {r["email"].lower(): r.get("name") or "" for r in roles.list_reviewers()}
+            except Exception:  # noqa: BLE001 — the name is cosmetic
+                names = {}
+            left = _SPLIT_OPEN_STAGGER_SECONDS - (now - ahead[0]).total_seconds()
+            return jsonify({"data": {
+                "wait": max(1, int(left + 0.999)),
+                "teammate": names.get(ahead[1]) or ahead[1].split("@")[0],
+            }})
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        ahead = first_ahead(_recent_split_opens(snap_id, job_id, now))
+        if ahead:
+            return wait_for(ahead, now)
+
+        doc = {"kind": "split_open", "shift_snapshot_id": snap_id, "job_id": job_id,
+               "reviewer_email": email, "opened_at": now.isoformat()}
+        resp = internal_api.post(_STORAGE_PATH, json={"data": doc})
+        doc_id = (resp.get("data") or {}).get("id")
+        if doc_id:
+            roles.cache_upsert_doc("split_open", {"id": doc_id, "data": doc})
+
+        ahead = first_ahead(_recent_split_opens(snap_id, job_id, now), mine=(now, email))
+        if ahead:
+            # Lost a same-instant race: withdraw, or this open would hold the
+            # teammate back the next time they open it.
+            if doc_id:
+                _try_delete(doc_id)
+                roles.cache_remove_doc("split_open", doc_id)
+            return wait_for(ahead, datetime.datetime.now(datetime.timezone.utc))
+        return jsonify({"data": {"wait": 0}})
+    except Exception as exc:  # noqa: BLE001 — fail open
+        logging.warning("split-open check failed for %s job=%s: %s", email, job_id, exc)
+        return jsonify({"data": {"wait": 0}})
 
 
 @app.route("/api/shifts/my/complete", methods=["POST"])

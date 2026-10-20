@@ -457,6 +457,16 @@ to let the job sit on several shifts.
   (`lib/reviewLink.ts`, the one place reviewer-facing CR links are built).
   Confirmed working live 2026-10-19; the card's old load-size steps were
   dropped once it was.
+- Collection Review's in-review hold only protects whoever loads *second*: two
+  sharers loading at the same moment both get the same responses (2026-10-20,
+  job 1974866). Until FieldAgent makes that claim atomic, Open in Review on a
+  live split asks `POST /api/shifts/my/split-open` first, which records the
+  open as a `split_open` doc and makes a teammate who clicks within 30s wait
+  (`_SPLIT_OPEN_STAGGER_SECONDS`). Same-instant clicks both write, re-read, and
+  the later one — by time, then email — withdraws and waits. The tab opens on
+  the click and is pointed at CR when the wait ends, since browsers block tabs
+  opened from a timer. The card's Job link is plain text on a live split so
+  nothing skips the stagger. It fails open; purged with the day's shift docs.
 - Checking off while teammates are still on the job goes straight through
   when what's left fits inside their shares (`_teammates_share_left`) — none
   of it can be this reviewer's. Only when more is left does it ask "finished

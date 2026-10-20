@@ -261,6 +261,21 @@ export async function markTaskDone(
   });
 }
 
+export type SplitOpenCheck = {
+  /** Seconds to hold off before opening; 0 means go now (and the open is recorded). */
+  wait: number;
+  /** Name of the teammate whose load is registering, when wait > 0. */
+  teammate?: string;
+};
+
+/** Ask before opening a split job in Collection Review — see api_shifts_my_split_open. */
+export async function checkSplitOpen(jobId: string): Promise<SplitOpenCheck> {
+  const resp = await call<{ data: SplitOpenCheck }>("POST", "/api/shifts/my/split-open", {
+    job_id: jobId,
+  });
+  return resp.data;
+}
+
 export type CloseShiftResult = {
   snapshot_id: string;
   already_closed: boolean;
