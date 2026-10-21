@@ -430,6 +430,33 @@ export async function getShiftJobs(): Promise<ShiftJobs> {
 }
 
 
+/** One checkmark on the current shift, for Team Assignments' Check-offs tab. */
+export type Checkoff = {
+  id: string;
+  reviewerEmail: string;
+  reviewerName: string;
+  reviewerColor?: string | null;
+  jobId: string;
+  projectId: string;
+  jobName: string;
+  completedAt: string | null;
+  /** Checked off past the "still has unreviewed responses" warning. */
+  overridden: boolean;
+  note: string;
+  /** The job came back with new responses after this check-off. */
+  superseded: boolean;
+  /** Unreviewed in the feed right now; null when it has left the feed. */
+  unreviewedNow: number | null;
+};
+
+export async function getCheckoffs(): Promise<Checkoff[]> {
+  const resp = await call<{ data: { snapshot_id: string | null; checkoffs: Checkoff[] } }>(
+    "GET",
+    "/api/shifts/checkoffs",
+  );
+  return resp.data.checkoffs;
+}
+
 export type ClearMode = "active" | "completed" | "all" | "reset";
 
 /**

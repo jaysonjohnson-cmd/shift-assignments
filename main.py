@@ -3615,6 +3615,10 @@ def api_shifts_my_complete():
         "note": (body.get("note") or "").strip(),
         # True when the reviewer confirmed past the unreviewed-responses warning.
         "overridden": bool(body.get("override")),
+        # For the Team Assignments Check-offs tab: close-out deletes the
+        # reviewer's rows, and the job name with them.
+        "job_name": str(row.get("name") or ""),
+        "project_id": str(row.get("projectId") or ""),
     }
     try:
         resp = internal_api.post(_STORAGE_PATH, json={"data": doc})
@@ -3920,6 +3924,87 @@ def api_shifts_list_completions():
     return jsonify(
         {"data": {"snapshot_id": snap_id, "completions": completions}}
     )
+
+
+@app.route("/api/shifts/checkoffs", methods=["GET"])
+def api_shifts_checkoffs():
+    """Admin: every checkmark of the current shift, newest first.
+
+    Built from completion docs rather than the reviewers' rows, so a reviewer
+    who has closed out ("Done for the shift" deletes their rows) still shows.
+    Close-outs themselves aren't listed — only jobs checked off. Superseded
+    check-offs stay in, flagged: the job came back with new responses, but
+    the reviewer did check it off.
+
+    Admin only — not leads: it's a manager's view of each reviewer's calls.
+    """
+    denied = _require_admin()
+    if denied is not None:
+        return denied
+    try:
+        snap_id, _ = _latest_snapshot()
+    except requests.exceptions.HTTPError as e:
+        return _http_error_response(e)
+    if not snap_id:
+        return jsonify({"data": {"snapshot_id": None, "checkoffs": []}})
+    try:
+        completions = _list_completions_for_snapshot(snap_id, include_superseded=True)
+    except requests.exceptions.HTTPError as e:
+        return _http_error_response(e)
+
+    # Names for docs written before completions carried one: the rows still
+    # on shift, then the live feed.
+    rows_by_job = {}
+    try:
+        for d in roles.list_docs_by_kind("reviewer_shift"):
+            data = d.get("data") or {}
+            if data.get("shift_snapshot_id") != snap_id:
+                continue
+            for r in data.get("rows") or []:
+                rows_by_job.setdefault(_row_job_key(r), r)
+    except requests.exceptions.HTTPError:
+        pass  # names are best-effort
+    try:
+        feed = bloom.fetch_prioritized_jobs()
+    except Exception:  # noqa: BLE001 — names and live counts are best-effort
+        feed = []
+    feed_by_job = {str(j.get("jobId")): j for j in feed if j.get("jobId")}
+
+    try:
+        roster = {
+            r["email"].lower(): {"name": r.get("name") or "", "color": r.get("color")}
+            for r in roles.list_reviewers()
+        }
+    except Exception:  # noqa: BLE001 — name lookup is best-effort
+        roster = {}
+
+    checkoffs = []
+    for c in completions:
+        email = (c.get("reviewer_email") or "").lower()
+        job_id = _completion_job_key(c)
+        if not email or not job_id:
+            continue
+        row = rows_by_job.get(job_id) or feed_by_job.get(job_id) or {}
+        live = feed_by_job.get(job_id)
+        info = roster.get(email) or {}
+        checkoffs.append({
+            "id": c.get("id"),
+            "reviewerEmail": email,
+            "reviewerName": info.get("name", ""),
+            "reviewerColor": info.get("color"),
+            "jobId": job_id,
+            "projectId": c.get("project_id") or str(row.get("projectId") or ""),
+            "jobName": c.get("job_name") or str(row.get("name") or ""),
+            "completedAt": c.get("completed_at"),
+            "overridden": bool(c.get("overridden")),
+            "note": c.get("note") or "",
+            "superseded": bool(c.get("superseded_at")),
+            # Unreviewed now, from the feed; None when the job has left it
+            # (nothing new) or the feed is down.
+            "unreviewedNow": int(live.get("unreviewedCount") or 0) if live else None,
+        })
+    checkoffs.sort(key=lambda x: x["completedAt"] or "", reverse=True)
+    return jsonify({"data": {"snapshot_id": snap_id, "checkoffs": checkoffs}})
 
 
 @app.route("/api/shifts/completions", methods=["DELETE"])

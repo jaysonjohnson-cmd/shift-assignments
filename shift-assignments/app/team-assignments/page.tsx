@@ -6,6 +6,7 @@ import { getShiftJobs, type ShiftJobs, type ShiftJob, clearShift, type ClearMode
 import { useStore } from "@/lib/store";
 import { formatRelative } from "@/lib/relativeTime";
 import { ProgressTrackerTile } from "@/components/assign/ProgressTrackerTile";
+import { CheckoffsPanel } from "@/components/assign/CheckoffsPanel";
 import { useUser } from "@/lib/useUser";
 import { reviewerColor } from "@/lib/types";
 
@@ -49,7 +50,8 @@ export default function TeamAssignmentsPage() {
   const [data, setData] = useState<ShiftJobs | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [sortBy, setSortBy] = useState<"reviewer" | "priority" | "summary">("reviewer");
+  const [sortBy, setSortBy] = useState<"reviewer" | "priority" | "summary" | "checkoffs">("reviewer");
+  const [refreshKey, setRefreshKey] = useState(0);
   const [filterCompleted, setFilterCompleted] = useState(true);
   const [expandedReviewers, setExpandedReviewers] = useState<Set<string>>(new Set());
   const [showCloseModal, setShowCloseModal] = useState(false);
@@ -62,6 +64,7 @@ export default function TeamAssignmentsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setRefreshKey((k) => k + 1);
     try {
       const jobs = await getShiftJobs();
       setData(jobs);
@@ -292,8 +295,21 @@ export default function TeamAssignmentsPage() {
               >
                 Summary
               </button>
+              {role === "admin" && (
+              <button
+                type="button"
+                onClick={() => setSortBy("checkoffs")}
+                className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+                  sortBy === "checkoffs"
+                    ? "bg-storesight-accent/20 text-storesight-primary dark:text-storesight-accent-light"
+                    : "text-storesight-ink-muted hover:text-storesight-primary dark:text-storesight-ink-muted-dark"
+                }`}
+              >
+                Check-offs
+              </button>
+              )}
             </div>
-            {sortBy !== "summary" && (
+            {sortBy !== "summary" && sortBy !== "checkoffs" && (
             <button
               type="button"
               onClick={() => setFilterCompleted(!filterCompleted)}
@@ -309,7 +325,9 @@ export default function TeamAssignmentsPage() {
             )}
           </div>
 
-          {sortBy === "summary" ? (
+          {sortBy === "checkoffs" && role === "admin" ? (
+            <CheckoffsPanel refreshKey={refreshKey} />
+          ) : sortBy === "summary" ? (
             <div className="space-y-4">
               {/* Overall completion */}
               <div className="rounded-2xl border border-storesight-border bg-white p-5 dark:border-storesight-border-dark dark:bg-storesight-surface-dark">
