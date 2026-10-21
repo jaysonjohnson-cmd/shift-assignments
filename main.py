@@ -1,3 +1,4 @@
+import collections
 import datetime
 import json
 import logging
@@ -2090,6 +2091,30 @@ def _live_counts_by_job():
     return live or None
 
 
+def _projects_with_excluded_jobs(project_ids):
+    """The subset of `project_ids` that also hold a job we exclude (video,
+    screeners, excluded titles, …).
+
+    A My Tasks "By PID" card opens the whole project in Collection Review,
+    which pulls in every job under it — including the excluded ones the tool
+    never assigned. Rows in these projects stay single-job cards instead.
+
+    A project whose jobs can't be read counts as mixed: the cost is a few
+    extra cards, against handing a reviewer video work.
+    """
+    mixed = set()
+    for pid in sorted(project_ids):
+        try:
+            jobs = bloom.fetch_project_jobs(pid)
+        except Exception as exc:  # noqa: BLE001 — grouping is a display nicety
+            logging.warning("project jobs lookup failed for %s: %s", pid, exc)
+            mixed.add(pid)
+            continue
+        if any(_is_excluded_job(j) for j in jobs):
+            mixed.add(pid)
+    return mixed
+
+
 @app.route("/api/shifts/my", methods=["GET"])
 def api_shifts_my():
     """Return this reviewer's rows from the latest snapshot + completion state."""
@@ -2121,6 +2146,12 @@ def api_shifts_my():
     # Per job: reviewable count and a separate informational "may need
     # clearing, not reviewing" hint (see _live_counts_by_job).
     live_by_job = _live_counts_by_job()
+    # Only a project holding two or more of this reviewer's jobs becomes a
+    # By-PID card, so only those need their siblings looked up.
+    pid_counts = collections.Counter(
+        str(r.get("projectId") or "") for r in rows if not _is_excluded_job(r))
+    mixed_projects = _projects_with_excluded_jobs(
+        {pid for pid, n in pid_counts.items() if pid and n > 1})
 
     enriched = []
     for row in rows:
@@ -2132,6 +2163,8 @@ def api_shifts_my():
             **row,
             "completedAt": completion.get("completed_at") if completion else None,
         }
+        if str(row.get("projectId") or "") in mixed_projects:
+            item["projectHasExcluded"] = True
         if _split_sharers(row):
             # Shares are cut from the count at hand-out, before the live overlay
             # below replaces it — so a share doesn't shrink as the job is worked.

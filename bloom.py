@@ -526,6 +526,40 @@ def public_names():
     return _PUBLIC_NAME_CACHE["names"]
 
 
+# Every job under a project, by projectId: {pid: (fetched_at, [{jobId, name}])}.
+# My Tasks' "By PID" card opens the whole project in Collection Review, so it
+# needs to know what else is in there — and the prioritized feed can't say:
+# jobs drop out of it whenever they have nothing new, then come back. PID
+# 1635913 had three VIDEO jobs, and the feed showed one, then none (2026-10-21).
+_PROJECT_JOBS_CACHE = {}
+_PROJECT_JOBS_CACHE_TTL_SECONDS = 900
+
+
+def fetch_project_jobs(project_id):
+    """[{jobId, name}] for every job in `project_id`, any status, cached 15
+    minutes. Raises on an upstream error so the caller can decide what an
+    unknown project means."""
+    pid = str(project_id)
+    hit = _PROJECT_JOBS_CACHE.get(pid)
+    if hit and (time.time() - hit[0]) < _PROJECT_JOBS_CACHE_TTL_SECONDS:
+        return hit[1]
+    jobs = []
+    for page in range(1, MAX_PUBLIC_NAME_PAGES + 1):
+        resp = internal_api.get("/api/jobs", params={
+            "project_id": pid, "page": page, "per_page": PAGE_SIZE,
+        })
+        batch = resp.get("data", []) if isinstance(resp, dict) else []
+        jobs.extend(
+            {"jobId": str(j["id"]), "name": str(j.get("name") or "")}
+            for j in batch
+            if isinstance(j, dict) and j.get("id") not in (None, "")
+        )
+        if len(batch) < PAGE_SIZE:
+            break
+    _PROJECT_JOBS_CACHE[pid] = (time.time(), jobs)
+    return jobs
+
+
 def clear_project_name_cache():
     _PROJECT_NAME_CACHE["fetched_at"] = 0.0
     _PROJECT_NAME_CACHE["names"] = {}
@@ -860,6 +894,7 @@ def clear_cache():
     """Reset the in-process cache. Used by tests and the 'Force refresh' path."""
     _CACHE["fetched_at"] = 0.0
     _CACHE["rows"] = []
+    _PROJECT_JOBS_CACHE.clear()
     # The aged-submission cache outlives the job cache by design (5 min vs 60s)
     # so the warmer doesn't re-query it every 45s. Clear it here anyway: a
     # Force refresh should re-read aged work too, and leaving it set would

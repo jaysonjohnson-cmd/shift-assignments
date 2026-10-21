@@ -60,7 +60,12 @@ function groupByProject(rows: Row[]): Row[] {
   for (const r of rows) {
     // A split job always stays its own card: the group would open the whole
     // project in Collection Review, and teammates may hold its other jobs.
-    const key = r.splitPartners?.length ? `split:${r.jobId || r.id}` : r.projectId || r.id;
+    // Same for a project holding an excluded job: opening the whole project
+    // would hand the reviewer its video jobs.
+    const key =
+      r.splitPartners?.length || r.projectHasExcluded
+        ? `job:${r.jobId || r.id}`
+        : r.projectId || r.id;
     const list = buckets.get(key);
     if (list) list.push(r);
     else buckets.set(key, [r]);
