@@ -449,12 +449,19 @@ export type Checkoff = {
   unreviewedNow: number | null;
 };
 
-export async function getCheckoffs(): Promise<Checkoff[]> {
-  const resp = await call<{ data: { snapshot_id: string | null; checkoffs: Checkoff[] } }>(
-    "GET",
-    "/api/shifts/checkoffs",
-  );
-  return resp.data.checkoffs;
+export type CheckoffDay = {
+  /** The local (Central) day shown, YYYY-MM-DD. */
+  date: string;
+  /** The days the log keeps: the last two weeks, today included. */
+  window: { oldest: string; newest: string };
+  checkoffs: Checkoff[];
+};
+
+/** Check-offs for one day; omit `date` for today. */
+export async function getCheckoffs(date?: string): Promise<CheckoffDay> {
+  const qs = date ? `?date=${encodeURIComponent(date)}` : "";
+  const resp = await call<{ data: CheckoffDay }>("GET", `/api/shifts/checkoffs${qs}`);
+  return resp.data;
 }
 
 export type ClearMode = "active" | "completed" | "all" | "reset";

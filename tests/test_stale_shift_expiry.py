@@ -151,6 +151,7 @@ def test_purge_does_not_block_on_deletes(monkeypatch):
     _seed_cache("reviewer_shift", [_shift("old")])
     _seed_cache("completion", [])
     _seed_cache("shift_closeout", [])
+    _seed_cache("checkoff_log", [])
 
     assert main._purge_stale_shift_docs() == (1, 1, 0)
     assert len(started) == 1
@@ -171,6 +172,7 @@ def test_purge_keeps_the_cache_warm(monkeypatch):
         {"id": "c-old", "data": {"kind": "completion", "shift_snapshot_id": "old"}}])
     _seed_cache("shift_closeout", [])
     _seed_cache("split_open", [])
+    _seed_cache("checkoff_log", [])
 
     main._purge_stale_shift_docs()
 

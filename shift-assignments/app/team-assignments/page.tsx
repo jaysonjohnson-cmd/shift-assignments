@@ -258,6 +258,16 @@ export default function TeamAssignmentsPage() {
         </div>
       )}
 
+      {/* The log outlives the shift, so it stays reachable after a clear. */}
+      {!loading && !data?.snapshot_id && role === "admin" && (
+        <div className="mt-6">
+          <h2 className="mb-3 text-sm font-semibold text-storesight-ink dark:text-storesight-ink-dark">
+            Check-offs
+          </h2>
+          <CheckoffsPanel refreshKey={refreshKey} />
+        </div>
+      )}
+
       {data?.snapshot_id && (
         <>
           <div className="mb-4 flex flex-wrap items-center gap-3">

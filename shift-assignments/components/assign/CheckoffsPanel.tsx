@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { getCheckoffs, type Checkoff } from "@/lib/api";
+import { getCheckoffs, type Checkoff, type CheckoffDay } from "@/lib/api";
 import { formatRelative } from "@/lib/relativeTime";
 import { reviewerColor } from "@/lib/types";
 
@@ -18,12 +18,17 @@ function formatClock(iso: string | null): string {
 }
 
 /**
- * Every checkmark on the current shift, newest first: who checked off which
- * job, when, and whether they went past the unreviewed-responses warning.
- * "Done for the shift" close-outs aren't checkmarks and aren't listed.
+ * Every checkmark on one day, newest first: who checked off which job, when,
+ * and whether they went past the unreviewed-responses warning. Today by
+ * default; the log keeps the last two weeks, and clearing a shift doesn't
+ * touch it. "Done for the shift" close-outs aren't checkmarks and aren't
+ * listed.
  */
 export function CheckoffsPanel({ refreshKey = 0 }: { refreshKey?: number }) {
-  const [items, setItems] = useState<Checkoff[] | null>(null);
+  const [day, setDay] = useState<CheckoffDay | null>(null);
+  // "" = today, whatever the date is when the request lands.
+  const [date, setDate] = useState("");
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reviewer, setReviewer] = useState("");
   const [anywayOnly, setAnywayOnly] = useState(false);
@@ -31,17 +36,24 @@ export function CheckoffsPanel({ refreshKey = 0 }: { refreshKey?: number }) {
   useEffect(() => {
     let cancelled = false;
     setError(null);
-    getCheckoffs()
-      .then((c) => {
-        if (!cancelled) setItems(c);
+    setLoading(true);
+    getCheckoffs(date || undefined)
+      .then((d) => {
+        if (!cancelled) setDay(d);
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load check-offs");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [refreshKey]);
+  }, [refreshKey, date]);
+
+  const items = loading ? null : (day?.checkoffs ?? null);
+  const isToday = !day || day.date === day.window.newest;
 
   const reviewers = useMemo(() => {
     const m = new Map<string, string>();
@@ -58,17 +70,30 @@ export function CheckoffsPanel({ refreshKey = 0 }: { refreshKey?: number }) {
   );
   const anywayCount = (items ?? []).filter((c) => c.overridden).length;
 
-  if (error) {
-    return (
-      <div className="rounded-lg border border-storesight-hot-pink/40 bg-storesight-hot-pink/10 px-4 py-2 text-sm text-storesight-hot-pink">
-        {error}
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3">
+        <input
+          type="date"
+          aria-label="Day"
+          value={day?.date ?? date}
+          min={day?.window.oldest}
+          max={day?.window.newest}
+          onChange={(e) => {
+            const v = e.target.value;
+            setDate(v && v !== day?.window.newest ? v : "");
+          }}
+          className="rounded-lg border border-storesight-border bg-white px-3 py-1.5 text-xs font-medium text-storesight-ink [color-scheme:light] dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark dark:[color-scheme:dark]"
+        />
+        {!isToday && (
+          <button
+            type="button"
+            onClick={() => setDate("")}
+            className="text-xs font-medium text-storesight-primary hover:underline dark:text-storesight-accent-light"
+          >
+            Today
+          </button>
+        )}
         <select
           value={reviewer}
           onChange={(e) => setReviewer(e.target.value)}
@@ -97,8 +122,15 @@ export function CheckoffsPanel({ refreshKey = 0 }: { refreshKey?: number }) {
         </button>
         <span className="text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
           {items === null ? "Loading…" : `${visible.length} check-off${visible.length === 1 ? "" : "s"}`}
+          {" · kept two weeks"}
         </span>
       </div>
+
+      {error && (
+        <div className="rounded-lg border border-storesight-hot-pink/40 bg-storesight-hot-pink/10 px-4 py-2 text-sm text-storesight-hot-pink">
+          {error}
+        </div>
+      )}
 
       <div className="overflow-x-auto rounded-2xl border border-storesight-border bg-white dark:border-storesight-border-dark dark:bg-storesight-surface-dark">
         <table className="w-full text-sm">
@@ -107,15 +139,15 @@ export function CheckoffsPanel({ refreshKey = 0 }: { refreshKey?: number }) {
               <th className="px-4 py-2.5 text-left font-medium">When</th>
               <th className="px-3 py-2.5 text-left font-medium">Reviewer</th>
               <th className="px-3 py-2.5 text-left font-medium">Job</th>
-              <th className="px-3 py-2.5 text-right font-medium">Unreviewed now</th>
+              {isToday && <th className="px-3 py-2.5 text-right font-medium">Unreviewed now</th>}
               <th className="px-4 py-2.5 text-left font-medium">How</th>
             </tr>
           </thead>
           <tbody>
             {items !== null && visible.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-                  No check-offs yet this shift
+                <td colSpan={isToday ? 5 : 4} className="px-4 py-8 text-center text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                  {isToday ? "No check-offs yet today" : "No check-offs that day"}
                 </td>
               </tr>
             ) : (
@@ -157,9 +189,11 @@ export function CheckoffsPanel({ refreshKey = 0 }: { refreshKey?: number }) {
                       {c.projectId && <>PID {c.projectId} · </>}JID {c.jobId}
                     </div>
                   </td>
-                  <td className="px-3 py-3 text-right tabular-nums text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-                    {c.unreviewedNow ?? "—"}
-                  </td>
+                  {isToday && (
+                    <td className="px-3 py-3 text-right tabular-nums text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                      {c.unreviewedNow ?? "—"}
+                    </td>
+                  )}
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1.5">
                       {c.overridden ? (

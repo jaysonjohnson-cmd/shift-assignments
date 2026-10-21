@@ -1751,10 +1751,13 @@ def _purge_stale_shift_docs():
     for doc in roles.list_docs_by_kind("shift_snapshot"):
         if _is_stale_snapshot(doc.get("data") or {}):
             stale_ids.add(doc.get("id"))
-    if not stale_ids:
+    # The check-off log outlives shifts by design, so it ages out on its own
+    # clock rather than with a stale snapshot.
+    expired_logs = _expired_checkoff_log_ids()
+    if not stale_ids and not expired_logs:
         return 0, 0, 0
 
-    queued = []  # (kind, doc_id), deletion order
+    queued = [(CHECKOFF_LOG_KIND, doc_id) for doc_id in expired_logs]  # (kind, doc_id), deletion order
     for doc in roles.list_docs_by_kind("reviewer_shift"):
         data = doc.get("data") or {}
         if data.get("shift_snapshot_id") in stale_ids:
@@ -1788,8 +1791,9 @@ def _purge_stale_shift_docs():
         global _purge_running
         try:
             _delete_docs_bg([doc_id for _, doc_id in queued])
-            logging.info("purged stale shift docs: snapshots=%d rows=%d completions=%d",
-                         len(stale_ids), rows, comps)
+            logging.info("purged stale shift docs: snapshots=%d rows=%d completions=%d "
+                         "checkoff_logs=%d",
+                         len(stale_ids), rows, comps, len(expired_logs))
         finally:
             with _purge_lock:
                 _purge_running = False
@@ -3650,6 +3654,8 @@ def api_shifts_my_complete():
                 logging.warning("complete: dropped duplicate completion for %s job=%s", email, job_id)
                 return jsonify({"data": keeper})
 
+    _log_checkoff(doc_id, doc)
+
     # Tally this review into the reviewer's weekly leaderboard total. Stored
     # separately from completions (kind "review_tally") so clearing/republishing
     # a shift never erases the week's standings. Best-effort. See
@@ -3791,6 +3797,7 @@ def api_shifts_my_uncomplete(job_id):
             except requests.exceptions.HTTPError as e:
                 return _http_error_response(e)
             roles.cache_remove_doc("completion", c["id"])
+            _unlog_checkoff(c["id"])
             logging.info(
                 "DELETE /api/shifts/my/complete/%s by=%s", job_id, email,
             )
@@ -3926,49 +3933,134 @@ def api_shifts_list_completions():
     )
 
 
+# The Check-offs tab's history. Completion docs can't hold it: clearing a
+# shift (End shift, the 5:30 PM auto-clear) deletes them, and the next day's
+# first publish purges what's left. So every checkmark also writes one of
+# these, which only ages out — CHECKOFF_LOG_DAYS days, today included.
+CHECKOFF_LOG_KIND = "checkoff_log"
+CHECKOFF_LOG_DAYS = 14
+
+
+def _log_checkoff(completion_id, completion):
+    """Record a checkmark in the check-off log. Best-effort: the log must
+    never fail the check-off itself."""
+    day = _local_shift_date(completion.get("completed_at"))
+    entry = {
+        "kind": CHECKOFF_LOG_KIND,
+        "completion_id": completion_id,
+        "shift_snapshot_id": completion.get("shift_snapshot_id"),
+        "reviewer_email": completion.get("reviewer_email"),
+        "job_id": completion.get("job_id"),
+        "job_name": completion.get("job_name") or "",
+        "project_id": completion.get("project_id") or "",
+        "completed_at": completion.get("completed_at"),
+        "local_date": day.isoformat() if day else "",
+        "overridden": bool(completion.get("overridden")),
+        "note": completion.get("note") or "",
+    }
+    try:
+        resp = internal_api.post(_STORAGE_PATH, json={"data": entry})
+        roles.cache_upsert_doc(
+            CHECKOFF_LOG_KIND, {"id": (resp.get("data") or {}).get("id"), "data": entry})
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logging.warning("check-off log write failed for completion %s: %s", completion_id, exc)
+
+
+def _unlog_checkoff(completion_id):
+    """Drop the log entry for an un-checked completion: a misclick isn't a
+    check-off. Best-effort."""
+    try:
+        for doc in roles.list_docs_by_kind(CHECKOFF_LOG_KIND):
+            if (doc.get("data") or {}).get("completion_id") == completion_id:
+                _try_delete(doc.get("id"))
+                roles.cache_remove_doc(CHECKOFF_LOG_KIND, doc.get("id"))
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logging.warning("check-off log delete failed for completion %s: %s", completion_id, exc)
+
+
+def _checkoff_log_window():
+    """(oldest, newest) local dates the log keeps."""
+    today = datetime.datetime.now(_SHIFT_TZ).date()
+    return today - datetime.timedelta(days=CHECKOFF_LOG_DAYS - 1), today
+
+
+def _expired_checkoff_log_ids():
+    oldest, _ = _checkoff_log_window()
+    out = []
+    for doc in roles.list_docs_by_kind(CHECKOFF_LOG_KIND):
+        day = (doc.get("data") or {}).get("local_date") or ""
+        # A missing date sorts first, so an undatable entry ages out too.
+        if day < oldest.isoformat():
+            out.append(doc.get("id"))
+    return out
+
+
 @app.route("/api/shifts/checkoffs", methods=["GET"])
 def api_shifts_checkoffs():
-    """Admin: every checkmark of the current shift, newest first.
+    """Admin: every checkmark on one local (Central) day, newest first.
 
-    Built from completion docs rather than the reviewers' rows, so a reviewer
-    who has closed out ("Done for the shift" deletes their rows) still shows.
-    Close-outs themselves aren't listed — only jobs checked off. Superseded
-    check-offs stay in, flagged: the job came back with new responses, but
-    the reviewer did check it off.
+    `?date=YYYY-MM-DD`, default today, within the last CHECKOFF_LOG_DAYS days.
+    Read from the check-off log, so clearing a shift or closing out doesn't
+    lose them. Today also takes in the current shift's completions with no
+    log entry, i.e. ones checked off before the log existed.
+
+    Close-outs aren't listed — only jobs checked off. On today's shift a
+    superseded check-off stays in, flagged: the job came back with new
+    responses, but the reviewer did check it off. Earlier days don't track
+    that.
 
     Admin only — not leads: it's a manager's view of each reviewer's calls.
     """
     denied = _require_admin()
     if denied is not None:
         return denied
+    oldest, today = _checkoff_log_window()
+    raw_date = (request.args.get("date") or "").strip()
     try:
-        snap_id, _ = _latest_snapshot()
-    except requests.exceptions.HTTPError as e:
-        return _http_error_response(e)
-    if not snap_id:
-        return jsonify({"data": {"snapshot_id": None, "checkoffs": []}})
+        day = datetime.date.fromisoformat(raw_date) if raw_date else today
+    except ValueError:
+        return jsonify({"error": "date must be YYYY-MM-DD"}), 400
+    if not (oldest <= day <= today):
+        return jsonify({"error": f"the log keeps {oldest.isoformat()} to {today.isoformat()}"}), 400
+    window = {"oldest": oldest.isoformat(), "newest": today.isoformat()}
+
     try:
-        completions = _list_completions_for_snapshot(snap_id, include_superseded=True)
+        entries = [
+            {"id": d.get("id"), **(d.get("data") or {})}
+            for d in roles.list_docs_by_kind(CHECKOFF_LOG_KIND)
+            if (d.get("data") or {}).get("local_date") == day.isoformat()
+        ]
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e)
 
-    # Names for docs written before completions carried one: the rows still
-    # on shift, then the live feed.
+    # Today: the live shift's completions, for the Reopened flag and for
+    # check-offs from before the log existed.
+    current = {}
     rows_by_job = {}
-    try:
-        for d in roles.list_docs_by_kind("reviewer_shift"):
-            data = d.get("data") or {}
-            if data.get("shift_snapshot_id") != snap_id:
-                continue
-            for r in data.get("rows") or []:
-                rows_by_job.setdefault(_row_job_key(r), r)
-    except requests.exceptions.HTTPError:
-        pass  # names are best-effort
-    try:
-        feed = bloom.fetch_prioritized_jobs()
-    except Exception:  # noqa: BLE001 — names and live counts are best-effort
-        feed = []
-    feed_by_job = {str(j.get("jobId")): j for j in feed if j.get("jobId")}
+    if day == today:
+        try:
+            snap_id, _ = _latest_snapshot()
+            if snap_id:
+                current = {c.get("id"): c for c in
+                           _list_completions_for_snapshot(snap_id, include_superseded=True)}
+                for d in roles.list_docs_by_kind("reviewer_shift"):
+                    data = d.get("data") or {}
+                    if data.get("shift_snapshot_id") == snap_id:
+                        for r in data.get("rows") or []:
+                            rows_by_job.setdefault(_row_job_key(r), r)
+        except requests.exceptions.HTTPError:
+            pass  # the log alone still answers
+        logged = {e.get("completion_id") for e in entries}
+        entries += [{**c, "completion_id": cid} for cid, c in current.items()
+                    if cid not in logged]
+
+    feed_by_job = {}
+    if day == today:
+        try:
+            feed_by_job = {str(j.get("jobId")): j
+                           for j in bloom.fetch_prioritized_jobs() if j.get("jobId")}
+        except Exception:  # noqa: BLE001 — names and live counts are best-effort
+            pass
 
     try:
         roster = {
@@ -3979,32 +4071,34 @@ def api_shifts_checkoffs():
         roster = {}
 
     checkoffs = []
-    for c in completions:
-        email = (c.get("reviewer_email") or "").lower()
-        job_id = _completion_job_key(c)
+    for e in entries:
+        email = (e.get("reviewer_email") or "").lower()
+        job_id = _completion_job_key(e)
         if not email or not job_id:
             continue
         row = rows_by_job.get(job_id) or feed_by_job.get(job_id) or {}
         live = feed_by_job.get(job_id)
         info = roster.get(email) or {}
+        completion = current.get(e.get("completion_id")) or {}
         checkoffs.append({
-            "id": c.get("id"),
+            "id": e.get("completion_id") or e.get("id"),
             "reviewerEmail": email,
             "reviewerName": info.get("name", ""),
             "reviewerColor": info.get("color"),
             "jobId": job_id,
-            "projectId": c.get("project_id") or str(row.get("projectId") or ""),
-            "jobName": c.get("job_name") or str(row.get("name") or ""),
-            "completedAt": c.get("completed_at"),
-            "overridden": bool(c.get("overridden")),
-            "note": c.get("note") or "",
-            "superseded": bool(c.get("superseded_at")),
+            "projectId": e.get("project_id") or str(row.get("projectId") or ""),
+            "jobName": e.get("job_name") or str(row.get("name") or ""),
+            "completedAt": e.get("completed_at"),
+            "overridden": bool(e.get("overridden")),
+            "note": e.get("note") or "",
+            "superseded": bool(completion.get("superseded_at")),
             # Unreviewed now, from the feed; None when the job has left it
-            # (nothing new) or the feed is down.
+            # (nothing new), the feed is down, or the day isn't today.
             "unreviewedNow": int(live.get("unreviewedCount") or 0) if live else None,
         })
     checkoffs.sort(key=lambda x: x["completedAt"] or "", reverse=True)
-    return jsonify({"data": {"snapshot_id": snap_id, "checkoffs": checkoffs}})
+    return jsonify({"data": {"date": day.isoformat(), "window": window,
+                             "checkoffs": checkoffs}})
 
 
 @app.route("/api/shifts/completions", methods=["DELETE"])
