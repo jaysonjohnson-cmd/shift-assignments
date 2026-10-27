@@ -758,6 +758,9 @@ def api_shifts_auto_publish():
         except requests.exceptions.HTTPError:
             existing_snap_id, existing_snap_data = None, None
 
+        # A reviewer re-published mid-shift keeps their original start, so the
+        # leaderboard's responses/hr still counts the hours already worked.
+        prior_starts: dict = {}
         if existing_snap_id:
             try:
                 # Forced, like manual publish: a stale warm cache can miss a
@@ -771,7 +774,10 @@ def api_shifts_auto_publish():
                 doc_data = doc.get("data") or {}
                 if doc_data.get("shift_snapshot_id") != existing_snap_id:
                     continue
-                if (doc_data.get("reviewer_email") or "").strip().lower() in normalized:
+                doc_email = (doc_data.get("reviewer_email") or "").strip().lower()
+                if doc_email in normalized:
+                    prior_starts[doc_email] = _earliest_assigned_at(
+                        [doc_data], prior_starts.get(doc_email))
                     _try_delete(doc.get("id"))
                 else:
                     for r in doc_data.get("rows") or []:
@@ -809,6 +815,7 @@ def api_shifts_auto_publish():
                     "total_parts": len(chunks),
                     "rows": chunk,
                     "prioritization_flags": _AUTO_PUBLISH_FLAGS,
+                    "assigned_at": prior_starts.get(email) or published_at,
                 }
                 try:
                     internal_api.post(_STORAGE_PATH, json={"data": doc})
@@ -1457,6 +1464,7 @@ def api_shifts_publish():
             return _http_error_response(e)
         existing_jobs_by_email: dict = {}
         old_doc_ids_by_email: dict = {}
+        prior_starts: dict = {}  # email -> earliest assigned_at, see _reviewer_shift_start
         all_existing_keys: set = set()
         existing_holders: dict = {}  # job key -> emails holding it now
         for doc in all_shift_docs:
@@ -1467,6 +1475,8 @@ def api_shifts_publish():
             rows = doc_data.get("rows") or []
             existing_jobs_by_email.setdefault(reviewer_email, []).extend(rows)
             old_doc_ids_by_email.setdefault(reviewer_email, []).append(doc.get("id"))
+            prior_starts[reviewer_email] = _earliest_assigned_at(
+                [doc_data], prior_starts.get(reviewer_email))
             for r in rows:
                 if _job_key(r):
                     all_existing_keys.add(_job_key(r))
@@ -1570,6 +1580,8 @@ def api_shifts_publish():
                     # someone else can't rescope their top-ups. See
                     # _auto_refill_reviewer.
                     "prioritization_flags": flags,
+                    # Kept from their earlier docs: a top-up isn't a new start.
+                    "assigned_at": prior_starts.get(email) or published_at,
                 }
                 try:
                     r = internal_api.post(_STORAGE_PATH, json={"data": doc})
@@ -1660,6 +1672,7 @@ def api_shifts_publish():
                 # comparable amount of work rather than a job count.
                 "batch_responses": sum(_row_responses(r) for r in normalized[email]),
                 "prioritization_flags": flags,
+                "assigned_at": published_at,
             }
             try:
                 r = internal_api.post(_STORAGE_PATH, json={"data": doc})
@@ -1869,6 +1882,31 @@ def _rows_for_reviewer(snapshot_id, email, force=False):
     for data in matches:
         out.extend(data.get("rows") or [])
     return _dedup_rows(out)
+
+
+def _earliest_assigned_at(docs_data, current=None):
+    """Earliest `assigned_at` across reviewer_shift doc data and `current`, as
+    an ISO string, or None if none parse."""
+    best = _parse_iso_utc(current) if current else None
+    for data in docs_data:
+        ts = _parse_iso_utc(data.get("assigned_at")) if data.get("assigned_at") else None
+        if ts and (best is None or ts < best):
+            best = ts
+    return best.isoformat() if best else None
+
+
+def _reviewer_shift_start(snapshot_id, snapshot_data, email):
+    """When this reviewer's shift started: the earliest `assigned_at` on their
+    reviewer_shift docs. Docs written before that stamp fall back to the
+    snapshot's publish time."""
+    norm = (email or "").strip().lower()
+    mine = [
+        d.get("data") or {}
+        for d in roles.list_docs_by_kind("reviewer_shift")
+        if (d.get("data") or {}).get("shift_snapshot_id") == snapshot_id
+        and ((d.get("data") or {}).get("reviewer_email") or "").strip().lower() == norm
+    ]
+    return _earliest_assigned_at(mine) or (snapshot_data or {}).get("published_at")
 
 
 def _reviewer_row_for_job(snapshot_id, email, job_id):
@@ -2752,6 +2790,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         # docs written before the per-reviewer stamp.
         own_flags = None
         own_flags_part = -1
+        own_start = None  # carried forward; a top-up isn't a new shift start
 
         try:
             for snap in roles.list_docs_by_kind("shift_snapshot"):
@@ -2785,6 +2824,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                 max_part = max(max_part, part)
                 if isinstance(data.get("prioritization_flags"), dict) and part >= own_flags_part:
                     own_flags, own_flags_part = data["prioritization_flags"], part
+                own_start = _earliest_assigned_at([data], own_start)
                 bs = data.get("batch_size")
                 if bs:
                     batch_size = bs if batch_size is None else min(batch_size, bs)
@@ -3038,6 +3078,8 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                     # Carried forward so the next top-up reads the same filters.
                     "prioritization_flags": prioritization_flags,
                 }
+                if own_start:
+                    doc["assigned_at"] = own_start
                 try:
                     r = internal_api.post(_STORAGE_PATH, json={"data": doc})
                     new_id = (r.get("data") or {}).get("id")
@@ -3168,21 +3210,41 @@ def _week_start_utc(dt):
     return datetime.datetime(monday.year, monday.month, monday.day, tzinfo=datetime.timezone.utc)
 
 
-def _record_review_event(email, completed_at_iso, responses=0):
+def _widen_active_span(span, start, end):
+    """[start, end] ISO pair covering both `span` (or None) and start..end."""
+    lo, hi = _parse_iso_utc(start), _parse_iso_utc(end)
+    if span and len(span) == 2:
+        old_lo, old_hi = _parse_iso_utc(span[0]), _parse_iso_utc(span[1])
+        if old_lo and old_lo < lo:
+            lo = old_lo
+        if old_hi and old_hi > hi:
+            hi = old_hi
+    return [lo.isoformat(), hi.isoformat()]
+
+
+def _record_review_event(email, completed_at_iso, responses=0, shift_start=None):
     """Increment the reviewer's per-week leaderboard tally (one doc per
     reviewer+ISO-week). Tracks both jobs completed (`days`/`total`) and the
     number of responses cleared (`resp_days`/`resp_total`) so the leaderboard
     can show response volume, not just job count. Bounded growth (reviewers ×
     weeks) keeps us well under the namespace cap, and it survives shift clears
-    because it isn't a completion doc."""
+    because it isn't a completion doc.
+
+    `active_days` holds each day's [shift start, last check-off] — the hours
+    the leaderboard divides responses by for its responses/hr."""
     try:
         dt = datetime.datetime.fromisoformat(completed_at_iso)
     except (ValueError, TypeError):
         dt = datetime.datetime.now(datetime.timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
     week = _iso_week_key(dt)
     day = dt.date().isoformat()
     norm = (email or "").strip().lower()
     responses = max(0, int(responses or 0))
+    start = _parse_iso_utc(shift_start) if shift_start else None
+    if start is None or start > dt:
+        start = dt
 
     def _find(force=False):
         for d in roles.list_docs_by_kind("review_tally", force=force):
@@ -3207,6 +3269,9 @@ def _record_review_event(email, completed_at_iso, responses=0):
         data["total"] = int(data.get("total", 0)) + 1
         data["resp_days"] = resp_days
         data["resp_total"] = int(data.get("resp_total", 0)) + responses
+        active_days = {**(data.get("active_days") or {})}
+        active_days[day] = _widen_active_span(active_days.get(day), start.isoformat(), dt.isoformat())
+        data["active_days"] = active_days
         internal_api.put(f"{_STORAGE_PATH}/{existing['id']}", json={"data": data})
         roles.cache_upsert_doc("review_tally", {"id": existing["id"], "data": data})
     else:
@@ -3218,11 +3283,34 @@ def _record_review_event(email, completed_at_iso, responses=0):
             "total": 1,
             "resp_days": {day: responses},
             "resp_total": responses,
+            "active_days": {day: [start.isoformat(), dt.isoformat()]},
         }
         resp = internal_api.post(_STORAGE_PATH, json={"data": data})
         new_id = (resp.get("data") or {}).get("id")
         if new_id:
             roles.cache_upsert_doc("review_tally", {"id": new_id, "data": data})
+
+
+def _span_hours(spans):
+    """Hours covered by [start, end] ISO spans, overlaps counted once — a
+    shift running past midnight UTC is logged under two day keys, both
+    starting at the same shift start."""
+    parsed = sorted(
+        (a, b) for a, b in ((_parse_iso_utc(s[0]), _parse_iso_utc(s[1])) for s in spans)
+        if a and b and b > a
+    )
+    total = 0.0
+    cur_a = cur_b = None
+    for a, b in parsed:
+        if cur_b is None or a > cur_b:
+            if cur_b is not None:
+                total += (cur_b - cur_a).total_seconds()
+            cur_a, cur_b = a, b
+        elif b > cur_b:
+            cur_b = b
+    if cur_b is not None:
+        total += (cur_b - cur_a).total_seconds()
+    return total / 3600
 
 
 _DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -3305,7 +3393,13 @@ def api_shifts_leaderboard():
         if period == "month" and not any(row_days) and not any(row_resp):
             continue  # a tally from another month
         m = merged.setdefault(email, {"total": 0, "responses": 0,
-                                      "days": [0] * n, "resp_days": [0] * n})
+                                      "days": [0] * n, "resp_days": [0] * n,
+                                      "spans": [None] * n})
+        active = data.get("active_days") or {}
+        for i, k in enumerate(day_keys):
+            span = active.get(k)
+            if span and len(span) == 2:
+                m["spans"][i] = _widen_active_span(m["spans"][i], span[0], span[1])
         if period == "week":
             m["total"] += int(data.get("total", 0))
             m["responses"] += int(data.get("resp_total", 0))
@@ -3320,6 +3414,9 @@ def api_shifts_leaderboard():
     reviewers = []
     for email, m in merged.items():
         info = roster.get(email) or {}
+        hours_days = [
+            round(_span_hours([s]), 2) if s else 0 for s in m["spans"]
+        ]
         reviewers.append({
             "email": email,
             "name": info.get("name") or email.split("@")[0],
@@ -3328,6 +3425,13 @@ def api_shifts_leaderboard():
             "days": m["days"],
             "responses": m["responses"],
             "resp_days": m["resp_days"],
+            # For responses/hr. Days logged before hours were recorded have no
+            # span, so their responses are left out of the rate rather than
+            # divided by hours that don't include them.
+            "hours": round(_span_hours([s for s in m["spans"] if s]), 2),
+            "hours_days": hours_days,
+            "timed_responses": sum(
+                m["resp_days"][i] for i in range(n) if m["spans"][i]),
         })
     reviewers.sort(key=lambda r: (-r["total"], r["name"]))
 
@@ -3339,6 +3443,9 @@ def api_shifts_leaderboard():
         "reviewers": reviewers,
         "team_total": sum(r["total"] for r in reviewers),
         "team_responses": sum(r["responses"] for r in reviewers),
+        # Person-hours, so the team rate is responses per reviewer-hour.
+        "team_hours": round(sum(r["hours"] for r in reviewers), 2),
+        "team_timed_responses": sum(r["timed_responses"] for r in reviewers),
         "totals_by_day": totals_by_day,
         "best_day": max(range(n), key=lambda i: totals_by_day[i]) if any(totals_by_day) else None,
     }
@@ -3662,7 +3769,8 @@ def api_shifts_my_complete():
     # _responses_to_credit for how the response count is arrived at.
     try:
         responses = _responses_to_credit(snap_id, snap_data, email, job_id, doc_id, row=row)
-        _record_review_event(email, completed_at, responses)
+        _record_review_event(email, completed_at, responses,
+                             shift_start=_reviewer_shift_start(snap_id, snap_data, email))
         if _split_sharers(row):
             # Recorded so the next sharer to finish is credited only for what's left.
             doc["credited_responses"] = responses

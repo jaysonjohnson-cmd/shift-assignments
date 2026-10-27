@@ -12,6 +12,14 @@ import { useUser } from "@/lib/useUser";
 import { reviewerColor } from "@/lib/types";
 import { MedalIcon, Podium, initials } from "@/components/leaderboard/Podium";
 
+/** Below this much time on shift a rate is mostly noise (one quick check-off
+ *  reads as hundreds an hour), so it shows as "—". */
+const MIN_RATE_HOURS = 0.25;
+
+function perHour(responses: number, hours: number): number | null {
+  return hours >= MIN_RATE_HOURS ? Math.round(responses / hours) : null;
+}
+
 function colorFor(r: LeaderboardReviewer): string {
   return reviewerColor({ color: r.color ?? undefined, email: r.email });
 }
@@ -99,6 +107,13 @@ export default function LeaderboardPage() {
   // Responses (volume) for the active view, shown alongside the job count.
   const respMetric = (r: LeaderboardReviewer) =>
     view === "all" ? r.responses : r.resp_days?.[view] ?? 0;
+  // Responses per hour on shift (shift start → last check-off). Days logged
+  // before hours were recorded carry no hours and are left out of the rate.
+  const hoursMetric = (r: LeaderboardReviewer) =>
+    view === "all" ? r.hours ?? 0 : r.hours_days?.[view] ?? 0;
+  const timedRespMetric = (r: LeaderboardReviewer) =>
+    view === "all" ? r.timed_responses ?? 0 : (r.hours_days?.[view] ?? 0) > 0 ? respMetric(r) : 0;
+  const rateMetric = (r: LeaderboardReviewer) => perHour(timedRespMetric(r), hoursMetric(r));
   const dayLabel = (i: number) =>
     isMonth ? `${monthName(month, { month: "short" })} ${data?.day_labels[i] ?? ""}` : (data?.day_labels[i] ?? "");
   const scopeLabel = view === "all" ? periodLabel : dayLabel(view);
@@ -117,6 +132,14 @@ export default function LeaderboardPage() {
     view === "all"
       ? data?.team_responses ?? 0
       : reviewers.reduce((s, r) => s + respMetric(r), 0);
+  // Team rate is per reviewer-hour: everyone's timed responses over everyone's hours.
+  const teamRate =
+    view === "all"
+      ? perHour(data?.team_timed_responses ?? 0, data?.team_hours ?? 0)
+      : perHour(
+          reviewers.reduce((s, r) => s + timedRespMetric(r), 0),
+          reviewers.reduce((s, r) => s + hoursMetric(r), 0),
+        );
   const leader = reviewers[0];
   // Day highlighted in the daily chart: the selected day, else the best day.
   const highlightDay = view === "all" ? data?.best_day ?? -1 : view;
@@ -259,9 +282,15 @@ export default function LeaderboardPage() {
             </div>
           ) : (
           <>
-          <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-5">
             <StatCard label={`Jobs ${scopeLabel}`} value={teamTotal} />
             <StatCard label={`Responses ${scopeLabel}`} value={teamResponses} />
+            <StatCard
+              label="Responses / hr"
+              value={teamRate ?? "—"}
+              sub={teamRate != null ? "per reviewer" : undefined}
+              title="Responses cleared per hour on shift, shift start to last check-off"
+            />
             <StatCard
               label="Top reviewer"
               value={leader ? metric(leader) : 0}
@@ -330,6 +359,7 @@ export default function LeaderboardPage() {
             <div className="flex flex-col gap-2.5">
               {reviewers.map((r, i) => {
                 const c = colorFor(r);
+                const rate = rateMetric(r);
                 return (
                   <div key={r.email} className="flex items-center gap-3">
                     <div className="w-5 text-right text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
@@ -341,21 +371,36 @@ export default function LeaderboardPage() {
                     >
                       {initials(r.name)}
                     </div>
-                    <div className="w-32 truncate text-sm text-storesight-ink dark:text-storesight-ink-dark">
-                      {r.name}
+                    <div className="min-w-0 flex-1 sm:w-32 sm:flex-none">
+                      <div className="truncate text-sm text-storesight-ink dark:text-storesight-ink-dark">{r.name}</div>
+                      {/* Phone width: no room for the bar and counts beside the name. */}
+                      <div className="truncate text-xs tabular-nums text-storesight-ink-muted sm:hidden dark:text-storesight-ink-muted-dark">
+                        {metric(r)} jobs · {respMetric(r).toLocaleString()} resp
+                      </div>
                     </div>
-                    <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-storesight-bg-tint dark:bg-storesight-surface-dark">
+                    <div className="hidden h-2.5 flex-1 overflow-hidden rounded-full bg-storesight-bg-tint sm:block dark:bg-storesight-surface-dark">
                       <div
                         className="h-full rounded-full"
                         style={{ width: `${Math.round((metric(r) / max) * 100)}%`, backgroundColor: c }}
                       />
                     </div>
-                    <div className="w-24 text-right text-sm tabular-nums text-storesight-ink dark:text-storesight-ink-dark">
+                    <div className="hidden w-24 text-right text-sm tabular-nums text-storesight-ink sm:block dark:text-storesight-ink-dark">
                       <span className="font-semibold">{metric(r)}</span>
                       <span className="text-storesight-ink-muted dark:text-storesight-ink-muted-dark"> jobs</span>
                       <span className="ml-1.5 text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
                         {respMetric(r).toLocaleString()} resp
                       </span>
+                    </div>
+                    <div
+                      className="w-16 shrink-0 text-right text-sm tabular-nums text-storesight-ink dark:text-storesight-ink-dark"
+                      title={
+                        rate != null
+                          ? `${timedRespMetric(r).toLocaleString()} responses over ${hoursMetric(r).toFixed(1)} h on shift`
+                          : "Not enough time on shift recorded yet"
+                      }
+                    >
+                      <span className="font-semibold">{rate ?? "—"}</span>
+                      <span className="text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">/hr</span>
                     </div>
                   </div>
                 );
@@ -416,9 +461,22 @@ function TrophyIcon({ className }: { className?: string }) {
   );
 }
 
-function StatCard({ label, value, sub }: { label: string; value: number; sub?: string }) {
+function StatCard({
+  label,
+  value,
+  sub,
+  title,
+}: {
+  label: string;
+  value: number | string;
+  sub?: string;
+  title?: string;
+}) {
   return (
-    <div className="rounded-2xl border border-storesight-border bg-white p-4 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark">
+    <div
+      title={title}
+      className="rounded-2xl border border-storesight-border bg-white p-4 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark"
+    >
       <div className="text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">{label}</div>
       <div className="mt-0.5 text-2xl font-semibold text-storesight-ink dark:text-storesight-ink-dark">
         {value.toLocaleString()}

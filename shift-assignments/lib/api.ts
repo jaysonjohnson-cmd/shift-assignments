@@ -358,6 +358,12 @@ export type LeaderboardReviewer = {
   responses: number;
   /** Mon–Sun responses-cleared counts. */
   resp_days: number[];
+  /** Hours from shift start to last check-off, across the period. */
+  hours: number;
+  /** The same hours, per day. 0 for days logged before hours were recorded. */
+  hours_days: number[];
+  /** Responses on days that have hours — the numerator for responses/hr. */
+  timed_responses: number;
 };
 
 export type LeaderboardPeriod = "week" | "month";
@@ -377,6 +383,9 @@ export type Leaderboard = {
   reviewers: LeaderboardReviewer[];
   team_total: number;
   team_responses: number;
+  /** Reviewer-hours, summed across the team. */
+  team_hours: number;
+  team_timed_responses: number;
   totals_by_day: number[];
   best_day: number | null;
 };

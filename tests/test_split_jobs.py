@@ -179,7 +179,7 @@ def _live_split_shift(storage, monkeypatch, live_unreviewed, reviewed_total=None
     monkeypatch.setattr(main, "_auto_refill_reviewer", lambda *a, **k: [])
     credited = []
     monkeypatch.setattr(main, "_record_review_event",
-                        lambda email, at, responses=0: credited.append((email, responses)))
+                        lambda email, at, responses=0, **_: credited.append((email, responses)))
     return credited
 
 
