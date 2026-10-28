@@ -26,6 +26,9 @@ export type Row = {
   splitTotal?: number;
   /** My Tasks only: this reviewer's cut of splitTotal — how much to pull in. */
   splitShare?: number;
+  /** My Tasks only: the teammate clearing this split job's auto-rejects, when
+   *  it isn't this reviewer — their autoRejected then reads 0. */
+  rejectsClearedBy?: string;
   /** My Tasks only: the project also holds a job the tool excludes (video,
    *  …), so a By-PID card would open it in Collection Review. */
   projectHasExcluded?: boolean;

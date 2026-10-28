@@ -483,6 +483,11 @@ to let the job sit on several shifts.
   and counting those meant the last sharer could never clear it — 160 pending,
   157 of them new, on 2026-10-19. New arrivals go back out through refill as
   a normal job.
+- Auto-rejects (the AR badge, cleared on Response Search) go to **one**
+  sharer: the first, alphabetically, still on the job. The others read 0
+  plus `rejectsClearedBy`. Response Search has no `work_max`, so every
+  sharer used to see the whole count and work the same rejects. When the
+  clearer checks off, the next sharer picks them up.
 - Bloom's reviewed count isn't per-person, so leaderboard credit is divided:
   each finisher takes an even share of what's not yet credited, the last takes
   the remainder (`credited_responses` on the completion doc).

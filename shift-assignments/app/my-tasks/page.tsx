@@ -837,6 +837,9 @@ function SplitLoadHint({ row }: { row: Row }) {
           <strong>Include in-review</strong> unticked.
         </>
       )}
+      {row.rejectsClearedBy && (
+        <> {row.rejectsClearedBy} is clearing this job&apos;s auto-rejects — leave those to them.</>
+      )}
     </p>
   );
 }

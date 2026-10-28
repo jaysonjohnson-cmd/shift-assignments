@@ -2329,7 +2329,8 @@ def _split_shares(total, sharers):
 def _attach_split_partners(snap_id, email, items, roster):
     """Give each split row in `items` a `splitPartners` list — the teammates
     still sharing it, with whether they've checked it off — and `splitShare`,
-    this reviewer's cut of the job's responses at hand-out.
+    this reviewer's cut of the job's responses at hand-out. Auto-rejects stay
+    on only one sharer's row; the rest get `rejectsClearedBy`.
 
     Collection Review hands out responses in loads (Search / Load more), so
     the share is what tells each sharer how much to pull in. It's cut across
@@ -2359,6 +2360,16 @@ def _attach_split_partners(snap_id, email, items, roster):
             it["splitPartners"] = partners
             sharers = [email] + [p["email"] for p in partners]
             it["splitShare"] = _split_shares(it.get("splitTotal", 0), sharers)[email]
+            # Auto-rejects are cleared on Response Search, which has nothing
+            # like Collection Review's work_max to keep sharers apart — every
+            # sharer saw the whole count and worked the same rejects. So one
+            # clears them: the first sharer still on the job. When they check
+            # off it passes to the next, so the rejects are never stranded.
+            on_job = [e for e in sorted(sharers) if (e, k) not in done]
+            clearer = on_job[0] if on_job else email
+            if clearer != email:
+                it["autoRejected"] = 0
+                it["rejectsClearedBy"] = names.get(clearer) or clearer
         else:
             it.pop("splitWith", None)
             it.pop("splitTotal", None)

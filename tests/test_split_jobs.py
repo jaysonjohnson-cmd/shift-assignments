@@ -275,6 +275,37 @@ def test_split_share_holds_while_the_job_is_worked(client, storage, monkeypatch)
     assert row["splitShare"] == 50
 
 
+def _with_rejects(monkeypatch, n=12):
+    monkeypatch.setattr(main, "_live_counts_by_job", lambda: {
+        "BIG": {"reviewable": 40, "new": 52, "aged": 0, "possibleReject": n}})
+
+
+def test_only_one_sharer_is_given_the_auto_rejects(client, storage, monkeypatch):
+    """Response Search can't keep sharers apart, so every sharer used to see
+    the whole reject count and they all worked the same ones."""
+    c, token_file = client
+    _live_split_shift(storage, monkeypatch, live_unreviewed=40)
+    _with_rejects(monkeypatch)
+    token_file.write_text(_token(ALEX))  # first alphabetically
+    alex = c.get("/api/shifts/my").get_json()["data"]["rows"][0]
+    token_file.write_text(_token(SAM))
+    sam = c.get("/api/shifts/my").get_json()["data"]["rows"][0]
+    assert alex["autoRejected"] == 12 and "rejectsClearedBy" not in alex
+    assert sam["autoRejected"] == 0 and sam["rejectsClearedBy"] == "Alex"
+
+
+def test_auto_rejects_pass_on_when_their_sharer_checks_off(client, storage, monkeypatch):
+    c, token_file = client
+    _live_split_shift(storage, monkeypatch, live_unreviewed=40, reviewed_total=60)
+    token_file.write_text(_token(ALEX))
+    assert c.post("/api/shifts/my/complete",
+                  json={"job_id": "BIG", "override": True}).status_code == 201
+    _with_rejects(monkeypatch)
+    token_file.write_text(_token(SAM))
+    sam = c.get("/api/shifts/my").get_json()["data"]["rows"][0]
+    assert sam["autoRejected"] == 12 and "rejectsClearedBy" not in sam
+
+
 def test_uneven_split_gives_the_extra_response_to_one_sharer():
     assert main._split_shares(151, [SAM, ALEX]) == {ALEX: 76, SAM: 75}
 
