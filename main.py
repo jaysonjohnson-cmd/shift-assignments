@@ -654,6 +654,18 @@ def _distribute_evenly(rows, reviewers):
 # balancing is what the team wants on a scheduled run.
 _AUTO_PUBLISH_FLAGS = {"balanceByResponses": True}
 
+# Options (the Options-panel filters) are team-wide: the snapshot carries the
+# team's, set by the latest publish that included anyone on the team, and
+# every top-up follows them. These reviewers are the exception — they keep the
+# options they were themselves published with, and publishing them alone
+# leaves the team's untouched.
+_OWN_OPTIONS_REVIEWERS = frozenset({"jayson.johnson@storesight.com"})
+
+
+def _sets_team_options(emails) -> bool:
+    """Whether a publish to these reviewers sets the team's options."""
+    return any((e or "").strip().lower() not in _OWN_OPTIONS_REVIEWERS for e in emails)
+
 
 @app.route("/api/shifts/auto-publish", methods=["POST"])
 def api_shifts_auto_publish():
@@ -1388,6 +1400,9 @@ def api_shifts_publish():
 
     if not normalized:
         return jsonify({"error": "assignments cannot be empty — assign at least one reviewer before publishing"}), 400
+    # Decided on everyone published, before any are dropped as unchanged: a
+    # re-publish of the team with new options still sets them.
+    team_options = _sets_team_options(normalized)
 
     # Cross-reviewer dedup: if the same job somehow appears in multiple reviewers'
     # lists, keep it only for the first reviewer (alphabetical). This is a safety
@@ -1576,9 +1591,8 @@ def api_shifts_publish():
                     # Response total, not just job count — auto-refill tops up to
                     # a comparable amount of work rather than a job count.
                     "batch_responses": sum(_row_responses(r) for r in live_rows),
-                    # This reviewer's own filters, so a later publish for
-                    # someone else can't rescope their top-ups. See
-                    # _auto_refill_reviewer.
+                    # Read back only for _OWN_OPTIONS_REVIEWERS; everyone
+                    # else follows the snapshot's team options.
                     "prioritization_flags": flags,
                     # Kept from their earlier docs: a top-up isn't a new start.
                     "assigned_at": prior_starts.get(email) or published_at,
@@ -1605,12 +1619,16 @@ def api_shifts_publish():
             "reviewer_emails": merged_emails,
             "last_updated_at": published_at,
             "last_updated_by": published_by,
-            "prioritization_flags": flags,
+            # The team's options. A publish of only _OWN_OPTIONS_REVIEWERS
+            # leaves them alone.
+            "prioritization_flags": (
+                flags if team_options else existing_snap_data.get("prioritization_flags") or {}),
         }
         try:
             internal_api.put(f"{_STORAGE_PATH}/{snapshot_id}", json={"data": updated_snap})
-        except requests.exceptions.HTTPError:
-            pass  # Non-fatal: reviewer_emails list is informational only
+        except requests.exceptions.HTTPError as e:
+            # Non-fatal, but the team's options didn't change with it.
+            logging.warning("publish: failed to update snapshot %s: %s", snapshot_id, e)
 
         roles.invalidate_doc_cache("shift_snapshot", "reviewer_shift")
         logging.info(
@@ -1648,7 +1666,8 @@ def api_shifts_publish():
         "published_at": published_at,
         "published_by": published_by,
         "reviewer_emails": reviewer_emails,
-        "prioritization_flags": flags,
+        # The team's options; none yet if only _OWN_OPTIONS_REVIEWERS are on it.
+        "prioritization_flags": flags if team_options else {},
     }
     try:
         resp = internal_api.post(_STORAGE_PATH, json={"data": index_doc})
@@ -2782,12 +2801,10 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             _clear_refill_attempt(snap_id, norm)
             return []
 
-        # Filters come from the reviewer's own shift docs, stamped at publish, so
-        # one shift can hold a Special-Job-Types reviewer alongside reviewers on
-        # ordinary work. The snapshot's flags are only whatever the latest
-        # publish used, for everyone in it — reading those let a publish for one
-        # reviewer rescope everyone else's top-ups. They remain the fallback for
-        # docs written before the per-reviewer stamp.
+        # Options are team-wide (see _OWN_OPTIONS_REVIEWERS): the snapshot holds
+        # the team's, so turning Retail Pipeline on for the team scopes every
+        # teammate's top-ups, not just whoever was in that publish. The
+        # exceptions follow the options stamped on their own docs.
         own_flags = None
         own_flags_part = -1
         own_start = None  # carried forward; a top-up isn't a new shift start
@@ -2834,7 +2851,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                 for row in data.get("rows") or []:
                     current_queue_responses += _row_responses(row)
 
-        if own_flags is not None:
+        if own_flags is not None and norm in _OWN_OPTIONS_REVIEWERS:
             prioritization_flags = own_flags
 
         # A job is off-limits while it is actively sitting in someone's queue.

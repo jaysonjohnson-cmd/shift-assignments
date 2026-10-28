@@ -1,10 +1,11 @@
-"""Each reviewer keeps the filters they were published with.
+"""Options are team-wide, except for _OWN_OPTIONS_REVIEWERS.
 
-Filters used to live only on the shift snapshot, and every publish into the
-shift overwrote them for everyone. Publishing one reviewer on Special Job
-Types and then adding a teammate on ordinary work silently rescoped the first
-reviewer's top-ups. The flags are now stamped on each reviewer's own
-reviewer_shift docs, and refill reads those.
+They were per reviewer for a while: each reviewer's top-ups followed the
+options they were last published with. In practice the team is run on one
+set of options, and per-reviewer stamps meant turning Retail Pipeline on for
+a newly added reviewer left everyone published earlier topping up with any
+work (2026-10-28). The snapshot now holds the team's options, set by any
+publish that includes a teammate; only the exempt reviewers keep their own.
 """
 
 import datetime
@@ -21,6 +22,7 @@ import roles  # noqa: E402
 
 SAM = "sam@storesight.com"
 ALEX = "alex@storesight.com"
+OWN = "jayson.johnson@storesight.com"
 
 
 def _token(email):
@@ -73,6 +75,7 @@ def storage(monkeypatch):
     monkeypatch.setattr(roles, "list_reviewers", lambda: [
         {"id": "1", "name": "Sam", "email": SAM},
         {"id": "2", "name": "Alex", "email": ALEX},
+        {"id": "3", "name": "Own", "email": OWN},
     ])
     return docs
 
@@ -92,25 +95,39 @@ SPECIAL = {"specialJobTypes": True, "balanceByResponses": True}
 ORDINARY = {"specialJobTypes": False, "balanceByResponses": True}
 
 
-def test_publish_stamps_each_reviewer_with_its_own_filters(client, storage):
-    r1 = client.post("/api/shifts/publish", json={
-        "assignments": {SAM: [_job("S1")]}, "flags": SPECIAL})
-    assert r1.status_code == 201, r1.get_json()
-    # Merge-publish a teammate into the same shift with different filters.
-    r2 = client.post("/api/shifts/publish", json={
-        "assignments": {ALEX: [_job("A1")]}, "flags": ORDINARY})
-    assert r2.status_code == 201, r2.get_json()
-
-    assert _flags_of(storage, SAM) == [SPECIAL]
-    assert _flags_of(storage, ALEX) == [ORDINARY]
+def _team_flags(docs):
+    snaps = [d["data"] for d in docs if d["data"].get("kind") == "shift_snapshot"]
+    assert len(snaps) == 1
+    return snaps[0].get("prioritization_flags")
 
 
-def test_republishing_a_reviewer_changes_only_theirs(client, storage):
+def test_exempt_set_is_only_jayson():
+    assert main._OWN_OPTIONS_REVIEWERS == frozenset({OWN})
+
+
+def test_a_teammate_publish_sets_the_team_options(client, storage):
     client.post("/api/shifts/publish", json={
-        "assignments": {SAM: [_job("S1")], ALEX: [_job("A1")]}, "flags": ORDINARY})
+        "assignments": {SAM: [_job("S1")]}, "flags": ORDINARY})
     r = client.post("/api/shifts/publish", json={
-        "assignments": {SAM: [_job("S1"), _job("S2")]}, "flags": SPECIAL})
+        "assignments": {ALEX: [_job("A1")]}, "flags": SPECIAL})
     assert r.status_code == 201, r.get_json()
+    # Sam was published earlier on ordinary work, and now follows the team.
+    assert _team_flags(storage) == SPECIAL
 
-    assert _flags_of(storage, SAM) == [SPECIAL]
-    assert _flags_of(storage, ALEX) == [ORDINARY]
+
+def test_publishing_only_the_exempt_reviewer_leaves_the_team_alone(client, storage):
+    client.post("/api/shifts/publish", json={
+        "assignments": {SAM: [_job("S1")]}, "flags": SPECIAL})
+    r = client.post("/api/shifts/publish", json={
+        "assignments": {OWN: [_job("J1")]}, "flags": ORDINARY})
+    assert r.status_code == 201, r.get_json()
+    assert _team_flags(storage) == SPECIAL
+    # Their own options are still stamped on their docs, for their top-ups.
+    assert _flags_of(storage, OWN) == [ORDINARY]
+
+
+def test_a_shift_started_by_the_exempt_reviewer_has_no_team_options(client, storage):
+    r = client.post("/api/shifts/publish", json={
+        "assignments": {OWN: [_job("J1")]}, "flags": SPECIAL})
+    assert r.status_code == 201, r.get_json()
+    assert _team_flags(storage) == {}

@@ -538,6 +538,10 @@ export default function AssignmentsPage() {
                     {pgStoreWalkOnly ? "✓ " : ""}P&amp;G Display Store Walk
                   </button>
                 </div>
+                <p className="text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                  Publishing sets these for the whole team&apos;s top-ups, not just who&apos;s in this
+                  publish. Jayson keeps his own: publishing only him leaves the team&apos;s alone.
+                </p>
               </div>
             )}
           </div>

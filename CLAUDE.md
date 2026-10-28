@@ -332,15 +332,18 @@ is the cost of refills being independent rather than planned as a batch.
 The job count always fills regardless — this only decides how much of the batch
 is heavy work.
 
-**Filters are per reviewer.** The Options-panel filters (Special Job Types,
-Retail Pipeline only, P&G Store Walk, balancing, …) are stamped on each
-reviewer's own `reviewer_shift` docs at publish as `prioritization_flags`, and
-refill reads them from there — then carries them forward onto the docs it
-writes. So publishing one reviewer on Special Job Types and then a teammate on
-ordinary work keeps both as published. The snapshot's `prioritization_flags`
-still gets the latest publish's flags, but refill only falls back to it for
-docs written before the per-reviewer stamp. Re-publishing a reviewer replaces
-their filters.
+**Options are team-wide, one reviewer excepted.** The Options-panel filters
+(Special Job Types, Retail Pipeline only, P&G Store Walk, balancing, …) live
+on the shift snapshot's `prioritization_flags`, which any publish that includes
+a teammate overwrites, and every top-up reads them. So turning Retail Pipeline
+on while adding one reviewer rescopes the whole team's top-ups too.
+`_OWN_OPTIONS_REVIEWERS` (just Jayson) are the exception: refill reads their
+own `reviewer_shift` docs' stamp instead, and publishing only them leaves the
+team's options untouched.
+
+They were per reviewer for a while (2026-10). That left everyone published
+earlier topping up with any work after Retail Pipeline was turned on for a
+later-added reviewer, which isn't how the team is run.
 
 **Special Job Types matches two names.** A job qualifies when its internal
 name *or* its public name (the one agents see) contains a fragment from

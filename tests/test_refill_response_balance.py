@@ -795,20 +795,28 @@ def _special_and_ordinary_feed():
     return feed
 
 
-def test_refill_follows_the_reviewers_own_filters_over_the_snapshot(refill):
-    """A later publish for a teammate rewrites the snapshot's flags; this
-    reviewer was published on Special Job Types and must stay on it."""
+def test_refill_follows_the_team_options_over_its_own_stamp(refill):
+    """Options are team-wide: a later publish that turned Special Job Types on
+    for the team scopes this reviewer too, whatever they were published with."""
+    added = refill(_special_and_ordinary_feed(), batch_size=20,
+                   batch_responses=300, flags={"specialJobTypes": True},
+                   own_flags={"specialJobTypes": False})
+    assert [r["jobId"] for r in added] == ["special"]
+
+
+def test_refill_drops_its_own_stamp_when_the_team_turns_options_off(refill):
+    added = refill(_special_and_ordinary_feed(), batch_size=20,
+                   batch_responses=300, flags={"specialJobTypes": False},
+                   own_flags={"specialJobTypes": True})
+    assert sorted(r["jobId"] for r in added) == ["ordinary", "special"]
+
+
+def test_exempt_reviewer_keeps_their_own_options(refill, monkeypatch):
+    monkeypatch.setattr(main, "_OWN_OPTIONS_REVIEWERS", frozenset({REVIEWER}))
     added = refill(_special_and_ordinary_feed(), batch_size=20,
                    batch_responses=300, flags={"specialJobTypes": False},
                    own_flags={"specialJobTypes": True})
     assert [r["jobId"] for r in added] == ["special"]
-
-
-def test_refill_ignores_a_teammates_special_snapshot(refill):
-    added = refill(_special_and_ordinary_feed(), batch_size=20,
-                   batch_responses=300, flags={"specialJobTypes": True},
-                   own_flags={"specialJobTypes": False})
-    assert sorted(r["jobId"] for r in added) == ["ordinary", "special"]
 
 
 def test_refill_falls_back_to_snapshot_flags_for_older_docs(refill):
@@ -817,13 +825,13 @@ def test_refill_falls_back_to_snapshot_flags_for_older_docs(refill):
     assert [r["jobId"] for r in added] == ["special"]
 
 
-def test_refill_carries_the_reviewers_filters_forward(refill):
-    own = {"specialJobTypes": True, "balanceByResponses": True}
+def test_refill_carries_the_team_options_forward(refill):
+    team = {"specialJobTypes": True, "balanceByResponses": True}
     refill(_special_and_ordinary_feed(), batch_size=20, batch_responses=300,
-           flags={}, own_flags=own)
+           flags=team, own_flags={})
     written = [d["data"] for d in refill.stored
                if d["data"].get("kind") == "reviewer_shift"]
-    assert written and all(d["prioritization_flags"] == own for d in written)
+    assert written and all(d["prioritization_flags"] == team for d in written)
 
 
 def test_special_job_types_off_leaves_the_pool_alone(refill):
