@@ -12,7 +12,7 @@ import { useStore } from "@/lib/store";
 import { useUser } from "@/lib/useUser";
 import { useReviewerSync } from "@/lib/useReviewerSync";
 import { getBloomJobs, getBloomProjects, publishShift, clearShift, getShiftJobs, getSubmissionAges, type ShiftJobs } from "@/lib/api";
-import { activeSplitSharers, assignShift, pinnedCountsByReviewer, plannedTotal, splitJidCounts } from "@/lib/assign";
+import { activeSplitSharers, assignShift, pinnedCountsByReviewer, plannedTotal, splitJidCounts, withSplitJobs } from "@/lib/assign";
 import {
   emptyShiftDraft,
   EXCLUDED_CLIENTS,
@@ -183,7 +183,9 @@ export default function AssignmentsPage() {
     return keys;
   }, [liveJobs, mode, reviewerEmailById]);
 
-  const priorityPool = useMemo<Row[]>(() => {
+  // Everything assignable, before the Options filters. Split JIDs are picked
+  // from this, since a split is an explicit choice the filters shouldn't undo.
+  const unscopedPool = useMemo<Row[]>(() => {
     // Only pull ACTIVE work into the shift — never assign a job that has no
     // unreviewed responses left. Empty jobs in the feed would otherwise land in
     // reviewers' queues as "old" JIDs with nothing to review. Also exclude
@@ -193,11 +195,16 @@ export default function AssignmentsPage() {
     // left on it was auto-rejected, and clearing that down on the Responses
     // page is the work. Nothing else will ever pick it up, which is why those
     // jobs are the oldest things in the queue.
-    let filtered = (rows as Row[]).filter(
+    return (rows as Row[]).filter(
       (r) =>
         ((r.unreviewedCount || 0) > 0 || Number(r.extras?.agedCount ?? 0) > 0) &&
-        !EXCLUDED_CLIENTS.has(String(r.extras?.client ?? "").trim().toLowerCase()),
+        !EXCLUDED_CLIENTS.has(String(r.extras?.client ?? "").trim().toLowerCase()) &&
+        !assignedElsewhereKeys.has(String(r.jobId || r.id || "")),
     );
+  }, [rows, assignedElsewhereKeys]);
+
+  const priorityPool = useMemo<Row[]>(() => {
+    let filtered = unscopedPool;
     if (prioritizeAged) {
       filtered = filtered.filter((r) => Number(r.extras?.agedCount ?? 0) > 0);
     }
@@ -214,11 +221,6 @@ export default function AssignmentsPage() {
         (r) =>
           String(r.extras?.client ?? "").toLowerCase() ===
           "retailpipeline@fieldagent.net",
-      );
-    }
-    if (assignedElsewhereKeys.size > 0) {
-      filtered = filtered.filter(
-        (r) => !assignedElsewhereKeys.has(String(r.jobId || r.id || "")),
       );
     }
     // Aged mode: rank by the job's TRUE oldest unreviewed submission (from the
@@ -252,7 +254,14 @@ export default function AssignmentsPage() {
       });
     }
     return [...filtered].sort((a, b) => a.priority - b.priority);
-  }, [rows, prioritizeAged, specialJobTypes, retailPipelineOnly, pgStoreWalkOnly, assignedElsewhereKeys, agedSubDates, agedMinDays]);
+  }, [unscopedPool, prioritizeAged, specialJobTypes, retailPipelineOnly, pgStoreWalkOnly, agedSubDates, agedMinDays]);
+
+  // What the shift is built from: the filtered pool plus any split job the
+  // filters scoped out, so it still goes to its sharers.
+  const shiftPool = useMemo(
+    () => withSplitJobs(priorityPool, unscopedPool, mode.kind === "shift" ? mode.draft : emptyShiftDraft()),
+    [priorityPool, unscopedPool, mode],
+  );
 
   const cancel = () => {
     setMode({ kind: "menu" });
@@ -296,7 +305,7 @@ export default function AssignmentsPage() {
     setError(null);
     try {
       // Merge aged submission dates into rows before assigning
-      const poolWithDates = priorityPool.map((r) => ({
+      const poolWithDates = shiftPool.map((r) => ({
         ...r,
         oldestSubmission: agedSubDates[String(r.jobId || r.id || "")] || r.oldestSubmission || "",
       }));
@@ -530,7 +539,7 @@ export default function AssignmentsPage() {
           <button
             type="button"
             onClick={() => handlePublishShift(mode.draft)}
-            disabled={busy || !canPublishShift(mode.draft, priorityPool)}
+            disabled={busy || !canPublishShift(mode.draft, shiftPool)}
             className="rounded-lg border border-storesight-accent bg-storesight-accent/10 px-4 py-2 text-sm font-semibold text-storesight-primary transition hover:bg-storesight-accent/20 disabled:opacity-50 dark:border-storesight-accent-light dark:bg-storesight-accent/20 dark:text-storesight-accent-light"
           >
             {busy ? "Publishing…" : "Publish shift"}
@@ -546,8 +555,9 @@ export default function AssignmentsPage() {
 
       <ShiftComposer
         draft={mode.draft}
-        pool={priorityPool.length}
-        poolRows={priorityPool}
+        pool={shiftPool.length}
+        poolRows={shiftPool}
+        splitPoolRows={unscopedPool}
         reviewers={reviewers}
         projects={projects}
         pinsForOtherShift={new Set()}

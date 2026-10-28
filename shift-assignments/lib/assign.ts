@@ -505,6 +505,28 @@ export function activeSplitSharers(draft: ShiftDraft, jobKey: string): string[] 
 }
 
 /**
+ * The shift pool plus any split job the Options filters scoped out of it.
+ * Splitting a job is an explicit pick, and the filters (Special job types,
+ * Retail Pipeline, P&G Store Walk, aged) shape the rest of the shift — so a
+ * split that doesn't match them used to drop out of the pool and silently go
+ * unassigned. `unscoped` is the pool before those filters, still limited to
+ * active, assignable work.
+ */
+export function withSplitJobs(scoped: Row[], unscoped: Row[], draft: ShiftDraft): Row[] {
+  const splits = draft.jobSplits ?? {};
+  if (Object.keys(splits).length === 0) return scoped;
+  const have = new Set(scoped.map((r) => String(r.jobId || r.id || "")));
+  const extra: Row[] = [];
+  for (const row of unscoped) {
+    const key = String(row.jobId || row.id || "");
+    if (!key || have.has(key) || !(key in splits)) continue;
+    have.add(key);
+    extra.push(row);
+  }
+  return extra.length > 0 ? [...scoped, ...extra] : scoped;
+}
+
+/**
  * Split jobs in effect for this pool: how many there are (each counted once,
  * for the shift total) and how many each reviewer receives on top of their count.
  */

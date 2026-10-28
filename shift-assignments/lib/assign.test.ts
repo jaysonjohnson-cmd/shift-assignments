@@ -6,6 +6,7 @@ import {
   pinnedCountsByReviewer,
   plannedTotal,
   splitJidCounts,
+  withSplitJobs,
 } from "./assign";
 import type { Row, ShiftDraft } from "./types";
 
@@ -331,5 +332,22 @@ describe("split JIDs", () => {
   it("counts a split job once for the shift and once per sharer", () => {
     const draft = { ...mockShift(["Saylor", "Laurel", "Austin"]), jobSplits: { BIG: ["Saylor", "Laurel", "Austin"] } };
     expect(splitJidCounts(pool, draft)).toEqual({ jobs: 1, byReviewer: { Saylor: 1, Laurel: 1, Austin: 1 } });
+  });
+
+  it("keeps a split job an Options filter scoped out of the pool", () => {
+    // e.g. "Special job types" on: BIG isn't special, so the scoped pool lacks it.
+    const scoped = pool.filter((r) => r.jobId !== "BIG");
+    const draft = { ...mockShift(["Saylor", "Laurel"]), jobSplits: { BIG: ["Saylor", "Laurel"] } };
+    const { assignments } = assignShift(withSplitJobs(scoped, pool, draft), draft);
+    expect(assignments.Saylor.some((r) => r.jobId === "BIG")).toBe(true);
+    expect(assignments.Laurel.some((r) => r.jobId === "BIG")).toBe(true);
+  });
+
+  it("adds back only split jobs, once each", () => {
+    const scoped = pool.filter((r) => r.jobId === "JID-2");
+    const draft = { ...mockShift(["Saylor", "Laurel"]), jobSplits: { BIG: ["Saylor", "Laurel"] } };
+    const keys = withSplitJobs(scoped, [...pool, pool[0]], draft).map((r) => r.jobId);
+    expect(keys).toEqual(["JID-2", "BIG"]);
+    expect(withSplitJobs(scoped, pool, mockShift(["Saylor"]))).toBe(scoped);
   });
 });

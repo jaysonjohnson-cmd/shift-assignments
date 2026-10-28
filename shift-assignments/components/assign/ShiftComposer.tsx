@@ -31,6 +31,7 @@ export function ShiftComposer({
   onChange,
   pool,
   poolRows,
+  splitPoolRows,
   reviewers,
   projects = [],
   pinsForOtherShift,
@@ -41,6 +42,8 @@ export function ShiftComposer({
   pool: number;
   /** The actual row objects — needed to count pinned JIDs accurately. */
   poolRows?: Row[];
+  /** Rows a job can be split from — the pool before the Options filters. */
+  splitPoolRows?: Row[];
   reviewers: Reviewer[];
   projects?: ProjectSummary[];
   pinsForOtherShift?: Set<string>;
@@ -445,7 +448,7 @@ export function ShiftComposer({
       {poolRows && (
         <JobSplitPanel
           draft={draft}
-          poolRows={poolRows}
+          poolRows={splitPoolRows ?? poolRows}
           reviewers={reviewers}
           onChange={(jobSplits) => commit({ jobSplits })}
         />
