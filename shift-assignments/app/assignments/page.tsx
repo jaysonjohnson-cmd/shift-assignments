@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AssignMenu } from "@/components/assign/AssignMenu";
 import { ShiftComposer } from "@/components/assign/ShiftComposer";
+import type { ProjectAvailability } from "@/components/assign/ProjectAssignmentPanel";
 import {
   AssignSummary,
   summarizeShift,
@@ -262,6 +263,29 @@ export default function AssignmentsPage() {
     () => withSplitJobs(priorityPool, unscopedPool, mode.kind === "shift" ? mode.draft : emptyShiftDraft()),
     [priorityPool, unscopedPool, mode],
   );
+
+  // Per project: how many of its JIDs this shift can hand out, and who in the
+  // live shift has the rest. The project list comes straight from Bloom, so
+  // without this a project a teammate already held looked pinnable and the
+  // pin silently assigned nothing (PID 1636184, 2026-10-28).
+  const projectAvailability = useMemo(() => {
+    const out = new Map<string, ProjectAvailability>();
+    const entry = (pid: string) => {
+      let e = out.get(pid);
+      if (!e) out.set(pid, (e = { available: 0, heldBy: [], doneBy: [] }));
+      return e;
+    };
+    for (const r of shiftPool) if (r.projectId) entry(r.projectId).available++;
+    for (const group of liveJobs?.jobs_by_reviewer ?? []) {
+      for (const job of group.jobs) {
+        if (!job.projectId || !assignedElsewhereKeys.has(String(job.jobId || job.id || ""))) continue;
+        const e = entry(job.projectId);
+        const who = job.completed ? e.doneBy : e.heldBy;
+        if (!who.includes(group.name)) who.push(group.name);
+      }
+    }
+    return out;
+  }, [shiftPool, liveJobs, assignedElsewhereKeys]);
 
   const cancel = () => {
     setMode({ kind: "menu" });
@@ -558,6 +582,7 @@ export default function AssignmentsPage() {
         pool={shiftPool.length}
         poolRows={shiftPool}
         splitPoolRows={unscopedPool}
+        projectAvailability={projectAvailability}
         reviewers={reviewers}
         projects={projects}
         pinsForOtherShift={new Set()}

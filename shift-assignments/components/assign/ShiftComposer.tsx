@@ -22,7 +22,7 @@ import {
 } from "@/lib/types";
 import { ReviewerPicker } from "./ReviewerPicker";
 import { CountEditor } from "./CountEditor";
-import { ProjectAssignmentPanel } from "./ProjectAssignmentPanel";
+import { ProjectAssignmentPanel, type ProjectAvailability } from "./ProjectAssignmentPanel";
 import { JobSplitPanel } from "./JobSplitPanel";
 import { ReviewerMultiSelectModal } from "./ReviewerMultiSelectModal";
 
@@ -32,6 +32,7 @@ export function ShiftComposer({
   pool,
   poolRows,
   splitPoolRows,
+  projectAvailability,
   reviewers,
   projects = [],
   pinsForOtherShift,
@@ -44,6 +45,8 @@ export function ShiftComposer({
   poolRows?: Row[];
   /** Rows a job can be split from — the pool before the Options filters. */
   splitPoolRows?: Row[];
+  /** Per project: JIDs a pin would hand out, and who holds the rest. */
+  projectAvailability?: Map<string, ProjectAvailability>;
   reviewers: Reviewer[];
   projects?: ProjectSummary[];
   pinsForOtherShift?: Set<string>;
@@ -441,6 +444,7 @@ export function ShiftComposer({
           projects={projects}
           reviewers={reviewers}
           pinsForOtherShift={pinsForOtherShift ?? new Set()}
+          availability={projectAvailability}
           onChange={(nextPins) => commit({ projectPins: nextPins })}
         />
       )}

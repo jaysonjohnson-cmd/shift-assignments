@@ -8,6 +8,17 @@ import type {
   ShiftDraft,
 } from "@/lib/types";
 
+/** What a project can actually contribute to this shift. */
+export type ProjectAvailability = {
+  /** Its JIDs in the shift's pool — what a pin would hand out. */
+  available: number;
+  /** Live-shift reviewers still holding the rest, and those who checked it off. */
+  heldBy: string[];
+  doneBy: string[];
+};
+
+const NONE: ProjectAvailability = { available: 0, heldBy: [], doneBy: [] };
+
 /**
  * Per-shift, searchable project picker. Lets the admin multi-select projects
  * and mass-assign them to one of the shift's reviewers. Pinned projects
@@ -19,6 +30,7 @@ export function ProjectAssignmentPanel({
   projects,
   reviewers,
   pinsForOtherShift,
+  availability,
   onChange,
 }: {
   draft: ShiftDraft;
@@ -26,6 +38,12 @@ export function ProjectAssignmentPanel({
   reviewers: Reviewer[];
   /** ProjectIds already pinned in the *other* shift — hidden here. */
   pinsForOtherShift: Set<string>;
+  /**
+   * Per projectId; a project missing from it has nothing assignable. The
+   * project list comes straight from Bloom, so without this a project whose
+   * JIDs a teammate already holds looked pinnable and a pin assigned nothing.
+   */
+  availability?: Map<string, ProjectAvailability>;
   onChange: (pins: ShiftDraft["projectPins"]) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -67,8 +85,12 @@ export function ProjectAssignmentPanel({
         );
       });
     const dir = sortDir === "desc" ? -1 : 1;
-    return [...filtered].sort((a, b) => dir * (a.jidCount - b.jidCount));
-  }, [projects, pinsForOtherShift, query, sortDir]);
+    // Projects with nothing to hand out sink below the ones that do.
+    const open = (p: ProjectSummary) => Number(freeJids(p, availability) > 0);
+    return [...filtered].sort(
+      (a, b) => open(b) - open(a) || dir * (a.jidCount - b.jidCount),
+    );
+  }, [projects, pinsForOtherShift, query, sortDir, availability]);
 
   const toggleSelect = (pid: string) => {
     setSelected((prev) => {
@@ -81,9 +103,9 @@ export function ProjectAssignmentPanel({
 
   const selectedJidCount = useMemo(() => {
     let n = 0;
-    for (const p of visible) if (selected.has(p.projectId)) n += p.jidCount;
+    for (const p of visible) if (selected.has(p.projectId)) n += freeJids(p, availability);
     return n;
-  }, [visible, selected]);
+  }, [visible, selected, availability]);
 
   const assignSelectedTo = (reviewerId: string) => {
     const nextPins: ShiftDraft["projectPins"] = {};
@@ -152,7 +174,9 @@ export function ProjectAssignmentPanel({
               owner !== undefined &&
               shiftReviewers.some((s) => s.reviewerId === ownerId);
             const isChecked = selected.has(p.projectId);
-            const checkboxDisabled = shiftOwned && ownerId !== undefined;
+            const avail = availability ? (availability.get(p.projectId) ?? NONE) : undefined;
+            const nothingToAssign = avail !== undefined && avail.available === 0;
+            const checkboxDisabled = (shiftOwned && ownerId !== undefined) || nothingToAssign;
             return (
               <li
                 key={p.projectId}
@@ -164,9 +188,11 @@ export function ProjectAssignmentPanel({
                   checked={isChecked}
                   disabled={checkboxDisabled}
                   title={
-                    checkboxDisabled && owner
+                    shiftOwned && owner
                       ? `Already assigned to ${owner.name}`
-                      : undefined
+                      : nothingToAssign
+                        ? takenReason(avail)
+                        : undefined
                   }
                   onChange={() => toggleSelect(p.projectId)}
                 />
@@ -179,7 +205,25 @@ export function ProjectAssignmentPanel({
                       {p.projectId}
                     </span>
                     <span>·</span>
-                    <span>{p.jidCount} JID{p.jidCount === 1 ? "" : "s"}</span>
+                    <span>
+                      {avail && avail.available < p.jidCount ? `${avail.available} of ` : ""}
+                      {p.jidCount} JID{p.jidCount === 1 ? "" : "s"}
+                      {avail && avail.available < p.jidCount ? " free" : ""}
+                    </span>
+                    {avail && avail.available < p.jidCount && (
+                      <>
+                        <span>·</span>
+                        <span
+                          className={
+                            nothingToAssign
+                              ? "font-medium text-storesight-hot-pink"
+                              : "text-storesight-ink-muted dark:text-storesight-ink-muted-dark"
+                          }
+                        >
+                          {takenReason(avail)}
+                        </span>
+                      </>
+                    )}
                     {p.oldestSubmission && (
                       <>
                         <span>·</span>
@@ -218,7 +262,7 @@ export function ProjectAssignmentPanel({
               const ownerId = pinOwner.get(p.projectId);
               return !(
                 ownerId && shiftReviewers.some((s) => s.reviewerId === ownerId)
-              );
+              ) && freeJids(p, availability) > 0;
             });
             const allSelected =
               selectable.length > 0 &&
@@ -270,4 +314,16 @@ export function ProjectAssignmentPanel({
       </footer>
     </section>
   );
+}
+
+/** JIDs a pin on this project would actually hand out. */
+function freeJids(p: ProjectSummary, availability?: Map<string, ProjectAvailability>): number {
+  return availability ? (availability.get(p.projectId) ?? NONE).available : p.jidCount;
+}
+
+/** Why some or all of a project's JIDs can't go out with this shift. */
+function takenReason(a: ProjectAvailability): string {
+  if (a.heldBy.length > 0) return `held by ${a.heldBy.join(", ")}`;
+  if (a.doneBy.length > 0) return `checked off by ${a.doneBy.join(", ")}`;
+  return "not in this shift's pool";
 }
