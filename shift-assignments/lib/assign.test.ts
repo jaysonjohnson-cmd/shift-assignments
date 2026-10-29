@@ -351,3 +351,35 @@ describe("split JIDs", () => {
     expect(withSplitJobs(scoped, pool, mockShift(["Saylor"]))).toBe(scoped);
   });
 });
+
+describe("assignShift with exclusion exceptions", () => {
+  const video = (id: string, projectId: string, priority: number): Row => ({
+    ...mockRow(id, projectId, id, priority),
+    excludedRules: ["video"],
+  });
+  const exceptions = { Saylor: ["video"] };
+
+  it("gives an excluded job only to a reviewer excepted from it", () => {
+    // Laurel would win the first job on balance; she isn't allowed it.
+    const pool = [video("V1", "PV1", 1), video("V2", "PV2", 2), mockRow("3", "P3", "J3", 3), mockRow("4", "P4", "J4", 4)];
+    for (const balance of [false, true]) {
+      const { assignments } = assignShift(pool, mockShift(["Laurel", "Saylor"]), false, balance, false, false, exceptions);
+      expect(assignments.Laurel.some((r) => r.excludedRules)).toBe(false);
+      expect(assignments.Saylor.map((r) => r.jobId).sort()).toEqual(["V1", "V2"]);
+    }
+  });
+
+  it("leaves an excluded job unassigned when nobody on the shift may take it", () => {
+    const pool = [video("V1", "PV1", 1), mockRow("2", "P2", "J2", 2)];
+    const { assignments, leftover } = assignShift(pool, mockShift(["Laurel"]), false, false, false, false, exceptions);
+    expect(assignments.Laurel.map((r) => r.jobId)).toEqual(["J2"]);
+    expect(leftover.map((r) => r.jobId)).toEqual(["V1"]);
+  });
+
+  it("keeps an excluded job off a project owner who can't take it", () => {
+    const pool = [mockRow("1", "P1", "J1", 1), video("V1", "P1", 2)];
+    const draft = { ...mockShift(["Laurel"]), projectPins: { Laurel: ["P1"] } };
+    const { assignments } = assignShift(pool, draft, false, false, false, false, exceptions);
+    expect(assignments.Laurel.map((r) => r.jobId)).toEqual(["J1"]);
+  });
+});

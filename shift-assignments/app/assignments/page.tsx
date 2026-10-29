@@ -190,7 +190,8 @@ export default function AssignmentsPage() {
     // Only pull ACTIVE work into the shift — never assign a job that has no
     // unreviewed responses left. Empty jobs in the feed would otherwise land in
     // reviewers' queues as "old" JIDs with nothing to review. Also exclude
-    // third-party (Cloud Factory) clients — those can't be approved here.
+    // third-party (Cloud Factory) clients — those can't be approved here —
+    // unless the feed kept one for a reviewer excepted from that in Settings.
     //
     // A job with aged work counts as active even at 0 reviewable: everything
     // left on it was auto-rejected, and clearing that down on the Responses
@@ -199,7 +200,8 @@ export default function AssignmentsPage() {
     return (rows as Row[]).filter(
       (r) =>
         ((r.unreviewedCount || 0) > 0 || Number(r.extras?.agedCount ?? 0) > 0) &&
-        !EXCLUDED_CLIENTS.has(String(r.extras?.client ?? "").trim().toLowerCase()) &&
+        (!EXCLUDED_CLIENTS.has(String(r.extras?.client ?? "").trim().toLowerCase()) ||
+          !!r.excludedRules?.includes("third_party_client")) &&
         !assignedElsewhereKeys.has(String(r.jobId || r.id || "")),
     );
   }, [rows, assignedElsewhereKeys]);
@@ -333,7 +335,10 @@ export default function AssignmentsPage() {
         ...r,
         oldestSubmission: agedSubDates[String(r.jobId || r.id || "")] || r.oldestSubmission || "",
       }));
-      const result = assignShift(poolWithDates, draft, prioritizeFilter, balanceByResponses, prioritizeUrgency, prioritizeAged);
+      const exceptionsByReviewer = Object.fromEntries(
+        reviewers.map((r) => [r.id, r.exclusionExceptions ?? []]),
+      );
+      const result = assignShift(poolWithDates, draft, prioritizeFilter, balanceByResponses, prioritizeUrgency, prioritizeAged, exceptionsByReviewer);
       const byEmail = toEmailMap(result.assignments, reviewers, draft);
       const resp = await publishShift(byEmail, {
         prioritizeNew: prioritizeFilter,

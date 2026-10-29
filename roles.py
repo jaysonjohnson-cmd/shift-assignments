@@ -258,6 +258,7 @@ def _list_by_kind(kind):
             "name": data.get("name", ""),
             "email": email,
             "color": data.get("color") or None,
+            "exclusionExceptions": list(data.get("exclusion_exceptions") or []),
         })
     return out
 
@@ -336,6 +337,13 @@ def create_record(kind, name, email, color=None):
     return new_id
 
 
+def _cached_data(kind, doc_id):
+    for doc in list_docs_by_kind(kind):
+        if doc.get("id") == doc_id:
+            return dict(doc.get("data") or {})
+    return None
+
+
 def update_record(doc_id, kind, name, email, color=None):
     data = {
         "kind": kind,
@@ -344,8 +352,33 @@ def update_record(doc_id, kind, name, email, color=None):
     }
     if color:
         data["color"] = color
+    # A PUT replaces the whole doc, so carry over what this form doesn't edit —
+    # otherwise renaming or recoloring a reviewer drops their exceptions.
+    exceptions = (_cached_data(kind, doc_id) or {}).get("exclusion_exceptions")
+    if exceptions:
+        data["exclusion_exceptions"] = exceptions
     internal_api.put(f"{_STORAGE_PATH}/{doc_id}", json={"data": data})
     cache_upsert_doc(kind, {"id": doc_id, "data": data})
+
+
+def set_exclusion_exceptions(doc_id, keys):
+    """Replace a reviewer's exclusion exceptions. KeyError if no such reviewer."""
+    data = _cached_data("reviewer", doc_id)
+    if data is None:
+        raise KeyError(doc_id)
+    if keys:
+        data["exclusion_exceptions"] = list(keys)
+    else:
+        data.pop("exclusion_exceptions", None)
+    internal_api.put(f"{_STORAGE_PATH}/{doc_id}", json={"data": data})
+    cache_upsert_doc("reviewer", {"id": doc_id, "data": data})
+    return {
+        "id": doc_id,
+        "name": data.get("name", ""),
+        "email": _normalize_email(data.get("email")),
+        "color": data.get("color") or None,
+        "exclusionExceptions": list(keys),
+    }
 
 
 def delete_record(doc_id):

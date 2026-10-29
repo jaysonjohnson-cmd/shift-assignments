@@ -354,6 +354,19 @@ with a 15-minute cache — ~75s a refresh, so a cold start matches internal
 names only until it lands. Adding a fragment means adding a search term that
 covers it; a test enforces that.
 
+**Excluded jobs, with per-reviewer exceptions.** Every exclusion (video,
+Screener, Talking Rain, …) belongs to a named rule in `EXCLUSION_RULES`, and
+`_is_excluded_job(row, allowed)` is the one check. A reviewer's Settings row
+can except them from any rule (`exclusion_exceptions` on their reviewer doc,
+read via `_reviewer_exceptions`). Publish, merge-publish, top-ups, the
+finish-check and My Tasks all pass that reviewer's exceptions; the composer
+feed keeps an excluded job only if *someone* is excepted, tagged
+`excludedRules`, and `assignShift` gives it only to a reviewer excepted from
+every rule it matches. A job in a project whose owner can't take it stays
+unassigned rather than splitting the project. Rule keys are stored on reviewer
+docs, so renaming one silently drops those exceptions. `update_record`
+carries the field over, since a PUT replaces the whole doc.
+
 **Work stays with whoever had it first.** A top-up never takes a job or project
 already handed to a teammate this shift, even one they've checked off. The feed
 gets new responses all day, so a finished job comes back into the pool, and it

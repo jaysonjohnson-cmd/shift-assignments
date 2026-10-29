@@ -32,6 +32,10 @@ export type Row = {
   /** My Tasks only: the project also holds a job the tool excludes (video,
    *  …), so a By-PID card would open it in Collection Review. */
   projectHasExcluded?: boolean;
+  /** Composer only: the exclusion rules this job falls under. It's in the
+   *  feed because some reviewer is excepted from them, and may only go to a
+   *  reviewer excepted from all of them. */
+  excludedRules?: string[];
 };
 
 export type ProjectSummary = {
@@ -64,7 +68,12 @@ export type Reviewer = {
   email: string;
   /** Admin-assigned accent color (hex). When absent, a stable color is derived from the email. */
   color?: string;
+  /** ExclusionRule keys this reviewer may still be given (set in Settings). */
+  exclusionExceptions?: string[];
 };
+
+/** A kind of job the tool excludes, which Settings can except a reviewer from. */
+export type ExclusionRule = { key: string; label: string };
 
 export type ReviewerSlot = {
   /** Reviewer.id this slot refers to (empty string until selected). */

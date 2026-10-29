@@ -12,15 +12,22 @@ import {
   getAutoPublishEnabled,
   listAdmins,
   listLeads,
+  listExclusionRules,
   listReviewers,
   setAutoClearEnabled,
+  setReviewerExceptions,
   setAutoPublishEnabled,
   syncTeamScheduler,
   updateReviewer,
   type Admin,
   type Lead,
 } from "@/lib/api";
-import { REVIEWER_COLORS, reviewerColor, type Reviewer } from "@/lib/types";
+import {
+  REVIEWER_COLORS,
+  reviewerColor,
+  type ExclusionRule,
+  type Reviewer,
+} from "@/lib/types";
 import { useUser } from "@/lib/useUser";
 import { useStore } from "@/lib/store";
 
@@ -83,6 +90,81 @@ function PersonForm({ disabled, onSubmit, submitLabel }: PersonFormProps) {
         <p className="w-full text-xs text-storesight-hot-pink">{err}</p>
       )}
     </form>
+  );
+}
+
+function ReviewerExceptions({
+  reviewer,
+  rules,
+  disabled,
+  onChange,
+}: {
+  reviewer: Reviewer;
+  rules: ExclusionRule[];
+  disabled: boolean;
+  onChange: (keys: string[]) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const allowed = reviewer.exclusionExceptions ?? [];
+  if (rules.length === 0) return null;
+
+  const toggle = async (key: string) => {
+    const next = allowed.includes(key)
+      ? allowed.filter((k) => k !== key)
+      : [...allowed, key];
+    setBusy(true);
+    setErr(null);
+    try {
+      await onChange(next);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't save");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-1">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={`rounded-full px-2 py-0.5 text-[11px] font-medium transition ${
+          allowed.length > 0
+            ? "bg-storesight-accent/15 text-storesight-primary dark:bg-storesight-accent/25 dark:text-storesight-accent-light"
+            : "text-storesight-ink-muted hover:text-storesight-primary dark:text-storesight-ink-muted-dark"
+        }`}
+      >
+        {allowed.length > 0
+          ? `Can get ${allowed.length} excluded type${allowed.length === 1 ? "" : "s"}`
+          : "Excluded jobs: none"}{" "}
+        {open ? "▴" : "▾"}
+      </button>
+      {open && (
+        <div className="mt-2 space-y-1 pl-1">
+          <p className="text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+            Excluded jobs this reviewer can still be given, at publish and in top-ups.
+          </p>
+          {rules.map((rule) => (
+            <label
+              key={rule.key}
+              className="flex items-center gap-2 text-xs text-storesight-ink dark:text-storesight-ink-dark"
+            >
+              <input
+                type="checkbox"
+                checked={allowed.includes(rule.key)}
+                disabled={disabled || busy}
+                onChange={() => void toggle(rule.key)}
+                className="h-3.5 w-3.5 accent-storesight-accent disabled:opacity-40"
+              />
+              {rule.label}
+            </label>
+          ))}
+          {err && <p className="text-[11px] text-storesight-hot-pink">{err}</p>}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -156,6 +238,7 @@ export default function SettingsPage() {
   const { role, user } = useUser();
   const setReviewersStore = useStore((s) => s.setReviewers);
   const [reviewers, setReviewers] = useState<Reviewer[]>([]);
+  const [exclusionRules, setExclusionRules] = useState<ExclusionRule[]>([]);
   const [admins, setAdmins] = useState<Admin[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
@@ -189,6 +272,8 @@ export default function SettingsPage() {
       setReviewersStore(rs);
       setAutoPublish(ap);
       setAutoClear(ac);
+      // Only the exceptions toggles need these; never fail the page over them.
+      listExclusionRules().then(setExclusionRules).catch(() => {});
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Failed to load");
     } finally {
@@ -216,6 +301,14 @@ export default function SettingsPage() {
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Failed to remove reviewer");
     }
+  };
+  const changeReviewerExceptions = async (r: Reviewer, keys: string[]) => {
+    const updated = await setReviewerExceptions(r.id, keys);
+    const next = reviewers.map((x) =>
+      x.id === r.id ? { ...x, exclusionExceptions: updated.exclusionExceptions } : x,
+    );
+    setReviewers(next);
+    setReviewersStore(next);
   };
   const changeReviewerColor = async (r: Reviewer, color: string) => {
     const updated = await updateReviewer(r.id, r.name, r.email, color);
@@ -501,6 +594,12 @@ export default function SettingsPage() {
                       </span>
                     )}
                   </div>
+                  <ReviewerExceptions
+                    reviewer={r}
+                    rules={exclusionRules}
+                    disabled={!isAdmin}
+                    onChange={(keys) => changeReviewerExceptions(r, keys)}
+                  />
                   </div>
                 </div>
                 <button

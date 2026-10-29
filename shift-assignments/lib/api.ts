@@ -4,6 +4,7 @@ import type {
   MyTasksResponse,
   ProjectSummary,
   Reviewer,
+  ExclusionRule,
   Row,
   ShiftSnapshot,
 } from "./types";
@@ -91,6 +92,21 @@ export async function updateReviewer(
     name,
     email,
     color,
+  });
+  return resp.data;
+}
+
+export async function listExclusionRules(): Promise<ExclusionRule[]> {
+  const resp = await call<{ data: ExclusionRule[] }>("GET", "/api/exclusion-rules");
+  return resp.data;
+}
+
+export async function setReviewerExceptions(
+  id: string,
+  exclusionExceptions: string[],
+): Promise<Reviewer> {
+  const resp = await call<{ data: Reviewer }>("PUT", `/api/reviewers/${id}/exceptions`, {
+    exclusionExceptions,
   });
   return resp.data;
 }

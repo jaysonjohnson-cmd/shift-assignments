@@ -56,52 +56,93 @@ def _send_slack_notification(text):
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
+# Every exclusion belongs to a named rule, so Settings can let a reviewer be
+# given that kind of job anyway (see _reviewer_exceptions). Keys are stored on
+# reviewer docs: rename one and those exceptions silently stop applying.
+EXCLUSION_RULES = {
+    "video": "Video jobs",
+    "screener": "Screener",
+    "talking_rain": "Talking Rain",
+    "bayer_cvs": "Bayer CVS Audit – Cadillac Program",
+    "photos_of_house": "Photos of House from Street",
+    "third_party_client": "Third-party clients (Menasha)",
+}
+
 # Job IDs to exclude from assignment (do not assign to reviewers)
 EXCLUDED_JOB_IDS = {
-    "1966569",  # Bayer CVS Audit - Cadillac Program (July 2026 - keep for backwards compat)
+    "1966569": "bayer_cvs",  # Bayer CVS Audit - Cadillac Program (July 2026 - keep for backwards compat)
 }
 
 EXCLUDED_JOB_NAMES = {
-    "Photos of House from Street",  # OSI
-    "Bayer CVS Audit - Cadillac Program",  # Monthly recurring; excludes all month versions
-    "Screener",  # Generic screener jobs - exclude all variants containing "Screener"
-    "Talking Rain",  # WHITE GLOVE - Sparkling Water; JID/PID changes weekly
+    "Photos of House from Street": "photos_of_house",  # OSI
+    "Bayer CVS Audit - Cadillac Program": "bayer_cvs",  # Monthly recurring; excludes all month versions
+    "Screener": "screener",  # Generic screener jobs - exclude all variants containing "Screener"
+    "Talking Rain": "talking_rain",  # WHITE GLOVE - Sparkling Water; JID/PID changes weekly
 }
 
 
-def _is_excluded_job_name(job_name: str) -> bool:
-    """True if this job name matches any excluded pattern (substring, case-insensitive)."""
+def _excluded_name_rules(job_name: str) -> set:
+    """The rules whose name pattern this job name matches (substring, case-insensitive)."""
     job_name_lower = str(job_name or "").lower()
     # Normalize dashes/hyphens/en-dashes to hyphen for matching
     job_name_normalized = job_name_lower.replace("–", "-").replace("—", "-")
-    # Check both exact matches and substring matches (case-insensitive for patterns)
-    for excluded_name in EXCLUDED_JOB_NAMES:
+    rules = set()
+    for excluded_name, rule in EXCLUDED_JOB_NAMES.items():
         excluded_normalized = excluded_name.lower().replace("–", "-").replace("—", "-")
         if excluded_normalized in job_name_normalized:
-            return True
-    return False
+            rules.add(rule)
+    return rules
 
 
-def _is_excluded_job(row):
+def _exclusion_rules(row) -> set:
+    """Every EXCLUSION_RULES key this job falls under; empty when it's assignable.
+
+    The client check only applies to feed rows; stored rows are compacted and
+    carry no `extras`.
+    """
+    rules = set()
+    id_rule = EXCLUDED_JOB_IDS.get(str(row.get("jobId") or ""))
+    if id_rule:
+        rules.add(id_rule)
+    if bloom.is_excluded_client((row.get("extras") or {}).get("client")):
+        rules.add("third_party_client")
+    job_name = str(row.get("name") or "")
+    rules |= _excluded_name_rules(job_name)
+    # Exclude video jobs, but allow non-video jobs through
+    job_name_lower = job_name.lower()
+    if "video" in job_name_lower and "non-video" not in job_name_lower:
+        rules.add("video")
+    return rules
+
+
+def _is_excluded_job(row, allowed=()):
     """True if this job should never be assignable or visible in the composer.
 
     The single source of truth for exclusion — publish, refill, the feed
     endpoints and My Tasks all call this rather than re-deriving the checks.
-    The client check only applies to feed rows; stored rows are compacted and
-    carry no `extras`.
+    `allowed` is the rules a reviewer is excepted from (_reviewer_exceptions);
+    a job matching several rules needs every one of them allowed.
     """
-    if str(row.get("jobId") or "") in EXCLUDED_JOB_IDS:
-        return True
-    if bloom.is_excluded_client((row.get("extras") or {}).get("client")):
-        return True
-    job_name = str(row.get("name") or "")
-    if _is_excluded_job_name(job_name):
-        return True
-    # Exclude video jobs, but allow non-video jobs through
-    job_name_lower = job_name.lower()
-    if "video" in job_name_lower and "non-video" not in job_name_lower:
-        return True
-    return False
+    return bool(_exclusion_rules(row) - set(allowed or ()))
+
+
+def _reviewer_exceptions(email):
+    """The exclusion rules this reviewer may still be given, from their Settings row.
+
+    Read from the warm roster cache. A roster read failure means no exceptions:
+    the cost is a reviewer briefly missing work they're allowed, against handing
+    excluded work to someone who isn't.
+    """
+    norm = (email or "").strip().lower()
+    if not norm:
+        return frozenset()
+    try:
+        for r in roles.list_reviewers():
+            if r.get("email") == norm:
+                return frozenset(r.get("exclusionExceptions") or ())
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        logging.warning("exclusion exceptions lookup failed for %s: %s", norm, exc)
+    return frozenset()
 
 
 def _dev_token_path():
@@ -422,6 +463,45 @@ def api_reviewers_update(doc_id):
     return jsonify({"data": {"id": doc_id, "name": name, "email": email, "color": color}})
 
 
+@app.route("/api/exclusion-rules", methods=["GET"])
+def api_exclusion_rules():
+    """The exclusion rules a reviewer can be excepted from, in display order."""
+    return jsonify({"data": [{"key": k, "label": v} for k, v in EXCLUSION_RULES.items()]})
+
+
+@app.route("/api/reviewers/<doc_id>/exceptions", methods=["PUT"])
+def api_reviewers_exceptions(doc_id):
+    """Set which excluded job types this reviewer may still be given.
+
+    Applies everywhere the reviewer gets work — the composer, publish and
+    top-ups — and to what My Tasks shows them.
+    """
+    denied = _require_admin()
+    if denied is not None:
+        return denied
+    body = request.get_json(silent=True) or {}
+    raw = body.get("exclusionExceptions")
+    if not isinstance(raw, list):
+        return jsonify({"error": "exclusionExceptions must be a list"}), 400
+    unknown = [k for k in raw if k not in EXCLUSION_RULES]
+    if unknown:
+        return jsonify({"error": f"unknown exclusion rules: {unknown}"}), 400
+    # Display order, deduped.
+    keys = [k for k in EXCLUSION_RULES if k in raw]
+    try:
+        reviewer = roles.set_exclusion_exceptions(doc_id, keys)
+    except KeyError:
+        return jsonify({"error": "reviewer not found"}), 404
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 500
+        return jsonify({"error": f"storage api returned {status}"}), status
+    logging.info(
+        "PUT /api/reviewers/%s/exceptions by=%s exceptions=%s",
+        doc_id, g.user.get("email"), keys,
+    )
+    return jsonify({"data": reviewer})
+
+
 @app.route("/api/reviewers/<doc_id>", methods=["DELETE"])
 def api_reviewers_delete(doc_id):
     denied = _require_admin()
@@ -724,8 +804,9 @@ def api_shifts_auto_publish():
             if not key:
                 continue
             valid_rows = []
+            allowed = _reviewer_exceptions(key)
             for r in job_rows:
-                if _is_excluded_job(r):
+                if _is_excluded_job(r, allowed):
                     continue
                 unreviewable = int(r.get("unreviewedCount") or 0)
                 total_new = int((r.get("extras") or {}).get("newCount") or 0)
@@ -1193,14 +1274,25 @@ def api_bloom_jobs():
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e, source="bloom api")
 
-    # Filter out: (1) excluded jobs, (2) jobs with zero reviewable responses
+    # Filter out: (1) excluded jobs, (2) jobs with zero reviewable responses.
+    # An excluded job some reviewer is excepted from stays in, tagged with its
+    # rules, so the composer can offer it to them and nobody else.
+    excepted = set()
+    try:
+        for rev in roles.list_reviewers():
+            excepted |= set(rev.get("exclusionExceptions") or ())
+    except Exception as exc:  # noqa: BLE001 — fall back to excluding everything
+        logging.warning("exclusion exceptions lookup failed: %s", exc)
     filtered = []
     for r in rows:
-        if _is_excluded_job(r):
+        if _is_excluded_job(r, excepted):
             continue
         unreviewable = int(r.get("unreviewedCount") or 0)
         if unreviewable <= 0:
             continue
+        rules = _exclusion_rules(r)
+        if rules:
+            r = {**r, "excludedRules": sorted(rules)}
         filtered.append(r)
 
     logging.info(
@@ -1360,9 +1452,10 @@ def api_shifts_publish():
         # client like Menasha must never reach a reviewer.
         valid_rows = []
         filtered_jobs = []
+        allowed = _reviewer_exceptions(key)
         for r in rows:
             job_id = _job_key(r)
-            if _is_excluded_job(r):
+            if _is_excluded_job(r, allowed):
                 filtered_jobs.append((job_id, "excluded"))
                 continue
             unreviewable = int(r.get("unreviewedCount") or 0)
@@ -1519,8 +1612,9 @@ def api_shifts_publish():
             split_here = {_job_key(r): r for r in normalized[email] if _split_sharers(r)}
             kept = []
             stamped = 0
+            allowed = _reviewer_exceptions(email)
             for r in _dedup_rows(existing_jobs_by_email.get(email, [])):
-                if _is_excluded_job(r):
+                if _is_excluded_job(r, allowed):
                     continue
                 if _job_key(r) in done or int(r.get("unreviewedCount") or 0) > 0:
                     # A job they already hold that is now being split: same
@@ -2209,15 +2303,17 @@ def api_shifts_my():
     live_by_job = _live_counts_by_job()
     # Only a project holding two or more of this reviewer's jobs becomes a
     # By-PID card, so only those need their siblings looked up.
+    allowed = _reviewer_exceptions(email)
     pid_counts = collections.Counter(
-        str(r.get("projectId") or "") for r in rows if not _is_excluded_job(r))
+        str(r.get("projectId") or "") for r in rows if not _is_excluded_job(r, allowed))
     mixed_projects = _projects_with_excluded_jobs(
         {pid for pid, n in pid_counts.items() if pid and n > 1})
 
     enriched = []
     for row in rows:
-        # Filter out excluded jobs (including video jobs) that shouldn't appear in My Tasks
-        if _is_excluded_job(row):
+        # Filter out excluded jobs (including video jobs) that shouldn't appear
+        # in My Tasks, bar any this reviewer is excepted from in Settings
+        if _is_excluded_job(row, allowed):
             continue
         completion = done_by_jid.get(_row_job_key(row))
         item = {
@@ -2899,9 +2995,10 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         # completions landing in the same instant (two tabs, a double-click)
         # could each see the "last job done" edge and refill twice, handing out
         # a double batch. Rechecking under the lock makes the second one a no-op.
+        allowed = _reviewer_exceptions(norm)
         still_pending = [
             r for r in own_rows
-            if not _is_excluded_job(r) and (norm, _job_key(r)) not in completed_pairs
+            if not _is_excluded_job(r, allowed) and (norm, _job_key(r)) not in completed_pairs
         ]
         if still_pending:
             logging.warning("auto-refill: %s still has %d pending jobs; skipping",
@@ -2987,7 +3084,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                     or (pid in teammate_projects and pid not in own_projects)):
                 skipped_reasons["teammates_work"] += 1
                 continue
-            if _is_excluded_job(r):
+            if _is_excluded_job(r, allowed):
                 skipped_reasons["excluded"] += 1
                 continue
             # "Storesight / Retail Pipeline only" is a hard filter on the pool at
@@ -3829,7 +3926,8 @@ def api_shifts_my_complete():
         assigned = _rows_for_reviewer(snap_id, email) or []
         # Count only what the reviewer can actually see and act on in My Tasks —
         # the same filter that endpoint applies (excluded titles/video jobs).
-        assigned = [r for r in assigned if not _is_excluded_job(r)]
+        allowed = _reviewer_exceptions(email)
+        assigned = [r for r in assigned if not _is_excluded_job(r, allowed)]
         assigned_keys = {_row_job_key(r) for r in assigned}
 
         # Include override-completed jobs (forced completions that bypassed unreviewed checks).

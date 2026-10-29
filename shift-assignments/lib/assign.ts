@@ -135,8 +135,16 @@ function urgencyScore(row: Row): number {
  * frontloading early reviewers. Slots with empty reviewerId are dropped
  * (their would-be rows fall into leftover).
  */
-export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = false, balanceByResponses = false, prioritizeUrgency = false, prioritizeAged = false): ShiftResult {
+export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = false, balanceByResponses = false, prioritizeUrgency = false, prioritizeAged = false, exceptionsByReviewer: Record<string, string[]> = {}): ShiftResult {
   const pins = draft.projectPins ?? {};
+
+  // A normally-excluded job is only in the pool because someone is excepted
+  // from its rules in Settings; it may go to them and nobody else. Publish
+  // re-checks this per reviewer, so this decides who gets it, not whether.
+  const canTake = (row: Row, reviewerId: string) =>
+    (row.excludedRules ?? []).every((rule) =>
+      exceptionsByReviewer[reviewerId]?.includes(rule),
+    );
 
   // Guarantee each job is handed to at most one reviewer. The upstream feed can
   // return more than one record for the same job, which would otherwise let the
@@ -175,7 +183,9 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
     const sharers = activeSplitSharers(draft, key);
     if (sharers.length < 2) continue;
     splitKeys.add(key);
-    for (const rid of sharers) (splitByReviewer[rid] ??= []).push(row);
+    for (const rid of sharers) {
+      if (canTake(row, rid)) (splitByReviewer[rid] ??= []).push(row);
+    }
   }
 
   // reviewerId for each pinned projectId (first slot wins if somehow dup'd).
@@ -193,7 +203,9 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
     if (splitKeys.has(String(row.jobId || row.id || ""))) continue;
     const owner = pinOwner.get(row.projectId);
     if (owner) {
-      (pinnedByReviewer[owner] ??= []).push(row);
+      // The rest of a pinned project is still theirs; a job in it they can't
+      // take stays unassigned rather than splitting the project.
+      if (canTake(row, owner)) (pinnedByReviewer[owner] ??= []).push(row);
     } else {
       unpinned.push(row);
     }
@@ -314,6 +326,9 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
         const projectKey = String(row.projectId || "");
         const owner = projectKey ? projectOwner.get(projectKey) : undefined;
         if (owner) {
+          // Same as a pin: a job in the project its owner can't take stays
+          // unassigned rather than splitting the project.
+          if (!canTake(row, owner)) return;
           // Capacity for the whole project was reserved when it was claimed,
           // so the remaining jobs are already paid for.
           assignments[owner].push(row);
@@ -339,6 +354,7 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
         for (const slot of activeSlots) {
           const remaining = unpinnedNeeded[slot.reviewerId] ?? 0;
           if (remaining <= 0) continue;
+          if (!canTake(row, slot.reviewerId)) continue;
 
           const capacity = capacityWeights.get(slot.reviewerId) ?? 1;
           const fits = remaining >= projectSize;
