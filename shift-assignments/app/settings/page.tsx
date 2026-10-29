@@ -476,7 +476,9 @@ export default function SettingsPage() {
               No reviewers yet. Add one above to get started.
             </p>
           ) : (
-            reviewers.map((r) => (
+            [...reviewers]
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map((r) => (
               <div
                 key={r.id}
                 className="flex items-center justify-between gap-3 py-2.5"

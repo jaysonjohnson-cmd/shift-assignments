@@ -20,7 +20,10 @@ export function ReviewerMultiSelectModal({
 
   const excluded = useMemo(() => new Set(exclude), [exclude]);
   const available = useMemo(
-    () => reviewers.filter((r) => !excluded.has(r.id)),
+    () =>
+      reviewers
+        .filter((r) => !excluded.has(r.id))
+        .sort((a, b) => a.name.localeCompare(b.name)),
     [reviewers, excluded],
   );
 

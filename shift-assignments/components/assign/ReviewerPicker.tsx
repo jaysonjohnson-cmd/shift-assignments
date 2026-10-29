@@ -15,7 +15,9 @@ export function ReviewerPicker({
   exclude?: string[];
 }) {
   const blocked = new Set(exclude ?? []);
-  const available = reviewers.filter((r) => !blocked.has(r.id) || r.id === value);
+  const available = reviewers
+    .filter((r) => !blocked.has(r.id) || r.id === value)
+    .sort((a, b) => a.name.localeCompare(b.name));
   const noReviewers = reviewers.length === 0;
   return (
     <select
