@@ -496,6 +496,12 @@ to let the job sit on several shifts.
   and counting those meant the last sharer could never clear it — 160 pending,
   157 of them new, on 2026-10-19. New arrivals go back out through refill as
   a normal job.
+- `work_max` caps how *many* responses an export takes, not *whose*. CR's
+  mass-approve export (`mass_approve_candidates_*.xlsx`) lists teammates'
+  in-review responses too, with a Reviewer column; on 2026-11-03 (job
+  1975442) one sharer approved the other's whole load, leaving her export 2
+  rows. The app can't stop it, so a live split card tells sharers to filter
+  that column to their own name before mass-approving.
 - Auto-rejects (the AR badge, cleared on Response Search) go to **one**
   sharer: the first, alphabetically, still on the job. The others read 0
   plus `rejectsClearedBy`. Response Search has no `work_max`, so every

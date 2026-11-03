@@ -821,6 +821,11 @@ function SplitBadge({ row, compact }: { row: Row; compact?: boolean }) {
 /**
  * How to pull in exactly your share of a split job. Open in Review carries
  * `work_max` (see collectionReviewUrl), which caps the reviewer at their share.
+ *
+ * The export warning is for a FieldAgent bug the app can't prevent: the
+ * mass-approve export lists teammates' in-review responses too, and work_max
+ * only caps how many it takes, not whose. Job 1975442 on 2026-11-03: one
+ * sharer approved the other's whole load, leaving her export 2 rows.
  */
 function SplitLoadHint({ row }: { row: Row }) {
   const partners = row.splitPartners ?? [];
@@ -828,19 +833,28 @@ function SplitLoadHint({ row }: { row: Row }) {
   const share = row.splitShare ?? 0;
   const everyoneElseDone = partners.every((p) => p.done);
   return (
-    <p className="mt-1.5 text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-      {everyoneElseDone ? (
-        "Your partner is done — pull in whatever is left."
-      ) : (
-        <>
-          Open in Review caps you at your {share}. Leave{" "}
-          <strong>Include in-review</strong> unticked.
-        </>
+    <>
+      <p className="mt-1.5 text-[11px] text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+        {everyoneElseDone ? (
+          "Your partner is done — pull in whatever is left."
+        ) : (
+          <>
+            Open in Review caps you at your {share}. Leave{" "}
+            <strong>Include in-review</strong> unticked.
+          </>
+        )}
+        {row.rejectsClearedBy && (
+          <> {row.rejectsClearedBy} is clearing this job&apos;s auto-rejects — leave those to them.</>
+        )}
+      </p>
+      {!everyoneElseDone && (
+        <p className="mt-1 rounded border border-amber-400/60 bg-amber-400/10 px-1.5 py-1 text-[11px] text-amber-700 dark:text-amber-300">
+          <strong>Before you mass-approve:</strong> filter the export&apos;s{" "}
+          <strong>Reviewer</strong> column to just your name. The export also lists
+          your teammate&apos;s responses, and approving those takes their work.
+        </p>
       )}
-      {row.rejectsClearedBy && (
-        <> {row.rejectsClearedBy} is clearing this job&apos;s auto-rejects — leave those to them.</>
-      )}
-    </p>
+    </>
   );
 }
 
