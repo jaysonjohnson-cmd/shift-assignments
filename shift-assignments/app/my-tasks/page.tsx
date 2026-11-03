@@ -56,6 +56,14 @@ function pickRandomMessageIndex(): number {
 
 /** Collapse rows sharing the same projectId into a single synthetic "project" row. */
 function groupByProject(rows: Row[]): Row[] {
+  // Jobs per project among those projectHasExcluded keeps apart. Two or more
+  // means By PID visibly didn't group them, so the cards say why.
+  const apartPerProject = new Map<string, number>();
+  for (const r of rows) {
+    if (r.projectHasExcluded && !r.splitPartners?.length && r.projectId) {
+      apartPerProject.set(r.projectId, (apartPerProject.get(r.projectId) ?? 0) + 1);
+    }
+  }
   const buckets = new Map<string, Row[]>();
   for (const r of rows) {
     // A split job always stays its own card: the group would open the whole
@@ -75,7 +83,9 @@ function groupByProject(rows: Row[]): Row[] {
     if (list.length === 1) {
       // A project with a single job keeps its jobId so "Open in Review" opens
       // that exact job (nulling it sent the button to a blank Collection Review).
-      out.push({ ...list[0], groupIds: [] });
+      const r = list[0];
+      const keptApart = !!r.projectHasExcluded && (apartPerProject.get(r.projectId) ?? 0) > 1;
+      out.push({ ...r, groupIds: [], ...(keptApart ? { keptApart } : {}) });
       continue;
     }
     const priority = list.reduce((m, r) => Math.min(m, r.priority), list[0].priority);
@@ -818,6 +828,19 @@ function SplitBadge({ row, compact }: { row: Row; compact?: boolean }) {
   );
 }
 
+/** "Not grouped" chip for a By PID job its project's excluded jobs kept apart. */
+function KeptApartBadge({ row, compact }: { row: Row; compact?: boolean }) {
+  if (!row.keptApart) return null;
+  return (
+    <span
+      title={`Project ${row.projectId} also has a job you weren't assigned (video, Screener, …). A grouped card would open the whole project in Collection Review, so each job here opens on its own.`}
+      className="inline-flex items-center gap-1 rounded border border-storesight-ink-muted/30 px-1.5 py-0.5 font-medium normal-case"
+    >
+      {compact ? "Not grouped" : "Not grouped · project has excluded jobs"}
+    </span>
+  );
+}
+
 /**
  * How to pull in exactly your share of a split job. Open in Review carries
  * `work_max` (see collectionReviewUrl), which caps the reviewer at their share.
@@ -978,6 +1001,7 @@ function TaskCard({
             {grouped && jobCount > 1 ? ` · ${jobCount}j` : ""}
           </span>
           <SplitBadge row={row} compact />
+          <KeptApartBadge row={row} compact />
           {rejectLinks(row).map((l) => (
             <a
               key={l.jobId ?? "job"}
@@ -1079,6 +1103,7 @@ function TaskCard({
             {grouped && jobCount > 1 ? ` · ${jobCount} jobs` : ""}
           </span>
           <SplitBadge row={row} />
+          <KeptApartBadge row={row} />
           {rejectLinks(row).map((l) => (
             <a
               key={l.jobId ?? "job"}

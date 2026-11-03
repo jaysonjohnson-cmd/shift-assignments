@@ -32,6 +32,9 @@ export type Row = {
   /** My Tasks only: the project also holds a job the tool excludes (video,
    *  …), so a By-PID card would open it in Collection Review. */
   projectHasExcluded?: boolean;
+  /** My Tasks By PID only: this job would have been grouped with others on
+   *  the shift, but projectHasExcluded kept it its own card. */
+  keptApart?: boolean;
   /** Composer only: the exclusion rules this job falls under. It's in the
    *  feed because some reviewer is excepted from them, and may only go to a
    *  reviewer excepted from all of them. */
