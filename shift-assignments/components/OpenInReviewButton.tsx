@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { checkSplitOpen } from "@/lib/api";
 import { collectionReviewUrl } from "@/lib/reviewLink";
+import { markOpened, useOpened } from "@/lib/openedReviews";
 import type { Row } from "@/lib/types";
 
 type Props = {
@@ -79,6 +80,7 @@ export function OpenInReviewButton({ row, size = "md", variant = "default", disa
     if (disabled || waiting) return;
     const payload = buildClipboardPayload(row);
     const url = collectionReviewUrl(row);
+    markOpened(row);
     if (isLiveSplit(row)) {
       // Before any await, so the tab opens while the click still counts as a
       // user gesture.
@@ -136,5 +138,32 @@ export function OpenInReviewButton({ row, size = "md", variant = "default", disa
           ? "Copied — paste in tab"
           : "Open in Review"}
     </button>
+  );
+}
+
+/**
+ * Sits beside the checkmark once a job has been opened in Collection Review
+ * today, so it's clear what's already been looked at while the check-off
+ * catches up.
+ */
+export function OpenedMark({ row }: { row: Row }) {
+  const opened = useOpened(row);
+  if (!opened || row.completedAt) return null;
+  return (
+    <span
+      title="You've opened this in Collection Review today"
+      aria-label="Opened in Review"
+      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-storesight-accent/40 bg-storesight-accent/10 text-storesight-primary dark:border-storesight-accent-light/40 dark:bg-storesight-accent/20 dark:text-storesight-accent-light"
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+        <path
+          d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinejoin="round"
+        />
+        <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.8" />
+      </svg>
+    </span>
   );
 }

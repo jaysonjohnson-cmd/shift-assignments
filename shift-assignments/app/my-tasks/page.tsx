@@ -5,7 +5,7 @@ import Link from "next/link";
 import { closeMyShift, getMyTasks, markTaskDone } from "@/lib/api";
 import { useUser } from "@/lib/useUser";
 import { reviewerColor, type Row } from "@/lib/types";
-import { OpenInReviewButton, isLiveSplit } from "@/components/OpenInReviewButton";
+import { OpenInReviewButton, OpenedMark, isLiveSplit } from "@/components/OpenInReviewButton";
 import { collectionReviewUrl } from "@/lib/reviewLink";
 import { MarkDoneButton } from "@/components/MarkDoneButton";
 import { Confetti } from "@/components/Confetti";
@@ -1039,6 +1039,7 @@ function TaskCard({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {!completed && <OpenInReviewButton row={row} size="sm" variant="primary" disabled={isProcessing} />}
+          <OpenedMark row={row} />
           <MarkDoneButton
             row={row}
             onChange={handleChange}
@@ -1124,14 +1125,17 @@ function TaskCard({
       </div>
       <div className="flex flex-col items-end gap-1.5">
         {!completed && <OpenInReviewButton row={row} size="sm" variant="primary" disabled={isProcessing} />}
-        <MarkDoneButton
-          row={row}
-          onChange={handleChange}
-          size="sm"
-          variant="ghost"
-          onBlocked={onBlocked}
-          onProcessingChange={setIsProcessing}
-        />
+        <div className="flex items-start gap-1.5">
+          <OpenedMark row={row} />
+          <MarkDoneButton
+            row={row}
+            onChange={handleChange}
+            size="sm"
+            variant="ghost"
+            onBlocked={onBlocked}
+            onProcessingChange={setIsProcessing}
+          />
+        </div>
       </div>
     </div>
   );
