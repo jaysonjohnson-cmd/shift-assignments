@@ -66,6 +66,12 @@ EXCLUSION_RULES = {
     "bayer_cvs": "Bayer CVS Audit – Cadillac Program",
     "photos_of_house": "Photos of House from Street",
     "third_party_client": "Third-party clients (Menasha)",
+    "pg_cso_personal_care": "P&G CSO – Personal Care Shelf Audit (PID 1636305)",
+}
+
+# Project IDs to exclude: every job in the project, whatever its name.
+EXCLUDED_PROJECT_IDS = {
+    "1636305": "pg_cso_personal_care",  # P&G CSO - Personal Care Shelf Audit NOV26 - WRID: HGJ46
 }
 
 # Job IDs to exclude from assignment (do not assign to reviewers)
@@ -104,6 +110,9 @@ def _exclusion_rules(row) -> set:
     id_rule = EXCLUDED_JOB_IDS.get(str(row.get("jobId") or ""))
     if id_rule:
         rules.add(id_rule)
+    pid_rule = EXCLUDED_PROJECT_IDS.get(str(row.get("projectId") or ""))
+    if pid_rule:
+        rules.add(pid_rule)
     if bloom.is_excluded_client((row.get("extras") or {}).get("client")):
         rules.add("third_party_client")
     job_name = str(row.get("name") or "")

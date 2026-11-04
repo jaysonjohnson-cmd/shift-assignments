@@ -73,6 +73,7 @@ def test_each_exclusion_names_its_rule():
 
 def test_every_rule_used_is_one_settings_can_offer():
     used = set(main.EXCLUDED_JOB_IDS.values()) | set(main.EXCLUDED_JOB_NAMES.values())
+    used |= set(main.EXCLUDED_PROJECT_IDS.values())
     used |= {"video", "third_party_client"}
     assert used == set(main.EXCLUSION_RULES)
 
@@ -241,3 +242,12 @@ def test_recoloring_a_reviewer_keeps_their_exceptions(monkeypatch):
     roles.update_record("r1", "reviewer", "Sam", SAM, "#abcdef")
     assert puts[-1]["data"]["exclusion_exceptions"] == ["video"]
     assert puts[-1]["data"]["color"] == "#abcdef"
+
+
+def test_excluded_project_id_excludes_every_job_in_it():
+    row = {"id": "1", "jobId": "1", "projectId": "1636305",
+           "name": "P&G CSO - Personal Care Shelf Audit NOV26 - WRID: HGJ46"}
+    assert main._exclusion_rules(row) == {"pg_cso_personal_care"}
+    assert main._is_excluded_job(row)
+    assert not main._is_excluded_job(row, allowed=["pg_cso_personal_care"])
+    assert not main._is_excluded_job({**row, "projectId": "1636306"})
