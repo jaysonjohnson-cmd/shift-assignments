@@ -363,7 +363,11 @@ finish-check and My Tasks all pass that reviewer's exceptions; the composer
 feed keeps an excluded job only if *someone* is excepted, tagged
 `excludedRules`, and `assignShift` gives it only to a reviewer excepted from
 every rule it matches. A job in a project whose owner can't take it stays
-unassigned rather than splitting the project. Rule keys are stored on reviewer
+unassigned rather than splitting the project. An excepted job also skips the
+Options filters (Special Job Types, Retail Pipeline only, P&G Store Walk,
+aged), in the composer and in top-ups: ticking the box means "give them this",
+and on 2026-11-05 Special Job Types silently kept a Bayer CVS job from the one
+reviewer allowed it. Rule keys are stored on reviewer
 docs, so renaming one silently drops those exceptions. `update_record`
 carries the field over, since a PUT replaces the whole doc.
 

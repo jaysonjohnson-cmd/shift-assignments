@@ -3096,22 +3096,26 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             if _is_excluded_job(r, allowed):
                 skipped_reasons["excluded"] += 1
                 continue
+            # An excluded job that got this far is one this reviewer is excepted
+            # from in Settings. That's a deliberate "give them this", so the
+            # Options filters below don't scope it out (same as the composer).
+            scoped = not _exclusion_rules(r)
             # "Storesight / Retail Pipeline only" is a hard filter on the pool at
             # publish, so honour it here rather than refilling a scoped shift with
             # work from every other client.
-            if retail_pipeline_only and str((r.get("extras") or {}).get("client") or "").strip().lower() != _RETAIL_PIPELINE_CLIENT:
+            if scoped and retail_pipeline_only and str((r.get("extras") or {}).get("client") or "").strip().lower() != _RETAIL_PIPELINE_CLIENT:
                 skipped_reasons["not_retail_pipeline"] += 1
                 continue
             # "Special Job Types" is likewise a hard filter on the pool at publish.
             # Without it a shift scoped to Ratings & Reviews / Part 1-2 jobs would
             # top up with everything else in the feed.
-            if special_job_types and not _is_special_job_type(r.get("name"), r.get("publicName")):
+            if scoped and special_job_types and not _is_special_job_type(r.get("name"), r.get("publicName")):
                 skipped_reasons["not_special_job_type"] += 1
                 continue
             # "P&G Display Store Walk only" — same contract. Keyed off the feed's
             # own png_store_walk flag rather than the job name, so a rename can't
             # silently empty a scoped shift.
-            if pg_store_walk_only and not (r.get("extras") or {}).get("pngStoreWalk"):
+            if scoped and pg_store_walk_only and not (r.get("extras") or {}).get("pngStoreWalk"):
                 skipped_reasons["not_pg_store_walk"] += 1
                 continue
             # Skip jobs with no reviewable work and no aged backlog — nothing

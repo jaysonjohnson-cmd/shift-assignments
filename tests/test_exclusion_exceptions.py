@@ -168,6 +168,33 @@ def test_top_up_hands_out_an_excluded_job_only_to_the_excepted(
     assert {r["jobId"] for r in added} == expected
 
 
+
+@pytest.mark.parametrize("email,expected", [(SAM, {"1", "4"}), (ALEX, {"4"})])
+def test_top_up_lets_an_excepted_job_past_the_options_filters(
+        roster, monkeypatch, email, expected):
+    """Special Job Types is on: only Ratings & Reviews would normally get
+    through, but Sam is excepted from video, so his video job does too."""
+    shift_docs = [{"id": "rs-0", "data": {
+        "kind": "reviewer_shift", "shift_snapshot_id": "snap1",
+        "reviewer_email": email, "rows": [], "part": 0, "batch_size": 5}}]
+    monkeypatch.setattr(roles, "list_docs_by_kind", lambda kind, force=False: {
+        "reviewer_shift": shift_docs,
+        "shift_snapshot": [{"id": "snap1", "data": {
+            "kind": "shift_snapshot",
+            "prioritization_flags": {"specialJobTypes": True}}}],
+    }.get(kind, []))
+    monkeypatch.setattr(main, "_list_completions_for_snapshot", lambda *a, **k: [])
+    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda *a, **k: [
+        _row("1", VIDEO), _row("2", "Shelf"), _row("3", "Store Screener"),
+        _row("4", "Snacks Ratings & Reviews")])
+    monkeypatch.setattr(internal_api, "post",
+                        lambda path, json=None: {"data": {"id": "new"}})
+    monkeypatch.setattr(main, "_try_delete", lambda *a, **k: None)
+    monkeypatch.setattr(roles, "cache_upsert_doc", lambda *a, **k: None)
+    added = main._auto_refill_reviewer("snap1", email, 5)
+    assert {r["jobId"] for r in added} == expected
+
+
 # ---------- My Tasks ----------
 
 

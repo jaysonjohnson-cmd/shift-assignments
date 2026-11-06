@@ -207,21 +207,26 @@ export default function AssignmentsPage() {
   }, [rows, assignedElsewhereKeys]);
 
   const priorityPool = useMemo<Row[]>(() => {
+    // An excluded job is only in the pool because a reviewer is excepted from
+    // it in Settings — a deliberate "give them this" — so the Options filters
+    // don't scope it out. assignShift still hands it only to that reviewer.
+    const excepted = (r: Row) => !!r.excludedRules?.length;
     let filtered = unscopedPool;
     if (prioritizeAged) {
-      filtered = filtered.filter((r) => Number(r.extras?.agedCount ?? 0) > 0);
+      filtered = filtered.filter((r) => excepted(r) || Number(r.extras?.agedCount ?? 0) > 0);
     }
     if (specialJobTypes) {
-      filtered = filtered.filter((r) => isSpecialJobType(r.name, r.publicName));
+      filtered = filtered.filter((r) => excepted(r) || isSpecialJobType(r.name, r.publicName));
     }
     if (pgStoreWalkOnly) {
       // Keyed off the feed's own png_store_walk flag rather than the job name,
       // so a rename can't quietly empty a scoped shift.
-      filtered = filtered.filter((r) => Boolean(r.extras?.pngStoreWalk));
+      filtered = filtered.filter((r) => excepted(r) || Boolean(r.extras?.pngStoreWalk));
     }
     if (retailPipelineOnly) {
       filtered = filtered.filter(
         (r) =>
+          excepted(r) ||
           String(r.extras?.client ?? "").toLowerCase() ===
           "retailpipeline@fieldagent.net",
       );
@@ -243,7 +248,7 @@ export default function AssignmentsPage() {
         return isNaN(t) ? -1 : Math.floor((Date.now() - t) / 86_400_000);
       };
       if (agedMinDays > 0) {
-        filtered = filtered.filter((r) => daysOf(r) >= agedMinDays);
+        filtered = filtered.filter((r) => excepted(r) || daysOf(r) >= agedMinDays);
       }
       return [...filtered].sort((a, b) => {
         const da = dateOf(a);
