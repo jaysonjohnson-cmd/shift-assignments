@@ -144,6 +144,47 @@ def test_publish_gives_an_excepted_job_only_to_the_excepted_reviewer(client, ros
     assert rows == {SAM: ["1", "2"], ALEX: ["4"]}
 
 
+
+# ---------- auto-publish ----------
+
+
+def test_auto_publish_deals_an_excepted_job_to_the_excepted_reviewer(roster):
+    rows = [_row("1", "Shelf"), _row("2", VIDEO), _row("3", "Endcap"),
+            _row("4", "Store Screener"), _row("5", VIDEO)]
+    # Alex is dealt first, so a blind round-robin would hand job 2 to him.
+    out = main._distribute_evenly(rows, [ALEX, SAM], {
+        ALEX: main._reviewer_exceptions(ALEX), SAM: main._reviewer_exceptions(SAM)})
+    ids = {k: [r["jobId"] for r in v] for k, v in out.items()}
+    # Both video jobs go to Sam; the screener nobody is allowed is left out.
+    assert ids == {ALEX: ["1", "3"], SAM: ["2", "5"]}
+
+
+def test_auto_publish_endpoint_keeps_the_excepted_job(client, roster, monkeypatch):
+    c, token_file = client
+    token_file.write_text(_token(roles.ROOT_ADMIN_EMAIL))
+    docs = []
+
+    def fake_post(path, json=None):
+        docs.append({"id": f"doc-{len(docs) + 1}", "data": json["data"]})
+        return {"data": {"id": docs[-1]["id"]}}
+    monkeypatch.setattr(internal_api, "post", fake_post)
+    monkeypatch.setattr(roles, "list_docs_by_kind", lambda kind, force=False: [
+        d for d in reversed(docs) if d["data"].get("kind") == kind])
+    monkeypatch.setattr(main, "_get_auto_publish_enabled", lambda *a, **k: True)
+    monkeypatch.setattr(main, "_get_todays_scheduled_reviewers",
+                        lambda **k: [ALEX, SAM])
+    # Video first: a blind deal would hand it to Alex, who can't take it.
+    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda *a, **k: [
+        _row("2", VIDEO), _row("1", "Shelf"), _row("3", "Endcap")])
+
+    resp = c.post("/api/shifts/auto-publish")
+    assert resp.status_code in (200, 201), resp.get_json()
+    rows = {d["data"]["reviewer_email"]: [r["jobId"] for r in d["data"]["rows"]]
+            for d in docs if d["data"].get("kind") == "reviewer_shift"}
+    assert "2" in rows.get(SAM, [])
+    assert "2" not in rows.get(ALEX, [])
+
+
 # ---------- top-ups ----------
 
 

@@ -721,18 +721,34 @@ def _get_todays_scheduled_reviewers(shift_time=None):
         return None
 
 
-def _distribute_evenly(rows, reviewers):
+def _distribute_evenly(rows, reviewers, exceptions=None):
     """Distribute rows evenly across reviewers.
 
     Returns {reviewer_email: [rows]} with jobs split as evenly as possible.
     Jobs are distributed round-robin to spread load fairly.
+
+    `exceptions` is {reviewer: rules they're excepted from} (see
+    _reviewer_exceptions). An excluded job goes straight to the least-loaded
+    reviewer allowed it, and is left out when nobody on the shift is. Dealing
+    it blind used to land it on whoever was next, where publish then dropped
+    it, so jobs a reviewer was allowed rarely reached them.
     """
     if not reviewers or not rows:
         return {r: [] for r in reviewers}
 
+    exceptions = exceptions or {}
     assignments = {r: [] for r in reviewers}
-    for i, row in enumerate(rows):
-        reviewer = reviewers[i % len(reviewers)]
+    for row in rows:
+        takers = reviewers
+        if _exclusion_rules(row):
+            takers = [r for r in reviewers
+                      if not _is_excluded_job(row, exceptions.get(r, ()))]
+            if not takers:
+                continue
+        # Least-loaded, ties to the earliest in the list: plain round-robin
+        # when nothing is excluded, and still even when an excepted job has
+        # gone to one reviewer out of turn.
+        reviewer = min(takers, key=lambda r: len(assignments[r]))
         assignments[reviewer].append(row)
 
     return assignments
@@ -803,7 +819,8 @@ def api_shifts_auto_publish():
             return jsonify({"error": "no reviewers scheduled today"}), 400
 
         # Distribute evenly to scheduled reviewers
-        assignments = _distribute_evenly(rows, assigned_reviewers)
+        assignments = _distribute_evenly(rows, assigned_reviewers, {
+            r: _reviewer_exceptions(r) for r in assigned_reviewers})
 
         # Publish using the existing publish logic
         # Simulate the request body

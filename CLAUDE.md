@@ -367,7 +367,10 @@ unassigned rather than splitting the project. An excepted job also skips the
 Options filters (Special Job Types, Retail Pipeline only, P&G Store Walk,
 aged), in the composer and in top-ups: ticking the box means "give them this",
 and on 2026-11-05 Special Job Types silently kept a Bayer CVS job from the one
-reviewer allowed it. Rule keys are stored on reviewer
+reviewer allowed it. Auto-publish's `_distribute_evenly` deals an excluded job
+straight to the least-loaded reviewer allowed it (and skips it if nobody on the
+shift is); dealing it blind landed it on whoever was next, and publish then
+dropped it. Rule keys are stored on reviewer
 docs, so renaming one silently drops those exceptions. `update_record`
 carries the field over, since a PUT replaces the whole doc.
 
