@@ -69,6 +69,8 @@ def test_each_exclusion_names_its_rule():
     assert main._exclusion_rules(
         _row("1", "Shelf", extras={"client": "Joanna.Riney@menasha.com"})) == {"third_party_client"}
     assert main._exclusion_rules(_row("1", "Shelf - NON-VIDEO")) == set()
+    assert main._exclusion_rules(
+        _row("1", "MYTARGET Shopper Insights - Wk 45")) == {"mytarget_shopper_insights"}
 
 
 def test_every_rule_used_is_one_settings_can_offer():

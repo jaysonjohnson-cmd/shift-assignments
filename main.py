@@ -67,6 +67,7 @@ EXCLUSION_RULES = {
     "photos_of_house": "Photos of House from Street",
     "third_party_client": "Third-party clients (Menasha)",
     "pg_cso_personal_care": "P&G CSO – Personal Care Shelf Audit (PID 1636305)",
+    "mytarget_shopper_insights": "myTarget Shopper Insights",
 }
 
 # Project IDs to exclude: every job in the project, whatever its name.
@@ -84,6 +85,7 @@ EXCLUDED_JOB_NAMES = {
     "Bayer CVS Audit - Cadillac Program": "bayer_cvs",  # Monthly recurring; excludes all month versions
     "Screener": "screener",  # Generic screener jobs - exclude all variants containing "Screener"
     "Talking Rain": "talking_rain",  # WHITE GLOVE - Sparkling Water; JID/PID changes weekly
+    "myTarget Shopper Insights": "mytarget_shopper_insights",  # JID/PID changes weekly
 }
 
 
