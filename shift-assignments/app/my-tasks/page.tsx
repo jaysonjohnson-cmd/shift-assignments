@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { closeMyShift, getMyTasks, markTaskDone } from "@/lib/api";
+import { CLOSE_MY_ASSIGNMENTS_URL } from "@/lib/reviewLink";
 import { useUser } from "@/lib/useUser";
 import { reviewerColor, type Row } from "@/lib/types";
 import { OpenInReviewButton, OpenedMark, isLiveSplit } from "@/components/OpenInReviewButton";
@@ -285,6 +286,10 @@ export default function MyTasksPage() {
   }, [load]);
 
   const handleCloseShift = async () => {
+    // Close their FieldAgent review assignments too, on their own FieldAgent
+    // session. Opened here, synchronously in the click, because browsers block
+    // a tab opened after an await.
+    window.open(CLOSE_MY_ASSIGNMENTS_URL, "_blank", "noopener");
     setClosing(true);
     try {
       await closeMyShift();
@@ -398,7 +403,7 @@ export default function MyTasksPage() {
               type="button"
               onClick={handleCloseShift}
               disabled={closing}
-              title="End your shift. Anything you haven't checked off goes back to the queue for the rest of the team."
+              title="End your shift. Anything you haven't checked off goes back to the queue for the rest of the team, and your FieldAgent review assignments are closed in a new tab."
               className="rounded-lg bg-storesight-primary px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-storesight-primary-dark disabled:opacity-50 dark:bg-storesight-accent dark:hover:bg-storesight-accent-light"
             >
               {closing ? "Closing…" : "Done for the shift"}
@@ -437,6 +442,19 @@ export default function MyTasksPage() {
             <p className="mt-4 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
               Anything you didn&rsquo;t finish went back to the queue for the rest
               of the team. Jayson has been notified.
+            </p>
+            <p className="mt-2 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+              Your FieldAgent review assignments were closed in a new tab. If it
+              didn&rsquo;t open,{" "}
+              <a
+                href={CLOSE_MY_ASSIGNMENTS_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium text-storesight-accent underline hover:text-storesight-primary"
+              >
+                close them here
+              </a>
+              .
             </p>
           </div>
         </div>

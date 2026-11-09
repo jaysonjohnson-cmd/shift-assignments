@@ -4,6 +4,17 @@ export const COLLECTION_REVIEW_URL =
   "https://prod.fieldagent.net/admin/fieldagent/collection-review/";
 
 /**
+ * FieldAgent's own "Close My Assignments" link (on Search Agent Submissions).
+ * It closes the signed-in user's open review assignments, so it has to run in
+ * the reviewer's browser on their own FieldAgent session — the Internal API
+ * has no way to do it. Without it, a reviewer who ends their shift here stays
+ * "in review" in FieldAgent and teammates handed their jobs see them there
+ * (2026-11-09: Laurel still in review on 1975675 after it went to Liam).
+ */
+export const CLOSE_MY_ASSIGNMENTS_URL =
+  "https://prod.fieldagent.net/admin/fieldagent/assignments/close/";
+
+/**
  * The Collection Review link a reviewer opens for one of their rows.
  *
  * Scoped to the exact job when there is one — passing the project too makes

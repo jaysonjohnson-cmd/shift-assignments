@@ -469,6 +469,17 @@ There is intentionally **no confirmation prompt** and no block on unfinished
 work: ending the shift is always allowed, and whatever isn't checked off is
 released rather than lost.
 
+**It also closes their FieldAgent review assignments**, by opening FieldAgent's
+own "Close My Assignments" link (`CLOSE_MY_ASSIGNMENTS_URL` in
+`lib/reviewLink.ts`) in a new tab on the click. Releasing a job here doesn't
+touch FieldAgent, and the Internal API has no way to — `/api/responsegroups` is
+read-only — so it has to run on the reviewer's own FieldAgent session. Without
+it a reviewer stayed "in review" after leaving: on 2026-11-09 Laurel was still
+active on 1975675 after it went to Liam, and Grayson on three jobs after
+closing out. The tab is opened before the `await`, because browsers block one
+opened later; the closed-out panel links it again in case it was blocked. The
+feed's `activeReviewerNames` shows who FieldAgent has in review on each job.
+
 Each close-out sends **one DM per reviewer** to `SLACK_ADMIN_USER_ID` — a
 deliberate choice over batching them into an end-of-day digest, so the admin
 sees people finish in real time. Nothing is posted to a shared channel, and the
