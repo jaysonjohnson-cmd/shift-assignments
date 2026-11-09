@@ -393,7 +393,13 @@ Closing out releases a reviewer's work, because it deletes their
 This carries across shifts on the same day, but only while the owner is on
 the current shift. `_finished_today_by` reads today's `checkoff_log` (which
 survives a new snapshot) for reviewers who still have `reviewer_shift` docs,
-and top-ups and auto-publish treat those jobs and projects as theirs. It used
+and top-ups and auto-publish treat those jobs and projects as theirs. In
+top-ups that's a separate, *additional* exclusion (`earlier_mates_jobs`),
+never merged into `own_jobs`: merged, a morning check-off exempted a reviewer
+from a teammate holding the job now, and Saylor's top-ups took back three
+jobs Liam held (2026-11-09). Auto-publish deals an owned job straight to an
+owner in the batch (`_distribute_evenly(..., owners=)`) and holds it back
+when none is, rather than dealing first and dropping it after. It used
 to read the current snapshot alone, so a mid-day clear-and-republish wiped
 ownership: on 2026-11-09, 15 jobs finished that morning went to a different
 reviewer after the 10:40 republish. Someone who has left (closed out, or not

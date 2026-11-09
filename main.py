@@ -723,7 +723,7 @@ def _get_todays_scheduled_reviewers(shift_time=None):
         return None
 
 
-def _distribute_evenly(rows, reviewers, exceptions=None):
+def _distribute_evenly(rows, reviewers, exceptions=None, owners=None):
     """Distribute rows evenly across reviewers.
 
     Returns {reviewer_email: [rows]} with jobs split as evenly as possible.
@@ -734,17 +734,30 @@ def _distribute_evenly(rows, reviewers, exceptions=None):
     reviewer allowed it, and is left out when nobody on the shift is. Dealing
     it blind used to land it on whoever was next, where publish then dropped
     it, so jobs a reviewer was allowed rarely reached them.
+
+    `owners` is (jobs, projects) from _finished_today_by: work someone still on
+    shift finished earlier today. Such a job goes only to one of its owners
+    in this batch, and is held back for their top-up when none is — dealing
+    first and filtering after used to drop it from everyone and leave short
+    (or empty) batches that nothing refilled.
     """
     if not reviewers or not rows:
         return {r: [] for r in reviewers}
 
     exceptions = exceptions or {}
+    owner_jobs, owner_projects = owners or ({}, {})
     assignments = {r: [] for r in reviewers}
     for row in rows:
         takers = reviewers
         if _exclusion_rules(row):
             takers = [r for r in reviewers
                       if not _is_excluded_job(row, exceptions.get(r, ()))]
+            if not takers:
+                continue
+        owned_by = (owner_jobs.get(_job_key(row), set())
+                    | owner_projects.get(str(row.get("projectId") or ""), set()))
+        if owned_by:
+            takers = [r for r in takers if (r or "").strip().lower() in owned_by]
             if not takers:
                 continue
         # Least-loaded, ties to the earliest in the list: plain round-robin
@@ -820,9 +833,24 @@ def api_shifts_auto_publish():
         if not assigned_reviewers:
             return jsonify({"error": "no reviewers scheduled today"}), 400
 
+        # Who's on shift once this publishes: this batch plus anyone already
+        # on the current shift. Work they finished earlier today stays theirs.
+        on_shift = {(e or "").strip().lower() for e in assigned_reviewers}
+        try:
+            current_id, _ = _latest_snapshot()
+            if current_id:
+                on_shift |= {
+                    ((d.get("data") or {}).get("reviewer_email") or "").strip().lower()
+                    for d in roles.list_docs_by_kind("reviewer_shift")
+                    if (d.get("data") or {}).get("shift_snapshot_id") == current_id
+                }
+        except requests.exceptions.HTTPError:
+            pass  # ownership is best-effort; the batch alone still counts
+
         # Distribute evenly to scheduled reviewers
         assignments = _distribute_evenly(rows, assigned_reviewers, {
-            r: _reviewer_exceptions(r) for r in assigned_reviewers})
+            r: _reviewer_exceptions(r) for r in assigned_reviewers},
+            owners=_finished_today_by(on_shift))
 
         # Publish using the existing publish logic
         # Simulate the request body
@@ -882,7 +910,6 @@ def api_shifts_auto_publish():
         # A reviewer re-published mid-shift keeps their original start, so the
         # leaderboard's responses/hr still counts the hours already worked.
         prior_starts: dict = {}
-        retained_reviewers = set()  # on the shift but not in this publish
         if existing_snap_id:
             try:
                 # Forced, like manual publish: a stale warm cache can miss a
@@ -902,7 +929,6 @@ def api_shifts_auto_publish():
                         [doc_data], prior_starts.get(doc_email))
                     _try_delete(doc.get("id"))
                 else:
-                    retained_reviewers.add(doc_email)
                     for r in doc_data.get("rows") or []:
                         jk = str(r.get("jobId") or r.get("id") or "")
                         if jk:
@@ -914,16 +940,6 @@ def api_shifts_auto_publish():
                         r for r in normalized[email]
                         if str(r.get("jobId") or r.get("id") or "") not in retained_keys
                     ]
-
-        # Don't deal out a job or project someone still on shift finished
-        # earlier today; it goes back to them on their own top-up.
-        done_jobs, done_projects = _finished_today_by(set(normalized) | retained_reviewers)
-        for email in reviewer_emails:
-            normalized[email] = [
-                r for r in normalized[email]
-                if not (done_jobs.get(_job_key(r), set()) - {email})
-                and not (done_projects.get(str(r.get("projectId") or ""), set()) - {email})
-            ]
 
         snapshot_data = {
             "kind": "shift_snapshot",
@@ -3095,15 +3111,17 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             prioritization_flags = own_flags
 
         # Work finished earlier today, including on an earlier shift, stays
-        # with whoever finished it while they're still on this one.
+        # with whoever finished it while they're still on this one. This only
+        # ever ADDS exclusions: it's checked separately from the current-shift
+        # rule below, never merged into own_jobs. Merged, a reviewer's morning
+        # check-off exempted her from a teammate holding the job right now —
+        # on 2026-11-09 Saylor's top-ups took 1976141, 1976144 and 1975893 back
+        # while Liam held all three.
         done_jobs, done_projects = _finished_today_by(shift_reviewers)
-        for owned, own_set, mates in ((done_jobs, own_jobs, teammate_jobs),
-                                      (done_projects, own_projects, teammate_projects)):
-            for key, emails in owned.items():
-                if norm in emails:
-                    own_set.add(key)
-                if emails - {norm}:
-                    mates.add(key)
+        earlier_mates_jobs = {k for k, who in done_jobs.items()
+                              if norm not in who and who - {norm}}
+        earlier_mates_projects = {p for p, who in done_projects.items()
+                                  if norm not in who and who - {norm}}
 
         # A job is off-limits while it is actively sitting in someone's queue.
         # Once every holder has completed it, it drops out of the exclusion set
@@ -3231,6 +3249,12 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             pid = str(r.get("projectId") or "")
             if ((k in teammate_jobs and k not in own_jobs)
                     or (pid in teammate_projects and pid not in own_projects)):
+                skipped_reasons["teammates_work"] += 1
+                continue
+            # Same, for a teammate still on shift who finished it earlier
+            # today — unless this reviewer finished it too, or holds it now.
+            if ((k in earlier_mates_jobs and k not in own_jobs)
+                    or (pid in earlier_mates_projects and pid not in own_projects)):
                 skipped_reasons["teammates_work"] += 1
                 continue
             if _is_excluded_job(r, allowed):

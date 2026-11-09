@@ -58,6 +58,8 @@ def test_feed_rows_carry_the_in_review_names():
                                     "activeReviewerNames": "laurelm, grayson.bandy@storesight.com"})
     assert row["extras"]["activeReviewerNames"] == ["laurelm", "grayson.bandy@storesight.com"]
     assert main.bloom._row_from_api({"id": 1, "new": 3})["extras"]["activeReviewerNames"] == []
+    as_list = main.bloom._row_from_api({"id": 1, "new": 3, "activeReviewerNames": ["laurelm", " "]})
+    assert as_list["extras"]["activeReviewerNames"] == ["laurelm"]
 
 
 # ---------- top-ups ----------

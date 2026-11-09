@@ -317,6 +317,17 @@ def _safe_int(value):
         return None
 
 
+def _name_list(raw):
+    """activeReviewerNames as a list. Upstream sends a comma-separated string
+    today ("grayson.bandy@storesight.com, saylorw"); a list is accepted too,
+    so a format change can't turn every name into an unrecognisable one."""
+    if isinstance(raw, (list, tuple)):
+        parts = raw
+    else:
+        parts = str(raw or "").split(",")
+    return [str(n).strip() for n in parts if str(n or "").strip()]
+
+
 def _row_from_api(job, cf_denied_count=0, aged=None):
     """Map a job from /api/prioritized-jobs to the Row shape the UI expects.
 
@@ -404,10 +415,7 @@ def _row_from_api(job, cf_denied_count=0, aged=None):
             # ("laurelm") or emails, comma-separated upstream. Used to keep a
             # top-up off a job a teammate is still reviewing and to flag it on
             # My Tasks; see main._in_review_by_others.
-            "activeReviewerNames": [
-                n.strip() for n in str(job.get("activeReviewerNames") or "").split(",")
-                if n.strip()
-            ],
+            "activeReviewerNames": _name_list(job.get("activeReviewerNames")),
             # Client owner email — used to scope to Storesight / Retail Pipeline jobs.
             "client": str(job.get("client") or ""),
             # Cloud-Factory-denied responses auto-approved before human re-review.
