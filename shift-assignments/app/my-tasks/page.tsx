@@ -409,6 +409,17 @@ export default function MyTasksPage() {
               {closing ? "Closing…" : "Done for the shift"}
             </button>
           )}
+          {/* Standalone too, so a reviewer can release their FieldAgent review
+              assignments without ending the shift here. */}
+          <a
+            href={CLOSE_MY_ASSIGNMENTS_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Close your open review assignments in FieldAgent, so teammates don't see you in review on jobs you've left."
+            className="rounded-lg border border-storesight-border px-3 py-1.5 text-xs font-medium text-storesight-primary-dark transition hover:border-storesight-accent hover:text-storesight-primary dark:border-storesight-border-dark dark:text-storesight-ink-dark dark:hover:border-storesight-accent-light dark:hover:text-storesight-accent-light"
+          >
+            Close My Assignments
+          </a>
         </div>
       </div>
 
