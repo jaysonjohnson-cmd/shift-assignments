@@ -3,7 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { closeMyShift, getMyTasks, markTaskDone } from "@/lib/api";
-import { CLOSE_MY_ASSIGNMENTS_URL } from "@/lib/reviewLink";
+import {
+  CLOSE_MY_ASSIGNMENTS_URL,
+  CLOSE_WINDOW_MS,
+  closeFieldAgentAssignments,
+} from "@/lib/reviewLink";
 import { useUser } from "@/lib/useUser";
 import { reviewerColor, type Row } from "@/lib/types";
 import { OpenInReviewButton, OpenedMark, isLiveSplit } from "@/components/OpenInReviewButton";
@@ -216,6 +220,16 @@ export default function MyTasksPage() {
     closedOut: false,
   });
   const [closing, setClosing] = useState(false);
+  const [faClosing, setFaClosing] = useState(false);
+
+  // Close their FieldAgent review assignments in a short-lived window. Falls
+  // back to the plain link (default click) only if the window was blocked.
+  const handleCloseFaAssignments = (e: React.MouseEvent) => {
+    if (!closeFieldAgentAssignments()) return;
+    e.preventDefault();
+    setFaClosing(true);
+    setTimeout(() => setFaClosing(false), CLOSE_WINDOW_MS);
+  };
   const [density, setDensity] = useState<Density>("comfortable");
   const [viewByPid, setViewByPid] = useState(false);
   const [emptyMsgIdx, setEmptyMsgIdx] = useState(() => pickRandomMessageIndex());
@@ -289,7 +303,7 @@ export default function MyTasksPage() {
     // Close their FieldAgent review assignments too, on their own FieldAgent
     // session. Opened here, synchronously in the click, because browsers block
     // a tab opened after an await.
-    window.open(CLOSE_MY_ASSIGNMENTS_URL, "_blank", "noopener");
+    closeFieldAgentAssignments();
     setClosing(true);
     try {
       await closeMyShift();
@@ -415,10 +429,12 @@ export default function MyTasksPage() {
             href={CLOSE_MY_ASSIGNMENTS_URL}
             target="_blank"
             rel="noopener noreferrer"
+            onClick={handleCloseFaAssignments}
+            aria-disabled={faClosing}
             title="Close your open review assignments in FieldAgent, so teammates don't see you in review on jobs you've left."
             className="rounded-lg border border-storesight-border px-3 py-1.5 text-xs font-medium text-storesight-primary-dark transition hover:border-storesight-accent hover:text-storesight-primary dark:border-storesight-border-dark dark:text-storesight-ink-dark dark:hover:border-storesight-accent-light dark:hover:text-storesight-accent-light"
           >
-            Close My Assignments
+            {faClosing ? "Closing…" : "Close My Assignments"}
           </a>
         </div>
       </div>
@@ -455,8 +471,8 @@ export default function MyTasksPage() {
               of the team. Jayson has been notified.
             </p>
             <p className="mt-2 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-              Your FieldAgent review assignments were closed in a new tab. If it
-              didn&rsquo;t open,{" "}
+              Your FieldAgent review assignments were closed too. If a window
+              didn&rsquo;t flash up,{" "}
               <a
                 href={CLOSE_MY_ASSIGNMENTS_URL}
                 target="_blank"

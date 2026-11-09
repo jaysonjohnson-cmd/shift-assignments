@@ -471,13 +471,17 @@ released rather than lost.
 
 **It also closes their FieldAgent review assignments**, by opening FieldAgent's
 own "Close My Assignments" link (`CLOSE_MY_ASSIGNMENTS_URL` in
-`lib/reviewLink.ts`) in a new tab on the click. Releasing a job here doesn't
+`lib/reviewLink.ts`) in a small window on the click, which closes itself
+after `CLOSE_WINDOW_MS` (`closeFieldAgentAssignments`). It can't be invisible:
+FieldAgent identifies the reviewer by its session cookie, which browsers don't
+send on a background fetch or iframe from another site — only on a real visit. Releasing a job here doesn't
 touch FieldAgent, and the Internal API has no way to — `/api/responsegroups` is
 read-only — so it has to run on the reviewer's own FieldAgent session. Without
 it a reviewer stayed "in review" after leaving: on 2026-11-09 Laurel was still
 active on 1975675 after it went to Liam, and Grayson on three jobs after
-closing out. The tab is opened before the `await`, because browsers block one
-opened later; the closed-out panel links it again in case it was blocked. The
+closing out. The window is opened before the `await`, because browsers block one
+opened later; the closed-out panel links it again in case it was blocked, and
+My Tasks has the same action as a standalone Close My Assignments link. The
 feed's `activeReviewerNames` shows who FieldAgent has in review on each job.
 
 Each close-out sends **one DM per reviewer** to `SLACK_ADMIN_USER_ID` — a

@@ -14,6 +14,46 @@ export const COLLECTION_REVIEW_URL =
 export const CLOSE_MY_ASSIGNMENTS_URL =
   "https://prod.fieldagent.net/admin/fieldagent/assignments/close/";
 
+/** How long the close window stays up — long enough for the request to land. */
+export const CLOSE_WINDOW_MS = 3000;
+
+/**
+ * Hit Close My Assignments without leaving a FieldAgent tab behind: a small
+ * window that closes itself after CLOSE_WINDOW_MS.
+ *
+ * It can't be invisible. FieldAgent only knows who's asking from its session
+ * cookie, and browsers don't send that on a background fetch or iframe from
+ * another site — only on a real visit to the page. So it's a visit, kept short.
+ * Must be called synchronously in a click (browsers block windows opened after
+ * an await). Returns false if the window was blocked, so the caller can fall
+ * back to a plain link.
+ */
+export function closeFieldAgentAssignments(
+  open: typeof window.open = (...a) => window.open(...a),
+  later: (fn: () => void, ms: number) => unknown = setTimeout,
+): boolean {
+  const w = open(
+    CLOSE_MY_ASSIGNMENTS_URL,
+    "fa-close-assignments",
+    "popup,width=420,height=240",
+  );
+  if (!w) return false;
+  // Same effect as noopener, but keeps our handle so we can close it.
+  try {
+    w.opener = null;
+  } catch {
+    /* ignore */
+  }
+  later(() => {
+    try {
+      w.close();
+    } catch {
+      /* already closed */
+    }
+  }, CLOSE_WINDOW_MS);
+  return true;
+}
+
 /**
  * The Collection Review link a reviewer opens for one of their rows.
  *
