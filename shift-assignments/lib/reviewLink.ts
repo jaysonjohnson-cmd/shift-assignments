@@ -44,3 +44,19 @@ export function collectionReviewUrl(row: Row): string {
   const qs = params.toString();
   return qs ? `${COLLECTION_REVIEW_URL}?${qs}#/` : COLLECTION_REVIEW_URL;
 }
+
+
+/**
+ * Projects a By-PID card must not group: any project holding a split job the
+ * reviewer still shares. The split job keeps its own card (its link carries
+ * work_max and goes through the split-open wait), but grouping the project's
+ * other jobs made a card whose link opens the whole project, split job
+ * included, with neither protection.
+ */
+export function projectsWithLiveSplit(rows: Row[]): Set<string> {
+  const out = new Set<string>();
+  for (const r of rows) {
+    if (r.splitPartners?.length && r.projectId) out.add(r.projectId);
+  }
+  return out;
+}

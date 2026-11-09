@@ -155,6 +155,23 @@ def _full_namespace_scan(want_kind=None, force=False):
         )
 
 
+class StorageReadError(Exception):
+    """A read a caller can't safely guess about failed (see read_failed)."""
+
+
+# Whether this thread's most recent list_docs_by_kind had to fall back
+# because its Storage scan failed. Thread-local, so a teammate's request on
+# another thread can't flip it under you.
+_READ_STATE = threading.local()
+
+
+def read_failed():
+    """True when this thread's last list_docs_by_kind couldn't reach Storage
+    and returned cached (or, when cold, empty) docs instead. Fine for display;
+    a publish must not read that as "no shift running"."""
+    return bool(getattr(_READ_STATE, "failed", False))
+
+
 def list_docs_by_kind(kind, force=False):
     """Return docs for `kind`, normally from the warm cache.
 
@@ -169,7 +186,12 @@ def list_docs_by_kind(kind, force=False):
       pings. A cold-cache scan is coalesced by the stampede guard in
       ``_full_namespace_scan``, so a burst of concurrent cold reads costs a
       single scan, not one each. A forced scan is never coalesced.
+
+    A failed scan falls back silently but is recorded for read_failed():
+    a cold fallback is ``[]``, which a publish once read as "no shift running"
+    and started a new one over the live shift.
     """
+    _READ_STATE.failed = False
     _ensure_bg_started()
     with _CACHE_LOCK:
         entry = _DOC_CACHE.get(kind)
@@ -178,6 +200,7 @@ def list_docs_by_kind(kind, force=False):
             _full_namespace_scan(want_kind=kind, force=force)
         except Exception as exc:  # noqa: BLE001 — fall back to whatever we have
             logging.warning("synchronous scan for %s failed: %s", kind, exc)
+            _READ_STATE.failed = True
         with _CACHE_LOCK:
             entry = _DOC_CACHE.get(kind)
     return entry["data"] if entry else []
@@ -337,24 +360,33 @@ def create_record(kind, name, email, color=None):
     return new_id
 
 
-def _cached_data(kind, doc_id):
-    for doc in list_docs_by_kind(kind):
+def _cached_data(kind, doc_id, force=False):
+    for doc in (list_docs_by_kind(kind, force=True) if force else list_docs_by_kind(kind)):
         if doc.get("id") == doc_id:
             return dict(doc.get("data") or {})
     return None
 
 
 def update_record(doc_id, kind, name, email, color=None):
+    """Rename/recolor a roster record. KeyError unless `doc_id` is a `kind` doc.
+
+    Reads the current doc authoritatively: a PUT replaces the whole doc, and
+    carrying fields over from a cold or stale cache dropped a reviewer's
+    exceptions (or undid an edit made on another instance)."""
+    current = _cached_data(kind, doc_id, force=True)
+    if current is None:
+        raise KeyError(doc_id)
     data = {
         "kind": kind,
         "name": (name or "").strip(),
         "email": _normalize_email(email),
     }
-    if color:
-        data["color"] = color
-    # A PUT replaces the whole doc, so carry over what this form doesn't edit —
-    # otherwise renaming or recoloring a reviewer drops their exceptions.
-    exceptions = (_cached_data(kind, doc_id) or {}).get("exclusion_exceptions")
+    # No color in the request keeps the one they have, rather than clearing it.
+    if color or current.get("color"):
+        data["color"] = color or current.get("color")
+    # Carry over what this form doesn't edit — otherwise renaming or
+    # recoloring a reviewer drops their exceptions.
+    exceptions = current.get("exclusion_exceptions")
     if exceptions:
         data["exclusion_exceptions"] = exceptions
     internal_api.put(f"{_STORAGE_PATH}/{doc_id}", json={"data": data})
@@ -363,7 +395,7 @@ def update_record(doc_id, kind, name, email, color=None):
 
 def set_exclusion_exceptions(doc_id, keys):
     """Replace a reviewer's exclusion exceptions. KeyError if no such reviewer."""
-    data = _cached_data("reviewer", doc_id)
+    data = _cached_data("reviewer", doc_id, force=True)
     if data is None:
         raise KeyError(doc_id)
     if keys:
@@ -381,6 +413,10 @@ def set_exclusion_exceptions(doc_id, keys):
     }
 
 
-def delete_record(doc_id):
+def delete_record(doc_id, kind):
+    """Delete a roster record. KeyError unless `doc_id` is a `kind` doc, so a
+    roster route can't be pointed at a snapshot or settings doc."""
+    if _cached_data(kind, doc_id, force=True) is None:
+        raise KeyError(doc_id)
     internal_api.delete(f"{_STORAGE_PATH}/{doc_id}")
     invalidate_doc_cache()

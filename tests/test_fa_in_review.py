@@ -138,3 +138,21 @@ def test_my_tasks_flags_a_teammate_still_in_review(my_tasks):
     assert rows["1975675"]["inReviewBy"] == ["Laurel Mountain"]
     assert "inReviewBy" not in rows["plain"]
     assert "inReviewBy" not in rows["mine"]
+
+
+def test_a_failed_top_up_write_reports_nothing_and_keeps_checkmarks(monkeypatch):
+    """The refill used to retire old checkmarks up front and report the whole
+    batch even when the write then failed."""
+    puts = []
+    added = None
+
+    def failing_post(path, json=None):
+        if json["data"].get("kind") == "reviewer_shift":
+            raise RuntimeError("429")
+        return {"data": {"id": "lock"}}
+    _refill(monkeypatch, [_job("fresh")])  # wire the fakes
+    monkeypatch.setattr(internal_api, "post", failing_post)
+    monkeypatch.setattr(internal_api, "put", lambda path, json=None: puts.append(path))
+    added = main._auto_refill_reviewer("snap1", LIAM, 5)
+    assert added == []
+    assert puts == []

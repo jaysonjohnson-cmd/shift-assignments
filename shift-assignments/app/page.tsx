@@ -92,7 +92,8 @@ const tiles: Tile[] = [
     description:
       "Browse all projects sorted by how long their oldest unreviewed submission has been waiting.",
     accent: "from-orange-400/10 to-[#FF4D4D]/10",
-    enabledFor: ["admin", "lead", "reviewer", "viewer"],
+    // Its data comes from admin/lead-only endpoints; anyone else got an error.
+    enabledFor: ["admin", "lead"],
     icon: (
       <svg viewBox="0 0 24 24" fill="none" className={ICON_CLASS} aria-hidden>
         <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.6" />

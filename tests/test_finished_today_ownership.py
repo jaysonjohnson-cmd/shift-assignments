@@ -147,8 +147,12 @@ def test_auto_publish_skips_a_teammates_finished_work(monkeypatch):
     monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda *a, **k: _feed(
         ("j1", "p1"), ("j2", "p9"), ("j3", "p3"), ("j4", "p4")))
 
+    monkeypatch.setattr(main.roles, "get_role", lambda email: "admin")
+    monkeypatch.setattr(main, "_purge_stale_shift_docs", lambda: None)
     main.app.config["TESTING"] = True
     with main.app.test_request_context("/api/shifts/auto-publish", method="POST"):
+        from flask import g
+        g.user = {"email": "admin@storesight.com"}
         main.api_shifts_auto_publish()
     held = {d["reviewer_email"]: sorted(r["jobId"] for r in d["rows"])
             for d in docs if d.get("kind") == "reviewer_shift"}

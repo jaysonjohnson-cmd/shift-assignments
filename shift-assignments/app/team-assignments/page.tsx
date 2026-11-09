@@ -9,6 +9,7 @@ import { ProgressTrackerTile } from "@/components/assign/ProgressTrackerTile";
 import { CheckoffsPanel } from "@/components/assign/CheckoffsPanel";
 import { useUser } from "@/lib/useUser";
 import { reviewerColor } from "@/lib/types";
+import { COLLECTION_REVIEW_URL } from "@/lib/reviewLink";
 
 const PRIORITY_META: Record<number, { label: string; tint: string; text: string }> = {
   1: { label: "P1", tint: "bg-[#FF4D4D]/15", text: "text-[#FF4D4D]" },
@@ -28,12 +29,11 @@ function truncate(s: string | undefined, n: number): string {
   return s.length > n ? `${s.slice(0, n)}…` : s;
 }
 
+// The exact job only. Passing `project` too makes Collection Review open every
+// job in the project, which loads teammates' responses (see reviewLink.ts).
 function buildJobUrl(row: ShiftJob): string {
-  const COLLECTION_REVIEW_URL =
-    "https://prod.fieldagent.net/admin/fieldagent/collection-review/";
   if (!row.jobId) return COLLECTION_REVIEW_URL;
   const params = new URLSearchParams({ job: row.jobId });
-  if (row.projectId) params.set("project", row.projectId);
   return `${COLLECTION_REVIEW_URL}?${params.toString()}#/`;
 }
 

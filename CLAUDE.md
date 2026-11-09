@@ -268,9 +268,25 @@ Scheduler's labels. Times are US Central (`America/Chicago`) — the QC team is 
 Arkansas. `DRY_RUN=1` prints the commands without applying them.
 
 Two shifts starting at the same clock time are staggered a couple of minutes
-apart on purpose: auto-publish writes a new snapshot and rewrites the
-`reviewer_shift` docs for everyone in its batch, so simultaneous runs would race
-over that shared state.
+apart on purpose: each run merge-publishes into the shared shift, so
+simultaneous runs would race over that shared state.
+
+**What a run does.** It publishes through `_publish_assignments`, the same
+merge as a manual publish — never a new snapshot over a running shift (it used
+to, which hid every reviewer outside the batch). Before dealing it skips
+projects held by a reviewer who isn't in the batch, deals a job someone is in
+review on in FieldAgent (or finished earlier today) only to them, keeps each
+project with one reviewer, and caps everyone at 20 live jobs including what
+they already hold. Callers: the scheduler's OIDC identity or an admin/lead —
+it was open to any signed-in user.
+
+**It never falls back to the whole roster.** `_get_todays_scheduled_reviewers`
+raises when Team Scheduler can't be read (the run answers 503) and returns `[]`
+when nobody is scheduled (a skip). It used to return None for both and the run
+then dealt to every reviewer. Known gap: the lookup forwards the caller's
+`storesight_session` cookie, and a Cloud Scheduler call has none — so until
+Team Scheduler accepts the scheduler's identity, scheduled runs will refuse
+rather than publish. Run it from the Assign menu (with a cookie) meanwhile.
 
 **The auth exception.** Production auth is normally the `storesight_session`
 cookie and nothing else. Exactly two paths additionally accept a Google OIDC
@@ -300,6 +316,12 @@ misses are single-flighted into one call, and auto-refill reads the warm cache
 via `max_age` rather than forcing a fetch. If you add a caller, prefer
 `fetch_prioritized_jobs()` or a `max_age=` bound; reserve `use_cache=False` for
 an explicit user-driven Refresh.
+
+The cache is stamped when a fetch *finishes*: stamped at the start, it was
+already 10-12s old on arrival and the TTL lapsed before the warmer's next
+refresh, stalling page loads for a few seconds every minute. Refresh uses
+`expire_side_caches()` + `use_cache=False`, never `clear_cache()` (which
+empties the rows everyone else is reading).
 
 **How big a top-up is.** A refill fills to the reviewer's own allotment —
 `batch_size`, the job count they were given at publish. Heaviest first (when
@@ -427,6 +449,15 @@ never mid-flight.
 finished shift pass `include_stale=True` — `/api/shifts/clear` does, so an admin
 can still tidy up after the fact. A snapshot whose timestamp won't parse counts
 as current: hiding a live shift is worse than showing a stale one.
+
+**Publishing reads strictly.** `roles.list_docs_by_kind` never raises: when a
+Storage scan fails it falls back to the cache, or `[]` when cold (right after
+a deploy or a cache wipe), and records it for `roles.read_failed()`. Both
+publish paths read through `_latest_snapshot(strict=True)` / `_read_docs(...,
+strict=True)` and answer 503 "nothing was published" on a failed read. They
+used to take the empty fallback as "no shift running" and start a new
+snapshot over the live one, hiding everyone else's work and deleting the
+published reviewers' completions.
 
 Hiding alone would let docs accumulate against the 10k-per-namespace Storage
 cap, so both publish paths call `_purge_stale_shift_docs()` first to delete the
@@ -562,7 +593,11 @@ to let the job sit on several shifts.
   each finisher takes an even share of what's not yet credited, the last takes
   the remainder (`credited_responses` on the completion doc).
 - After every sharer finishes, new responses on the job can come back to any of
-  them through refill, as a normal unsplit row.
+  them through refill, as a normal unsplit row. That row is written to a later
+  part, and `_dedup_rows` keeps the *newest* copy of a job (callers pass rows
+  oldest part first, via `_by_part`): keeping the first left the old
+  `splitWith`/`splitAt` in charge, so the check-off guard only counted
+  responses from before the old split and credit was paid twice.
 
 ## Key Files and Their Roles
 

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getShiftOverview, type ShiftOverview, getShiftJobs, type ShiftJobs, type ShiftJob, clearShift, type ClearMode, removeJobFromReviewer } from "@/lib/api";
 import { formatRelative } from "@/lib/relativeTime";
 import { useUser } from "@/lib/useUser";
+import { COLLECTION_REVIEW_URL } from "@/lib/reviewLink";
 
 export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
   const { role } = useUser();
@@ -440,12 +441,11 @@ function buildResponseSearchUrl(row: ShiftJob): string {
   return `${RESPONSE_SEARCH_URL}?${params.toString()}`;
 }
 
+// The exact job only. Passing `project` too makes Collection Review open every
+// job in the project, which loads teammates' responses (see reviewLink.ts).
 function buildJobUrl(row: ShiftJob): string {
-  const COLLECTION_REVIEW_URL =
-    "https://prod.fieldagent.net/admin/fieldagent/collection-review/";
   if (!row.jobId) return COLLECTION_REVIEW_URL;
   const params = new URLSearchParams({ job: row.jobId });
-  if (row.projectId) params.set("project", row.projectId);
   return `${COLLECTION_REVIEW_URL}?${params.toString()}#/`;
 }
 

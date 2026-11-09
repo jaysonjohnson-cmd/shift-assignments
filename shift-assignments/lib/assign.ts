@@ -270,6 +270,14 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
     }
 
     // Helper function to distribute jobs using weighted round-robin
+    // Who owns each project, kept across every tier pass. It used to be
+    // created inside distributeJobs, so each tier (urgent, new, aged, then
+    // regular) started with no owners: a project's urgent job went to one
+    // reviewer and its regular jobs to another, and each one's By-PID card
+    // opened the other's responses. A job following an owner claimed in an
+    // earlier tier rides on top of their count, which beats splitting the
+    // project.
+    const projectOwner = new Map<string, string>();
     const distributeJobs = (jobs: Row[], tier: "new" | "priority") => {
       if (jobs.length === 0) return;
 
@@ -308,7 +316,6 @@ export function assignShift(pool: Row[], draft: ShiftDraft, prioritizeNew = fals
       // reviewer taking 49 for a 20 request. So a reviewer only claims a
       // project they have room for; the whole project then costs them what
       // they had budgeted.
-      const projectOwner = new Map<string, string>();
       // Refilled per pass from the jobs that pass is actually placing. Sizing
       // it from every unpinned job over-charged: a 16-job project with 2 jobs
       // in the pass still reserved 16, so capacity was spent on jobs that were

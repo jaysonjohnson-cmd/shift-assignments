@@ -53,8 +53,16 @@ export function ProgressTrackerTile({ expanded = false, onToggle, onClick, disab
     void load();
   }, []);
 
+  // Collapsing clears a failed load, so opening the tile again retries it.
   useEffect(() => {
-    if (!expandable || !expanded || reviewers !== null || jobsLoading) return;
+    if (!expanded) setJobsError(null);
+  }, [expanded]);
+
+  useEffect(() => {
+    // Not after an error: the failed load left `reviewers` null and flipped
+    // jobsLoading back, which re-ran this effect at once — a tight loop of
+    // /api/shifts/jobs calls eating the shared 60/min rate limit.
+    if (!expandable || !expanded || reviewers !== null || jobsLoading || jobsError) return;
     const loadJobs = async () => {
       setJobsLoading(true);
       setJobsError(null);
@@ -68,7 +76,7 @@ export function ProgressTrackerTile({ expanded = false, onToggle, onClick, disab
       }
     };
     void loadJobs();
-  }, [expandable, expanded, reviewers, jobsLoading]);
+  }, [expandable, expanded, reviewers, jobsLoading, jobsError]);
 
   return (
     <div className="relative overflow-hidden rounded-2xl border border-storesight-border bg-gradient-to-br from-storesight-sky/40 to-storesight-accent/15 transition hover:border-storesight-accent/60 dark:border-storesight-border-dark dark:from-storesight-accent/20 dark:to-storesight-primary/10">

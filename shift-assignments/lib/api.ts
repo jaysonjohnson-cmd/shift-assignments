@@ -207,15 +207,17 @@ export async function publishShift(
   return resp.data;
 }
 
-export async function autoPublishShift(shiftTime?: string): Promise<{ snapshot_id: string; assigned_jobs: number; reviewer_count: number; published_at: string }> {
+/** Either a publish, or `skipped` with a reason (switched off, nobody
+ *  scheduled, nothing new to hand out) — nothing was written then. */
+export type AutoPublishResult =
+  | { skipped?: false; snapshot_id: string; assigned_jobs: number; reviewer_count: number; published_at: string }
+  | { skipped: true; reason: string };
+
+export async function autoPublishShift(shiftTime?: string): Promise<AutoPublishResult> {
   const url = shiftTime
     ? `/api/shifts/auto-publish?shift_time=${encodeURIComponent(shiftTime)}`
     : "/api/shifts/auto-publish";
-  const resp = await call<{ snapshot_id: string; assigned_jobs: number; reviewer_count: number; published_at: string }>(
-    "POST",
-    url,
-  );
-  return resp;
+  return call<AutoPublishResult>("POST", url);
 }
 
 export async function getAutoPublishEnabled(): Promise<boolean> {

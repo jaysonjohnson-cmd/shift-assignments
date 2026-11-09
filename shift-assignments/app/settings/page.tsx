@@ -179,13 +179,18 @@ function ReviewerColorPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
   const current = reviewerColor(reviewer);
 
   const pick = async (color: string) => {
     setBusy(true);
+    setFailed(false);
     try {
       await onPick(color);
       setOpen(false);
+    } catch {
+      // Was uncaught: the popover just sat open with no word of what happened.
+      setFailed(true);
     } finally {
       setBusy(false);
     }
@@ -227,6 +232,11 @@ function ReviewerColorPicker({
                 aria-label={`Set color ${c}`}
               />
             ))}
+            {failed && (
+              <p role="alert" className="col-span-6 text-[11px] text-storesight-hot-pink">
+                Couldn&apos;t save — try again.
+              </p>
+            )}
           </div>
         </>
       )}
@@ -304,17 +314,23 @@ export default function SettingsPage() {
   };
   const changeReviewerExceptions = async (r: Reviewer, keys: string[]) => {
     const updated = await setReviewerExceptions(r.id, keys);
-    const next = reviewers.map((x) =>
-      x.id === r.id ? { ...x, exclusionExceptions: updated.exclusionExceptions } : x,
-    );
-    setReviewers(next);
-    setReviewersStore(next);
+    // From the latest list, not the one this call started with: saving two
+    // reviewers back to back used to put the first one's old list back.
+    setReviewers((prev) => {
+      const next = prev.map((x) =>
+        x.id === r.id ? { ...x, exclusionExceptions: updated.exclusionExceptions } : x,
+      );
+      setReviewersStore(next);
+      return next;
+    });
   };
   const changeReviewerColor = async (r: Reviewer, color: string) => {
     const updated = await updateReviewer(r.id, r.name, r.email, color);
-    const next = reviewers.map((x) => (x.id === r.id ? { ...x, color: updated.color } : x));
-    setReviewers(next);
-    setReviewersStore(next);
+    setReviewers((prev) => {
+      const next = prev.map((x) => (x.id === r.id ? { ...x, color: updated.color } : x));
+      setReviewersStore(next);
+      return next;
+    });
   };
 
   const addAdmin = async (name: string, email: string) => {

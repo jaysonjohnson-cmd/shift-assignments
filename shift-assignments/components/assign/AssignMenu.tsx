@@ -49,9 +49,13 @@ const TrashIcon = (
 
 export function AssignMenu({
   isAdmin,
+  canResetHistory = false,
   onStart,
 }: {
+  /** Admin or lead: can publish, clear and refresh. */
   isAdmin: boolean;
+  /** Admin only: "Delete all shift history" (the backend refuses leads). */
+  canResetHistory?: boolean;
   onStart: (mode: StartMode) => void;
 }) {
   const rows = useStore((s) => s.rows);
@@ -136,7 +140,12 @@ export function AssignMenu({
     try {
       const result = await autoPublishShift(selectedShiftTime || undefined);
       const timeLabel = selectedShiftTime ? ` at ${selectedShiftTime}` : "";
-      setToast(`Published ${result.assigned_jobs} jobs to ${result.reviewer_count} reviewers${timeLabel}`);
+      // A skip wrote nothing: say why rather than "Published undefined jobs".
+      setToast(
+        result.skipped
+          ? `Nothing published — ${result.reason}`
+          : `Published ${result.assigned_jobs} jobs to ${result.reviewer_count} reviewers${timeLabel}`,
+      );
       setTimeout(() => setToast(null), 4000);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Auto-publish failed");
@@ -303,14 +312,16 @@ export function AssignMenu({
               onClick={() => handleClear("all")}
               danger
             />
-            <div className="mt-3 border-t border-storesight-border pt-3 dark:border-storesight-border-dark">
-              <ClearOption
-                label="Delete all shift history"
-                desc="Nuclear reset — permanently removes every snapshot, task, and completion mark across all time. Cannot be undone."
-                onClick={() => handleClear("reset")}
-                nuclear
-              />
-            </div>
+            {canResetHistory && (
+              <div className="mt-3 border-t border-storesight-border pt-3 dark:border-storesight-border-dark">
+                <ClearOption
+                  label="Delete all shift history"
+                  desc="Nuclear reset — permanently removes every snapshot, task, and completion mark across all time. Cannot be undone."
+                  onClick={() => handleClear("reset")}
+                  nuclear
+                />
+              </div>
+            )}
           </div>
         </Modal>
       )}

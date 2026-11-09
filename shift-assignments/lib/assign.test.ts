@@ -69,6 +69,31 @@ describe("assignShift", () => {
     expect(assignedJids.length).toBeGreaterThan(2);
   });
 
+  it("never splits a project across priority tiers", () => {
+    // PID-1's first job is aged, so the aged tier hands PID-1 out before the
+    // regular tier places its other jobs. Each tier used to start with no
+    // project owners, so the rest of PID-1 could go to someone else.
+    const aged = { ...mockRow("1", "PID-1", "JID-1", 1), extras: { agedCount: 3 } };
+    const pool: Row[] = [
+      aged,
+      mockRow("3", "PID-1", "JID-3", 3),
+      mockRow("4", "PID-1", "JID-4", 4),
+      mockRow("2", "PID-2", "JID-2", 6),
+      mockRow("5", "PID-3", "JID-5", 7),
+    ];
+    // Room for 5 each, so after Saylor takes the aged job the regular tier
+    // sees Laurel as the emptier reviewer for PID-1's other jobs.
+    const draft = { ...mockShift(["Saylor", "Laurel"]), totalTarget: 10 };
+    draft.slots = draft.slots.map((sl) => ({ ...sl, count: 5 }));
+    const result = assignShift(pool, draft, false, false, false, true);
+    const owners = new Set(
+      Object.entries(result.assignments)
+        .filter(([, rows]) => rows.some((r) => r.projectId === "PID-1"))
+        .map(([reviewer]) => reviewer),
+    );
+    expect(owners.size).toBe(1);
+  });
+
   it("fills each reviewer's count despite indivisible projects", () => {
     // Projects can only be handed out whole, so the order they're placed in
     // decides how well they pack. Placing in priority order left a late 9-job

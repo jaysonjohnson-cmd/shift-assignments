@@ -48,7 +48,8 @@ def storage(monkeypatch):
 
     def post(path, json=None):
         doc_id = f"doc-{len(docs) + 1}"
-        docs.append({"id": doc_id, "data": json["data"]})
+        # Real Storage stamps a top-level created_at (epoch) on every doc.
+        docs.append({"id": doc_id, "created_at": 1000 + len(docs), "data": json["data"]})
         return {"data": {"id": doc_id}}
 
     def put(path, json=None):
@@ -459,6 +460,33 @@ def test_same_instant_tie_sends_the_later_one_back(client, storage, monkeypatch)
     assert len(deleted) == 1  # Alex's own open, withdrawn
 
 
+def test_the_open_written_first_wins_even_if_stamped_later(client, storage, monkeypatch):
+    """opened_at is stamped before a scan that can take seconds, so a teammate's
+    open can carry a later time yet be written first. Creation order decides:
+    otherwise both read themselves as first and load the same responses."""
+    c, token_file = client
+    _live_split_shift(storage, monkeypatch, live_unreviewed=40)
+    later = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=3)
+    real_recent = main._recent_split_opens
+    calls = {"n": 0}
+
+    def racing(snap_id, job_id, now):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return []
+        storage.append({"id": "sam-open", "created_at": 1, "data": {
+            "kind": "split_open", "shift_snapshot_id": "snap1", "job_id": "BIG",
+            "reviewer_email": SAM, "opened_at": later.isoformat()}})
+        return real_recent(snap_id, job_id, now)
+
+    monkeypatch.setattr(main, "_recent_split_opens", racing)
+    deleted = []
+    monkeypatch.setattr(main, "_try_delete", lambda doc_id: deleted.append(doc_id))
+    got = _open(c, token_file, ALEX)
+    assert got["wait"] >= 1 and got["teammate"] == "Sam"
+    assert len(deleted) == 1
+
+
 def test_no_stagger_once_the_teammate_has_checked_off(client, storage, monkeypatch):
     c, token_file = client
     _live_split_shift(storage, monkeypatch, live_unreviewed=40)
@@ -475,3 +503,15 @@ def test_unshared_job_never_waits(client, storage, monkeypatch):
     _live_split_shift(storage, monkeypatch, live_unreviewed=40)
     assert _open(c, token_file, SAM, job="NOT-MINE") == {"wait": 0}
     assert _split_opens(storage) == []
+
+
+def test_a_split_job_handed_back_reads_as_a_plain_job():
+    """After every sharer finished, a top-up gave the job back as a normal row
+    in a later part. The old split row used to win the dedupe, so the guard
+    only counted responses from before the old split and credit was paid again."""
+    old = {"jobId": "BIG", "id": "BIG", "splitWith": [SAM, ALEX], "splitAt": "x"}
+    new = {"jobId": "BIG", "id": "BIG", "unreviewedCount": 7}
+    other = {"jobId": "J2", "id": "J2"}
+    rows = main._dedup_rows([old, other, new])
+    assert [r["jobId"] for r in rows] == ["BIG", "J2"]
+    assert rows[0] is new and not main._split_sharers(rows[0])

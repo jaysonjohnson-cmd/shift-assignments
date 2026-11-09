@@ -283,7 +283,13 @@ def count_reviewed_since(job_id, since):
     try:
         for status in REVIEWED_STATUSES:
             page = 1
-            while page <= MAX_REVIEWED_PAGES:
+            while True:
+                if page > MAX_REVIEWED_PAGES:
+                    # Ran out of pages before reaching `since`: the count is
+                    # short, so say "unknown" and let the caller fall back.
+                    logging.warning("reviewed-count for job %s hit the %d-page cap",
+                                    job_id, MAX_REVIEWED_PAGES)
+                    return None
                 resp = internal_api.get("/api/responsegroups", params={
                     "job_id": job_id, "status": status, "sort": "-review_ts",
                     "page": page, "per_page": PAGE_SIZE,
@@ -517,7 +523,12 @@ def _refresh_public_names():
     try:
         names = _fetch_public_names()
         _PUBLIC_NAME_CACHE["names"] = names
-        _PUBLIC_NAME_CACHE["fetched_at"] = time.time()
+        # Nothing at all came back (every search failed, typically on a cold
+        # start): retry in a minute rather than calling it fresh for 15, which
+        # left Special Job Types matching internal names only.
+        _PUBLIC_NAME_CACHE["fetched_at"] = (
+            time.time() if names
+            else time.time() - _PUBLIC_NAME_CACHE_TTL_SECONDS + 60)
         logging.info("bloom.public_names jobs=%d", len(names))
     finally:
         _PUBLIC_NAME_CACHE["refreshing"] = False
@@ -853,7 +864,6 @@ def fetch_prioritized_jobs(status=DEFAULT_STATUS, use_cache=True, include_aged=F
 
 def _fetch_and_cache_prioritized_jobs():
     """Do the actual upstream fetch and populate _CACHE. Caller holds _FETCH_LOCK."""
-    now = time.time()
     jobs = _fetch_prioritized_jobs_raw()
 
     min_date = _earliest_start_date_iso(jobs)
@@ -897,13 +907,28 @@ def _fetch_and_cache_prioritized_jobs():
     # Only fetch if we have explicit cache miss AND project names are empty.
     # This keeps us under the 60 req/min Internal API rate limit.
 
-    _CACHE["fetched_at"] = now
+    # Stamped when the fetch FINISHES, not when it started. Stamping the start
+    # aged the cache by the 10-12s fetch, so with the warmer sleeping 45s after
+    # each fetch the 60s TTL lapsed ~7-9s before the next refresh landed, and
+    # every page load in that gap waited on the lock.
+    _CACHE["fetched_at"] = time.time()
     _CACHE["rows"] = rows
     logging.info(
         "bloom.fetch_prioritized_jobs jobs=%d",
         len(rows),
     )
     return rows
+
+
+def expire_side_caches():
+    """Make the next feed fetch re-read aged work and CF-denied counts too,
+    without emptying the job rows. The Refresh button uses this with
+    use_cache=False: emptying the rows first (clear_cache) made every other
+    page load queue behind the 10-12s refetch, and left the cache empty if
+    that fetch failed."""
+    _AGED_CACHE["fetched_at"] = 0.0
+    _CF_DENIED_CACHE["fetched_at"] = 0.0
+    _PROJECT_JOBS_CACHE.clear()
 
 
 def clear_cache():

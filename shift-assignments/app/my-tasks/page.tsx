@@ -7,7 +7,7 @@ import { CLOSE_MY_ASSIGNMENTS_URL } from "@/lib/reviewLink";
 import { useUser } from "@/lib/useUser";
 import { reviewerColor, type Row } from "@/lib/types";
 import { OpenInReviewButton, OpenedMark, isLiveSplit } from "@/components/OpenInReviewButton";
-import { collectionReviewUrl } from "@/lib/reviewLink";
+import { collectionReviewUrl, projectsWithLiveSplit } from "@/lib/reviewLink";
 import { MarkDoneButton } from "@/components/MarkDoneButton";
 import { Confetti } from "@/components/Confetti";
 import { formatRelative, formatPending } from "@/lib/relativeTime";
@@ -65,14 +65,17 @@ function groupByProject(rows: Row[]): Row[] {
       apartPerProject.set(r.projectId, (apartPerProject.get(r.projectId) ?? 0) + 1);
     }
   }
+  const splitProjects = projectsWithLiveSplit(rows);
   const buckets = new Map<string, Row[]>();
   for (const r of rows) {
     // A split job always stays its own card: the group would open the whole
     // project in Collection Review, and teammates may hold its other jobs.
-    // Same for a project holding an excluded job: opening the whole project
-    // would hand the reviewer its video jobs.
+    // So do the other jobs in a split job's project — grouped, their card
+    // opens the whole project, split job included, uncapped. Same for a
+    // project holding an excluded job: opening the whole project would hand
+    // the reviewer its video jobs.
     const key =
-      r.splitPartners?.length || r.projectHasExcluded
+      r.splitPartners?.length || r.projectHasExcluded || splitProjects.has(r.projectId)
         ? `job:${r.jobId || r.id}`
         : r.projectId || r.id;
     const list = buckets.get(key);
@@ -219,7 +222,7 @@ export default function MyTasksPage() {
 
   const [density, setDensity] = useState<Density>("comfortable");
   const [viewByPid, setViewByPid] = useState(false);
-  const [emptyMsgIdx, setEmptyMsgIdx] = useState(() => pickRandomMessageIndex());
+  const [emptyMsgIdx] = useState(() => pickRandomMessageIndex());
   const [blockedModal, setBlockedModal] = useState<{
     jobIds: string[];
     doneIds: string[];
@@ -261,7 +264,8 @@ export default function MyTasksPage() {
 
   const load = useCallback(async () => {
     setState((s) => ({ ...s, loading: true, error: null }));
-    setEmptyMsgIdx(pickRandomMessageIndex());
+    // The message is picked once per page load, not per poll: it keys the
+    // celebration, so a new one every 8 seconds replayed the confetti.
     try {
       const data = await getMyTasks();
       setState({
@@ -534,18 +538,30 @@ export default function MyTasksPage() {
           jobId={blockedModal.jobIds[0]}
           splitPartners={blockedModal.splitPartners}
           onConfirm={async () => {
+            const confirmed: string[] = [];
             try {
               // One at a time: each completion makes several Storage API calls.
               for (const id of blockedModal.jobIds) {
                 await markTaskDone(id, undefined, true);
+                confirmed.push(id);
               }
               handleRowChange(
                 [...blockedModal.doneIds, ...blockedModal.jobIds],
                 new Date().toISOString(),
               );
               setBlockedModal(null);
-            } catch {
-              // Error handled by MarkDoneButton state
+            } catch (e) {
+              // This used to be swallowed (nothing else reports it), leaving the
+              // modal open with no message. Keep what did go through, and say
+              // what didn't.
+              handleRowChange([...blockedModal.doneIds, ...confirmed], new Date().toISOString());
+              setBlockedModal(null);
+              setState((st) => ({
+                ...st,
+                error: e instanceof Error
+                  ? `Couldn't check that off: ${e.message}`
+                  : "Couldn't check that off — try again.",
+              }));
             }
           }}
           onCancel={() => {

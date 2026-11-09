@@ -1449,6 +1449,56 @@ def test_a_racing_duplicate_completion_is_dropped(client, monkeypatch):
     assert "review_tally" not in posted_kinds, "the job must only count once"
 
 
+def test_the_first_doc_written_wins_even_with_a_later_timestamp(client, monkeypatch):
+    """A request that stamped completed_at, stalled, and wrote second used to
+    win on the earlier timestamp — after the other request had re-read, seen
+    only itself and gone on — so both survived. Creation order decides now."""
+    c, token_file = client
+    _as_reviewer(token_file, "sam@storesight.com")
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(roles, "list_reviewers",
+                        lambda: [{"id": "r", "name": "Sam", "email": "sam@storesight.com"}])
+    snapshot_doc = {"id": "snap-1", "data": {"kind": "shift_snapshot"}}
+    reviewer_doc = {"id": "rs-1", "data": {"kind": "reviewer_shift",
+                    "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
+                    "rows": [{"jobId": "10", "id": "10"}], "part": 0}}
+    # Written first (created_at 1) but stamped later than ours will be.
+    racer = {"id": "comp-0", "created_at": 1, "data": {
+        "kind": "completion", "shift_snapshot_id": "snap-1",
+        "reviewer_email": "sam@storesight.com", "job_id": "10",
+        "completed_at": "2999-01-01T00:00:00+00:00"}}
+    created = []
+    reads = {"completion": 0}
+
+    def fake_list(kind, force=False):
+        if kind == "shift_snapshot":
+            return [snapshot_doc]
+        if kind == "reviewer_shift":
+            return [reviewer_doc]
+        if kind == "completion":
+            reads["completion"] += 1
+            return list(created) if reads["completion"] == 1 else [racer, *created]
+        return []
+
+    def fake_post(path, json=None):
+        if (json or {}).get("data", {}).get("kind") == "completion":
+            created.append({"id": "comp-1", "created_at": 2, "data": json["data"]})
+            return {"data": {"id": "comp-1"}}
+        return {"data": {"id": "other"}}
+
+    deleted = []
+    monkeypatch.setattr(roles, "list_docs_by_kind", fake_list)
+    monkeypatch.setattr(internal_api, "post", fake_post)
+    monkeypatch.setattr(internal_api, "put", lambda path, json=None: {"data": {}})
+    monkeypatch.setattr(main, "_try_delete", lambda did: deleted.append(did))
+    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda *a, **k: [])
+
+    resp = c.post("/api/shifts/my/complete", json={"job_id": "10"})
+    assert resp.status_code == 200, resp.get_json()
+    assert resp.get_json()["data"]["id"] == "comp-0"
+    assert deleted == ["comp-1"]
+
+
 def test_complete_rechecks_a_stale_count_with_the_per_job_lookup(client, monkeypatch):
     """When the warm feed still shows responses, confirm with the ~0.3s per-job
     count instead of refetching the whole 10-12s feed on the reviewer's click."""
@@ -2574,3 +2624,66 @@ def test_submission_age_counts_central_calendar_days():
     # A UTC timestamp past midnight UTC but still the evening before in Central.
     utc = datetime.datetime(2026, 9, 21, 3, 0, tzinfo=datetime.timezone.utc)   # 10 PM CDT Sep 20
     assert bloom.submission_age_days(utc, now) == 3
+
+
+def test_an_admin_top_up_keeps_the_reviewers_allotment(client, monkeypatch):
+    """Adding 3 jobs to a reviewer down to their last few used to stamp 3 as
+    their batch_size, so every later refill for the shift was 3 jobs."""
+    c, token_file = client
+    _as_admin(token_file)
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(roles, "list_reviewers", lambda: [])
+    docs = [
+        {"id": "snap-1", "data": {"kind": "shift_snapshot", "published_at": _today_published_at(),
+                                  "reviewer_emails": ["sam@storesight.com"]}},
+        {"id": "rs-1", "data": {"kind": "reviewer_shift", "shift_snapshot_id": "snap-1",
+                                "reviewer_email": "sam@storesight.com", "batch_size": 20, "part": 0,
+                                "rows": [{"jobId": "J1", "id": "J1", "projectId": "P1", "unreviewedCount": 2}]}},
+    ]
+
+    def fake_post(path, json=None):
+        docs.append({"id": f"doc-{len(docs) + 1}", "data": json["data"]})
+        return {"data": {"id": docs[-1]["id"]}}
+    monkeypatch.setattr(internal_api, "post", fake_post)
+    monkeypatch.setattr(internal_api, "put", lambda path, json=None: {"data": {}})
+    monkeypatch.setattr(internal_api, "delete", lambda path: {"data": {}})
+    monkeypatch.setattr(roles, "list_docs_by_kind", lambda kind, force=False: [
+        d for d in docs if d["data"].get("kind") == kind])
+
+    picks = [{"jobId": j, "id": j, "projectId": f"P{j}", "name": j, "unreviewedCount": 3}
+             for j in ("J2", "J3", "J4")]
+    resp = c.post("/api/shifts/publish", json={"assignments": {"sam@storesight.com": picks}})
+    assert resp.status_code in (200, 201), resp.get_json()
+    written = [d["data"] for d in docs[2:] if d["data"].get("kind") == "reviewer_shift"]
+    assert written and all(d["batch_size"] == 20 for d in written)
+
+
+def test_team_jobs_list_matches_my_tasks_and_the_overview(client, monkeypatch):
+    """The detail list hid a job at 0 live (or missing from the feed) unless
+    checked off, while My Tasks and the overview still counted it pending."""
+    c, token_file = client
+    _as_admin(token_file)
+    monkeypatch.setattr(roles, "list_admins", lambda: [])
+    monkeypatch.setattr(roles, "list_reviewers",
+                        lambda: [{"id": "r1", "name": "Sam", "email": "sam@storesight.com"}])
+    snapshot = {"id": "snap-1", "data": {"kind": "shift_snapshot", "published_at": _today_published_at(),
+                "reviewer_emails": ["sam@storesight.com"]}}
+    reviewer_doc = {"id": "rs-1", "data": {"kind": "reviewer_shift",
+                    "shift_snapshot_id": "snap-1", "reviewer_email": "sam@storesight.com",
+                    "rows": [
+                        {"jobId": "B", "projectId": "20", "unreviewedCount": 4},  # 0 live, not checked
+                        {"jobId": "D", "projectId": "40", "unreviewedCount": 6},  # gone from the feed
+                        {"jobId": "C", "projectId": "30", "unreviewedCount": 1},
+                    ]}}
+    monkeypatch.setattr(roles, "list_docs_by_kind", lambda kind, force=False: {
+        "shift_snapshot": [snapshot], "reviewer_shift": [reviewer_doc]}.get(kind, []))
+    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda *a, **k: [
+        {"jobId": "B", "unreviewedCount": 0}, {"jobId": "C", "unreviewedCount": 5}])
+
+    jobs = c.get("/api/shifts/jobs").get_json()["data"]["jobs_by_reviewer"][0]["jobs"]
+    by_id = {j["jobId"]: j for j in jobs}
+    assert set(by_id) == {"B", "C", "D"}
+    assert by_id["D"]["unreviewedCount"] == 6, "missing from the feed keeps its stored count"
+    assert by_id["C"]["unreviewedCount"] == 5
+    overview = c.get("/api/shifts/overview").get_json()["data"]["reviewers"][0]
+    assert overview["pending"] == len(jobs)

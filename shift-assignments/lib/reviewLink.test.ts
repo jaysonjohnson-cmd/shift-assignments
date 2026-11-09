@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collectionReviewUrl } from "./reviewLink";
+import { collectionReviewUrl, projectsWithLiveSplit } from "./reviewLink";
 import type { Row } from "./types";
 
 const row = (over: Partial<Row> = {}): Row => ({
@@ -41,5 +41,17 @@ describe("collectionReviewUrl", () => {
     expect(collectionReviewUrl(row({ jobId: null }))).toBe(
       "https://prod.fieldagent.net/admin/fieldagent/collection-review/?project=P1#/",
     );
+  });
+});
+
+describe("projectsWithLiveSplit", () => {
+  it("names only projects holding a job the reviewer still shares", () => {
+    const rows = [
+      row({ jobId: "C", projectId: "P", splitPartners: [{ email: "z@x.com", name: "Z", done: false }] }),
+      row({ jobId: "A", projectId: "P" }),
+      row({ jobId: "B", projectId: "Q" }),
+    ];
+    expect([...projectsWithLiveSplit(rows)]).toEqual(["P"]);
+    expect(projectsWithLiveSplit([row({ projectId: "Q" })]).size).toBe(0);
   });
 });

@@ -118,3 +118,39 @@ def test_warmer_starts_once_and_is_opt_out(monkeypatch):
     bloom._ensure_warmer_started()
     bloom._ensure_warmer_started()
     assert spawned == ["bloom-cache-warmer"], "exactly one warmer"
+
+
+def test_cache_is_stamped_when_the_fetch_finishes(monkeypatch):
+    """A 10-12s fetch stamped at its start was already 10s old on arrival, so
+    the 60s TTL ran out before the warmer's next refresh landed."""
+    clock = [1000.0]
+    monkeypatch.setattr(bloom.time, "time", lambda: clock[0])
+    calls = []
+    _stub_feed(monkeypatch, calls)
+    real = bloom._fetch_prioritized_jobs_raw
+
+    def slow():
+        clock[0] += 12  # the upstream takes 12s
+        return real()
+    monkeypatch.setattr(bloom, "_fetch_prioritized_jobs_raw", slow)
+    bloom.fetch_prioritized_jobs(use_cache=False)
+    assert bloom._CACHE["fetched_at"] == 1012.0
+
+
+def test_refresh_keeps_serving_rows_while_it_refetches(monkeypatch):
+    calls = []
+    _stub_feed(monkeypatch, calls)
+    bloom.fetch_prioritized_jobs()
+    bloom.expire_side_caches()
+    assert bloom._CACHE["rows"], "rows stay put for everyone else during a Refresh"
+    bloom.fetch_prioritized_jobs(use_cache=False)
+    assert len(calls) == 2
+
+
+def test_reviewed_count_is_unknown_when_it_runs_out_of_pages(monkeypatch):
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc)
+    page = [{"review_ts": now.isoformat(), "reviewed_by_id": 5}] * bloom.PAGE_SIZE
+    monkeypatch.setattr(bloom.internal_api, "get", lambda *a, **k: {"data": page})
+    since = now - datetime.timedelta(days=30)
+    assert bloom.count_reviewed_since("1", since) is None

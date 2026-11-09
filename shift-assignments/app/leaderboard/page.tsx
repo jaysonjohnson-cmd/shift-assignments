@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   getLeaderboard,
@@ -56,15 +56,22 @@ export default function LeaderboardPage() {
   // "all" = whole period; a number = a single day within it.
   const [view, setView] = useState<"all" | number>("all");
 
+  // Only the newest request may update the page: flipping months quickly
+  // used to let a slow earlier response land last and show the wrong month.
+  const latestLoad = useRef(0);
   const load = useCallback(async () => {
+    const mine = ++latestLoad.current;
     setLoading(true);
     setError(null);
     try {
-      setData(await getLeaderboard(period === "month" ? { period, month } : {}));
+      const next = await getLeaderboard(period === "month" ? { period, month } : {});
+      if (mine === latestLoad.current) setData(next);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load leaderboard");
+      if (mine === latestLoad.current) {
+        setError(e instanceof Error ? e.message : "Failed to load leaderboard");
+      }
     } finally {
-      setLoading(false);
+      if (mine === latestLoad.current) setLoading(false);
     }
   }, [period, month]);
 

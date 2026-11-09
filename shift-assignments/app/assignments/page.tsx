@@ -311,6 +311,7 @@ export default function AssignmentsPage() {
     return (
       <AssignMenu
         isAdmin={isAdmin}
+        canResetHistory={role === "admin"}
         onStart={(m) => {
           if (m.kind === "shift") {
             setMode({ kind: "shift", draft: emptyShiftDraft() });

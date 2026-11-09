@@ -465,6 +465,8 @@ def api_reviewers_update(doc_id):
     color = _validate_color(body)
     try:
         roles.update_record(doc_id, "reviewer", name, email, color)
+    except KeyError:
+        return jsonify({"error": "reviewer not found"}), 404
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else 500
         return jsonify({"error": f"storage api returned {status}"}), status
@@ -519,7 +521,9 @@ def api_reviewers_delete(doc_id):
     if denied is not None:
         return denied
     try:
-        roles.delete_record(doc_id)
+        roles.delete_record(doc_id, "reviewer")
+    except KeyError:
+        return jsonify({"error": "reviewer not found"}), 404
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else 500
         return jsonify({"error": f"storage api returned {status}"}), status
@@ -574,7 +578,9 @@ def api_admins_delete(doc_id):
     if doc_id == "__root__":
         return jsonify({"error": "the root admin cannot be removed"}), 400
     try:
-        roles.delete_record(doc_id)
+        roles.delete_record(doc_id, "admin")
+    except KeyError:
+        return jsonify({"error": "admin not found"}), 404
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else 500
         return jsonify({"error": f"storage api returned {status}"}), status
@@ -617,6 +623,8 @@ def api_leads_update(doc_id):
         return err
     try:
         roles.update_record(doc_id, "lead", name, email)
+    except KeyError:
+        return jsonify({"error": "lead not found"}), 404
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else 500
         return jsonify({"error": f"storage api returned {status}"}), status
@@ -630,7 +638,9 @@ def api_leads_delete(doc_id):
     if denied is not None:
         return denied
     try:
-        roles.delete_record(doc_id)
+        roles.delete_record(doc_id, "lead")
+    except KeyError:
+        return jsonify({"error": "lead not found"}), 404
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else 500
         return jsonify({"error": f"storage api returned {status}"}), status
@@ -647,14 +657,18 @@ def _get_todays_scheduled_reviewers(shift_time=None):
         shift_time: Optional shift time filter (e.g., "8:30 AM", "1:00 PM").
                    If provided, only returns reviewers with shifts matching that time.
 
-    Returns a list of reviewer emails who have shifts today (optionally filtered by time).
-    Falls back to all active reviewers if Team Scheduler is unavailable or time doesn't match.
+    Returns the emails of reviewers with a shift today (optionally only at
+    that time) — [] when nobody is. Raises when Team Scheduler can't be read:
+    callers must not treat a failed lookup as an answer. It used to return
+    None for both, and auto-publish then dealt to the whole roster.
+
+    "Today" is US Central, like shifts; the server's clock is UTC.
     """
-    try:
+    if True:
         import datetime as dt
 
         # Get today's date in YYYY-MM-DD format (Monday of the week)
-        today = dt.date.today()
+        today = dt.datetime.now(_SHIFT_TZ).date()
         monday = today - dt.timedelta(days=today.weekday())
         week_key = monday.isoformat()
 
@@ -716,11 +730,7 @@ def _get_todays_scheduled_reviewers(shift_time=None):
                     if email:
                         scheduled_emails.append(email)
 
-        return scheduled_emails if scheduled_emails else None
-
-    except Exception as e:
-        logging.warning("Failed to get today's scheduled reviewers: %s", e)
-        return None
+        return scheduled_emails
 
 
 def _distribute_evenly(rows, reviewers, exceptions=None, owners=None):
@@ -747,6 +757,7 @@ def _distribute_evenly(rows, reviewers, exceptions=None, owners=None):
     exceptions = exceptions or {}
     owner_jobs, owner_projects = owners or ({}, {})
     assignments = {r: [] for r in reviewers}
+    project_taker = {}
     for row in rows:
         takers = reviewers
         if _exclusion_rules(row):
@@ -754,17 +765,25 @@ def _distribute_evenly(rows, reviewers, exceptions=None, owners=None):
                       if not _is_excluded_job(row, exceptions.get(r, ()))]
             if not takers:
                 continue
-        owned_by = (owner_jobs.get(_job_key(row), set())
-                    | owner_projects.get(str(row.get("projectId") or ""), set()))
+        pid = str(row.get("projectId") or "")
+        owned_by = owner_jobs.get(_job_key(row), set()) | owner_projects.get(pid, set())
         if owned_by:
             takers = [r for r in takers if (r or "").strip().lower() in owned_by]
             if not takers:
                 continue
+        # Keep a project with whoever got its first job — a By-PID card opens
+        # the whole project, so splitting it shows each the other's responses.
+        if pid and project_taker.get(pid) is not None:
+            if project_taker[pid] not in takers:
+                continue
+            takers = [project_taker[pid]]
         # Least-loaded, ties to the earliest in the list: plain round-robin
         # when nothing is excluded, and still even when an excepted job has
         # gone to one reviewer out of turn.
         reviewer = min(takers, key=lambda r: len(assignments[r]))
         assignments[reviewer].append(row)
+        if pid:
+            project_taker.setdefault(pid, reviewer)
 
     return assignments
 
@@ -789,207 +808,133 @@ def _sets_team_options(emails) -> bool:
 
 @app.route("/api/shifts/auto-publish", methods=["POST"])
 def api_shifts_auto_publish():
-    """Automatically create and publish a shift.
-
-    Fetches jobs from Bloom, distributes to today's scheduled reviewers from
-    Team Scheduler, and publishes the shift. Can be called on a schedule via
-    Cloud Scheduler.
+    """Hand today's scheduled reviewers a batch from the live feed, merged into
+    the running shift (or starting one). Called by Cloud Scheduler per shift
+    time, or by an admin/lead from the Assign menu.
 
     Query parameters:
-        shift_time: Optional shift time filter (e.g., "8:30 AM", "1:00 PM").
-                   Only assigns to reviewers with shifts at that time.
+        shift_time: only reviewers whose Team Scheduler shift has this label
+                    (e.g. "8:30 AM – 12:00 PM"; see setup-scheduler.sh).
 
-    Authenticated either by a signed-in user's storesight_session cookie or, for
-    the Cloud Scheduler timer, by an allowlisted service account's OIDC token
-    (see _oidc_service_account_identity). Any signed-in user may trigger it —
-    it only distributes work to reviewers who are already on the roster.
+    It publishes through _publish_assignments, the same merge as a manual
+    publish. It used to always write a brand-new snapshot, which hid every
+    reviewer outside the batch (their docs stayed on the old one) and dropped
+    their jobs; the 8:30 run wiped the 8:00 team.
+
+    Nothing is ever dealt to the whole roster as a fallback: if Team
+    Scheduler can't be read the run refuses, and if nobody is scheduled it
+    skips. A failed lookup used to mean "everyone".
     """
-    # Auth is required by the @app.before_request middleware
+    # The scheduler's OIDC identity, or a signed-in admin/lead. Any signed-in
+    # user could run it before, rewriting the team's shift.
+    if (g.user.get("email") or "").strip().lower() not in _OIDC_SERVICE_ACCOUNTS:
+        denied = _require_admin_or_lead()
+        if denied is not None:
+            return denied
     try:
         if not _get_auto_publish_enabled():
             logging.info("Auto-publish skipped: disabled in settings")
             return jsonify({"skipped": True, "reason": "auto-publish is disabled"}), 200
 
-        # Get shift_time filter from query params
         shift_time = request.args.get("shift_time") or None
+        label = f" at {shift_time}" if shift_time else " today"
+        try:
+            assigned_reviewers = _get_todays_scheduled_reviewers(shift_time=shift_time)
+        except Exception as exc:  # noqa: BLE001 — refuse rather than guess
+            logging.warning("Auto-publish refused: Team Scheduler lookup failed: %s", exc)
+            return jsonify({"error": "Couldn't read today's schedule from Team Scheduler, "
+                                     "so nothing was published."}), 503
+        batch = {(e or "").strip().lower() for e in assigned_reviewers if e}
+        if not batch:
+            return jsonify({"skipped": True, "reason": f"nobody is scheduled{label}"}), 200
 
-        # Fetch jobs from Bloom
         rows = bloom.fetch_prioritized_jobs(status=bloom.DEFAULT_STATUS)
         if not rows:
             return jsonify({"error": "no jobs available to publish"}), 400
 
-        # Get today's scheduled reviewers from Team Scheduler (optionally filtered by shift time)
-        scheduled = _get_todays_scheduled_reviewers(shift_time=shift_time)
-        if scheduled:
-            assigned_reviewers = scheduled
-            time_label = f" at {shift_time}" if shift_time else ""
-            logging.info("Auto-publish: using %d reviewers scheduled today%s", len(assigned_reviewers), time_label)
-        else:
-            # Fallback: use all active reviewers if Team Scheduler unavailable
-            assigned_reviewers = [r["email"] for r in roles.list_reviewers()]
-            time_label = f" at {shift_time}" if shift_time else ""
-            logging.info("Auto-publish: Team Scheduler unavailable, using all %d active reviewers%s", len(assigned_reviewers), time_label)
-
-        if not assigned_reviewers:
-            return jsonify({"error": "no reviewers scheduled today"}), 400
-
-        # Who's on shift once this publishes: this batch plus anyone already
-        # on the current shift. Work they finished earlier today stays theirs.
-        on_shift = {(e or "").strip().lower() for e in assigned_reviewers}
+        # The running shift, read strictly — the merge below depends on it.
         try:
-            current_id, _ = _latest_snapshot()
-            if current_id:
-                on_shift |= {
-                    ((d.get("data") or {}).get("reviewer_email") or "").strip().lower()
-                    for d in roles.list_docs_by_kind("reviewer_shift")
-                    if (d.get("data") or {}).get("shift_snapshot_id") == current_id
-                }
-        except requests.exceptions.HTTPError:
-            pass  # ownership is best-effort; the batch alone still counts
+            current_id, _ = _latest_snapshot(strict=True)
+            current_docs = ([d for d in _read_docs("reviewer_shift", strict=True)
+                             if (d.get("data") or {}).get("shift_snapshot_id") == current_id]
+                            if current_id else [])
+            completions = _list_completions_for_snapshot(current_id) if current_id else []
+        except (requests.exceptions.HTTPError, roles.StorageReadError) as exc:
+            logging.warning("Auto-publish refused: couldn't read the current shift: %s", exc)
+            return jsonify({"error": "couldn't read the current shift; nothing published"}), 503
 
-        # Distribute evenly to scheduled reviewers
-        assignments = _distribute_evenly(rows, assigned_reviewers, {
-            r: _reviewer_exceptions(r) for r in assigned_reviewers},
-            owners=_finished_today_by(on_shift))
+        done = {((c.get("reviewer_email") or "").lower(), _completion_job_key(c))
+                for c in completions}
+        project_holders: dict = {}
+        pending_held: dict = {}
+        for d in current_docs:
+            data = d.get("data") or {}
+            email = (data.get("reviewer_email") or "").strip().lower()
+            for r in data.get("rows") or []:
+                pid = str(r.get("projectId") or "")
+                if pid:
+                    project_holders.setdefault(pid, set()).add(email)
+                if (email, _job_key(r)) not in done:
+                    pending_held[email] = pending_held.get(email, 0) + 1
+        on_shift = batch | {((d.get("data") or {}).get("reviewer_email") or "").strip().lower()
+                            for d in current_docs}
 
-        # Publish using the existing publish logic
-        # Simulate the request body
-        normalized = {}
-        for email, job_rows in assignments.items():
-            key = (email or "").strip().lower()
-            if not key:
+        # Who a job must go to (or not go to at all). Work someone still on
+        # shift finished earlier today stays theirs; so does a job FieldAgent
+        # shows someone in review on. A project held by a reviewer who isn't
+        # in this batch stays with them.
+        done_jobs, done_projects = _finished_today_by(on_shift)
+        owner_jobs = {k: set(v) for k, v in done_jobs.items()}
+        try:
+            roster = roles.list_reviewers()
+        except Exception:  # noqa: BLE001 — unmatched names just skip their jobs
+            roster = []
+        candidates = []
+        for r in rows:
+            pid = str(r.get("projectId") or "")
+            if project_holders.get(pid, set()) - batch:
                 continue
-            valid_rows = []
-            allowed = _reviewer_exceptions(key)
-            for r in job_rows:
-                if _is_excluded_job(r, allowed):
+            names = (r.get("extras") or {}).get("activeReviewerNames") or []
+            if names:
+                matched = {(x.get("email") or "").lower() for x in roster
+                           for n in names if _fa_name_is(n, x.get("email"))}
+                unmatched = [n for n in names
+                             if not any(_fa_name_is(n, x.get("email")) for x in roster)]
+                if unmatched or matched - batch:
                     continue
-                unreviewable = int(r.get("unreviewedCount") or 0)
-                total_new = int((r.get("extras") or {}).get("newCount") or 0)
-                auto_rejected = max(0, total_new - unreviewable)
-                total_responses = unreviewable + auto_rejected
-                if total_responses > 0:
-                    valid_rows.append(_compact_row(r))
-            if valid_rows:
-                normalized[key] = valid_rows
+                owner_jobs.setdefault(_job_key(r), set()).update(matched)
+            candidates.append(r)
 
-        if not normalized:
-            return jsonify({"error": "no valid jobs to assign"}), 400
+        dealt = _distribute_evenly(
+            candidates, sorted(batch), {e: _reviewer_exceptions(e) for e in batch},
+            owners=(owner_jobs, done_projects))
 
-        # Dedup across reviewers and cap at 20 jobs per reviewer
+        # Up to 20 live jobs each, counting what they already hold.
         MAX_JOBS_PER_REVIEWER = 20
-        seen_job_keys = set()
-        reviewer_emails = sorted(normalized.keys())
-        for email in reviewer_emails:
-            deduped = []
-            for r in normalized[email]:
-                jk = str(r.get("jobId") or r.get("id") or "")
-                if not jk or jk not in seen_job_keys:
-                    deduped.append(r)
-                    if jk:
-                        seen_job_keys.add(jk)
-            # Cap at 20 jobs per reviewer
-            normalized[email] = deduped[:MAX_JOBS_PER_REVIEWER]
+        assignments = {}
+        for email, job_rows in dealt.items():
+            room = max(0, MAX_JOBS_PER_REVIEWER - pending_held.get(email, 0))
+            if room and job_rows:
+                assignments[email] = job_rows[:room]
+        if not assignments:
+            return jsonify({"skipped": True,
+                            "reason": f"nothing new to hand out{label}"}), 200
 
-        published_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        published_by = "auto-scheduler"
-
-        # Reclaim yesterday's shift before publishing today's. _latest_snapshot
-        # already refuses to merge into a stale snapshot, so this only frees the
-        # storage those docs were holding.
-        try:
-            _purge_stale_shift_docs()
-        except requests.exceptions.HTTPError as e:
-            logging.warning("stale-shift purge failed, continuing: %s", e)
-
-        try:
-            existing_snap_id, existing_snap_data = _latest_snapshot()
-        except requests.exceptions.HTTPError:
-            existing_snap_id, existing_snap_data = None, None
-
-        # A reviewer re-published mid-shift keeps their original start, so the
-        # leaderboard's responses/hr still counts the hours already worked.
-        prior_starts: dict = {}
-        if existing_snap_id:
-            try:
-                # Forced, like manual publish: a stale warm cache can miss a
-                # refill chunk another instance just wrote and double-assign it.
-                all_shift_docs = roles.list_docs_by_kind("reviewer_shift", force=True)
-            except requests.exceptions.HTTPError:
-                all_shift_docs = []
-
-            retained_keys = set()
-            for doc in all_shift_docs:
-                doc_data = doc.get("data") or {}
-                if doc_data.get("shift_snapshot_id") != existing_snap_id:
-                    continue
-                doc_email = (doc_data.get("reviewer_email") or "").strip().lower()
-                if doc_email in normalized:
-                    prior_starts[doc_email] = _earliest_assigned_at(
-                        [doc_data], prior_starts.get(doc_email))
-                    _try_delete(doc.get("id"))
-                else:
-                    for r in doc_data.get("rows") or []:
-                        jk = str(r.get("jobId") or r.get("id") or "")
-                        if jk:
-                            retained_keys.add(jk)
-
-            if retained_keys:
-                for email in reviewer_emails:
-                    normalized[email] = [
-                        r for r in normalized[email]
-                        if str(r.get("jobId") or r.get("id") or "") not in retained_keys
-                    ]
-
-        snapshot_data = {
-            "kind": "shift_snapshot",
-            "published_at": published_at,
-            "published_by": published_by,
-            "reviewer_emails": list(normalized.keys()),
-            "prioritization_flags": _AUTO_PUBLISH_FLAGS,
-        }
-
-        snap_resp = internal_api.post(_STORAGE_PATH, json={"data": snapshot_data})
-        snapshot_id = snap_resp["data"]["id"]
-
-        # Write reviewer_shift docs
-        for email, rows in normalized.items():
-            chunks = _chunk_rows_for_storage(rows)
-            for part_num, chunk in enumerate(chunks):
-                doc = {
-                    "kind": "reviewer_shift",
-                    "shift_snapshot_id": snapshot_id,
-                    "reviewer_email": email,
-                    "part": part_num,
-                    "total_parts": len(chunks),
-                    "rows": chunk,
-                    "prioritization_flags": _AUTO_PUBLISH_FLAGS,
-                    "assigned_at": prior_starts.get(email) or published_at,
-                }
-                try:
-                    internal_api.post(_STORAGE_PATH, json={"data": doc})
-                except requests.exceptions.HTTPError as e:
-                    roles.invalidate_doc_cache()
-                    return _http_error_response(e)
-
-        roles.invalidate_doc_cache()
-
-        synced_count = sum(len(rows) for rows in normalized.values())
-        logging.info(
-            "POST /api/shifts/auto-publish published=%s assigned=%d",
-            snapshot_id, synced_count,
-        )
-
-        # Send Slack notification
-        shift_time_label = f" at {request.args.get('shift_time')}" if request.args.get("shift_time") else ""
-        slack_msg = f"📋 *Auto-published shift{shift_time_label}* — {synced_count} job{'' if synced_count == 1 else 's'} assigned to {len(normalized)} reviewer{'' if len(normalized) == 1 else 's'}"
-        _send_slack_notification(slack_msg)
-
+        resp = _publish_assignments(
+            {"assignments": assignments, "flags": dict(_AUTO_PUBLISH_FLAGS)},
+            "auto-scheduler")
+        response, status = resp if isinstance(resp, tuple) else (resp, resp.status_code)
+        if status >= 300:
+            return resp
+        data = (response.get_json() or {}).get("data") or {}
+        assigned_jobs = sum(len(v) for v in assignments.values())
+        logging.info("POST /api/shifts/auto-publish%s snapshot=%s assigned=%d",
+                     label, data.get("id"), assigned_jobs)
         return jsonify({
-            "snapshot_id": snapshot_id,
-            "published_at": published_at,
-            "assigned_jobs": synced_count,
-            "reviewer_count": len(normalized),
+            "snapshot_id": data.get("id"),
+            "published_at": data.get("published_at"),
+            "assigned_jobs": assigned_jobs,
+            "reviewer_count": len(assignments),
         })
 
     except requests.exceptions.HTTPError as e:
@@ -1324,9 +1269,10 @@ def api_bloom_jobs():
     force = request.args.get("force") == "1"
     include_aged = request.args.get("aged") == "1"
     if force:
-        bloom.clear_cache()
+        bloom.expire_side_caches()
     try:
-        rows = bloom.fetch_prioritized_jobs(status=status, include_aged=include_aged)
+        rows = bloom.fetch_prioritized_jobs(status=status, include_aged=include_aged,
+                                            use_cache=not force)
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e, source="bloom api")
 
@@ -1489,6 +1435,14 @@ def api_shifts_publish():
     if denied is not None:
         return denied
     body = request.get_json(silent=True) or {}
+    return _publish_assignments(body, g.user.get("email", ""))
+
+
+def _publish_assignments(body, published_by):
+    """The publish itself, for the route above and for auto-publish: merge
+    into the running shift when there is one, else start a new snapshot.
+    `body` is {"assignments": {email: rows}, "flags": {...}}. Returns a Flask
+    response."""
     assignments = body.get("assignments")
     if not isinstance(assignments, dict):
         return jsonify({"error": "assignments must be an object"}), 400
@@ -1589,7 +1543,6 @@ def api_shifts_publish():
         normalized[email] = deduped
 
     published_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    published_by = g.user.get("email", "")
 
     # Reclaim yesterday's shift before publishing today's (see auto-publish).
     try:
@@ -1600,10 +1553,16 @@ def api_shifts_publish():
     # Merge-into-existing-snapshot: if an active shift is already live, add or
     # replace only the reviewers being published — everyone else keeps their rows.
     # Only create a brand-new snapshot when there is no active shift at all.
+    # Strict: a failed read must refuse, never read as "no shift running" —
+    # that started a new shift over the live one and deleted the published
+    # reviewers' completions.
     try:
-        existing_snap_id, existing_snap_data = _latest_snapshot()
-    except requests.exceptions.HTTPError:
-        existing_snap_id, existing_snap_data = None, None
+        existing_snap_id, existing_snap_data = _latest_snapshot(strict=True)
+    except (requests.exceptions.HTTPError, roles.StorageReadError) as e:
+        logging.warning("publish refused: couldn't read the current shift: %s", e)
+        return jsonify({
+            "error": "Couldn't read the current shift, so nothing was published. Try again in a moment.",
+        }), 503
 
     if existing_snap_id:
         # Adding to a live shift. For each reviewer being published, their new
@@ -1623,15 +1582,22 @@ def api_shifts_publish():
         try:
             # Forced: another instance may have just written a refill chunk,
             # and missing it here hands that job to a second reviewer.
-            all_shift_docs = roles.list_docs_by_kind("reviewer_shift", force=True)
+            all_shift_docs = _read_docs("reviewer_shift", force=True, strict=True)
         except requests.exceptions.HTTPError as e:
             return _http_error_response(e)
+        except roles.StorageReadError as e:
+            logging.warning("publish refused: couldn't read current assignments: %s", e)
+            return jsonify({
+                "error": "Couldn't read the current assignments, so nothing was published. Try again in a moment.",
+            }), 503
         existing_jobs_by_email: dict = {}
         old_doc_ids_by_email: dict = {}
         prior_starts: dict = {}  # email -> earliest assigned_at, see _reviewer_shift_start
+        prior_batch_size: dict = {}  # email -> allotment from their current docs
         all_existing_keys: set = set()
         existing_holders: dict = {}  # job key -> emails holding it now
-        for doc in all_shift_docs:
+        # Oldest part first: _dedup_rows keeps the newest copy of a job.
+        for doc in _by_part(all_shift_docs):
             doc_data = doc.get("data") or {}
             if doc_data.get("shift_snapshot_id") != existing_snap_id:
                 continue
@@ -1641,6 +1607,9 @@ def api_shifts_publish():
             old_doc_ids_by_email.setdefault(reviewer_email, []).append(doc.get("id"))
             prior_starts[reviewer_email] = _earliest_assigned_at(
                 [doc_data], prior_starts.get(reviewer_email))
+            if doc_data.get("batch_size"):
+                prior_batch_size[reviewer_email] = max(
+                    prior_batch_size.get(reviewer_email, 0), int(doc_data["batch_size"]))
             for r in rows:
                 if _job_key(r):
                     all_existing_keys.add(_job_key(r))
@@ -1737,7 +1706,11 @@ def api_shifts_publish():
                     "part_count": len(chunks),
                     # The allotment auto-refill tops up to: live work only, or
                     # every re-publish would grow it by the completed jobs.
-                    "batch_size": live_count_by_email[email],
+                    # Never below what they had: a top-up of a few jobs onto a
+                    # nearly-done reviewer stamped those few as their allotment,
+                    # and every later refill was that small.
+                    "batch_size": max(live_count_by_email[email],
+                                      prior_batch_size.get(email, 0)),
                     # Response total, not just job count — auto-refill tops up to
                     # a comparable amount of work rather than a job count.
                     "batch_responses": sum(_row_responses(r) for r in live_rows),
@@ -1989,7 +1962,17 @@ def _purge_stale_shift_docs():
     return len(stale_ids), rows, comps
 
 
-def _latest_snapshot(reviewer_shift_docs=None, include_stale=False):
+def _read_docs(kind, force=False, strict=False):
+    """roles.list_docs_by_kind, raising roles.StorageReadError under `strict`
+    when Storage couldn't be read rather than returning a cached or empty
+    fallback."""
+    docs = roles.list_docs_by_kind(kind, force=True) if force else roles.list_docs_by_kind(kind)
+    if strict and roles.read_failed():
+        raise roles.StorageReadError(f"couldn't read {kind} docs from Storage")
+    return docs
+
+
+def _latest_snapshot(reviewer_shift_docs=None, include_stale=False, strict=False):
     """Helper — return (snapshot_id, snapshot_data) or (None, None).
 
     Skips snapshots where all reviewer_shift docs have zero rows (empty publish),
@@ -1998,13 +1981,18 @@ def _latest_snapshot(reviewer_shift_docs=None, include_stale=False):
     a finished shift (clearing it, for instance) pass include_stale=True.
     Pass pre-fetched reviewer_shift_docs to avoid a duplicate storage scan when
     the caller already has them.
+
+    `strict=True` raises roles.StorageReadError when Storage can't be read,
+    rather than answering "no shift". Publish paths must use it: they start a
+    brand-new shift on (None, None), which hides everyone else's work and
+    clears the published reviewers' completions.
     """
-    snaps = roles.list_docs_by_kind("shift_snapshot")
+    snaps = _read_docs("shift_snapshot", strict=strict)
     if not snaps:
         return None, None
 
     if reviewer_shift_docs is None:
-        reviewer_shift_docs = roles.list_docs_by_kind("reviewer_shift")
+        reviewer_shift_docs = _read_docs("reviewer_shift", strict=strict)
 
     snap_row_counts: dict = {}
     for d in reviewer_shift_docs:
@@ -2217,20 +2205,33 @@ def _open_split_partners(snapshot_id, email, row, completions, force=False):
     return [e for e in sharers if e != norm and e in holders and e not in done]
 
 
+def _by_part(docs):
+    """reviewer_shift docs oldest part first, the order _dedup_rows expects."""
+    return sorted(docs or [], key=lambda d: int((d.get("data") or {}).get("part") or 0))
+
+
 def _dedup_rows(rows):
-    """Drop rows that repeat a job key (first occurrence wins, order preserved).
+    """Drop rows that repeat a job key: one row per job, in the position it
+    first appeared, carrying the LAST copy's contents.
 
     Belt-and-suspenders against a refill race writing the same batch twice: even
     if a duplicate part lands in storage, no reviewer or count ever sees a dupe
     because every read path runs the rows through here. The dedupe script still
-    cleans the stored bloat, but correctness never depends on it."""
-    seen, out = set(), []
+    cleans the stored bloat, but correctness never depends on it.
+
+    Last copy, because callers pass rows oldest part first and a later copy is
+    a later hand-out. Keeping the first one meant a split job a top-up gave
+    back as a plain job kept its old splitWith/splitAt: the check-off guard
+    then only counted responses from before the old split, and credit was paid
+    again from the shift start."""
+    index, out = {}, []
     for r in rows or []:
         k = _job_key(r)
-        if k and k in seen:
+        if k and k in index:
+            out[index[k]] = r
             continue
         if k:
-            seen.add(k)
+            index[k] = len(out)
         out.append(r)
     return out
 
@@ -2510,7 +2511,11 @@ def api_shifts_my():
     # on this snapshot). Having work outranks the mark: drop it so they get a
     # normal task list instead of a "you're done" banner sitting above live jobs.
     closed_out = _is_closed_out(snap_id, email)
-    if closed_out and rows:
+    # Rows only count as "back to work" if Storage agrees: another instance's
+    # warm cache can still hold the rows close-out just deleted, and clearing
+    # the mark on that stale read lost the banner and let a second click DM
+    # the admin again.
+    if closed_out and rows and _rows_for_reviewer(snap_id, email, force=True):
         try:
             _clear_closeout(snap_id, email)
         except Exception as exc:  # noqa: BLE001 — a read must not fail on cleanup
@@ -3383,11 +3388,10 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         # responses are unreachable. The doc is stamped rather than deleted so
         # the history survives; weekly standings come from "review_tally" docs
         # and are untouched either way.
-        _supersede_completions_for_rows(snap_id, norm, fresh, completions=completions)
-
         try:
             next_part = max_part + 1
             chunks = _chunk_rows_for_storage(fresh)
+            stored = []  # only what actually reached Storage
             for idx, chunk in enumerate(chunks):
                 doc = {
                     "kind": "reviewer_shift",
@@ -3408,11 +3412,18 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                     new_id = (r.get("data") or {}).get("id")
                     if new_id:
                         roles.cache_upsert_doc("reviewer_shift", {"id": new_id, "data": doc})
+                    stored.extend(chunk)
                 except Exception as exc:  # noqa: BLE001 — refill is best-effort
                     logging.warning("auto-refill: failed to store chunk for %s: %s", email, exc)
                     break
-            logging.info("auto-refilled %d jobs for %s", len(fresh), email)
-            return fresh
+            # Retire old checkmarks only for jobs that really came back, and
+            # report only those. Doing it up front for the whole batch turned
+            # finished jobs back to pending when the write then failed, and the
+            # caller announced jobs that were never stored.
+            if stored:
+                _supersede_completions_for_rows(snap_id, norm, stored, completions=completions)
+            logging.info("auto-refilled %d jobs for %s", len(stored), email)
+            return stored
         except Exception as exc:  # noqa: BLE001 — refill is best-effort
             logging.warning("auto-refill: failed during storage write for %s: %s", email, exc)
             return []
@@ -3453,8 +3464,9 @@ def _notify_reviewer_finished(email, total_jobs, added_jobs, snap_id=None):
 def _reviewer_display_name(email):
     """Roster name for an email, falling back to the email itself."""
     try:
+        norm = (email or "").strip().lower()
         for r in roles.list_reviewers():
-            if r.get("email") == email:
+            if (r.get("email") or "").strip().lower() == norm:
                 return r.get("name") or email
     except Exception as exc:  # noqa: BLE001 — name lookup is best-effort
         logging.warning("name lookup failed for %s: %s", email, exc)
@@ -3545,7 +3557,8 @@ def _widen_active_span(span, start, end):
     return [lo.isoformat(), hi.isoformat()]
 
 
-def _record_review_event(email, completed_at_iso, responses=0, shift_start=None):
+def _record_review_event(email, completed_at_iso, responses=0, shift_start=None,
+                         undo=False):
     """Increment the reviewer's per-week leaderboard tally (one doc per
     reviewer+ISO-week). Tracks both jobs completed (`days`/`total`) and the
     number of responses cleared (`resp_days`/`resp_total`) so the leaderboard
@@ -3554,15 +3567,22 @@ def _record_review_event(email, completed_at_iso, responses=0, shift_start=None)
     because it isn't a completion doc.
 
     `active_days` holds each day's [shift start, last check-off] — the hours
-    the leaderboard divides responses by for its responses/hr."""
+    the leaderboard divides responses by for its responses/hr.
+
+    `undo=True` takes one check-off and `responses` back off the same day,
+    for an un-checked job; the active span is left alone.
+
+    Days and weeks are US Central (_SHIFT_TZ), like shifts: UTC put any
+    check-off after 6 PM CST on the next day, and on Sundays the next week."""
     try:
         dt = datetime.datetime.fromisoformat(completed_at_iso)
     except (ValueError, TypeError):
         dt = datetime.datetime.now(datetime.timezone.utc)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=datetime.timezone.utc)
-    week = _iso_week_key(dt)
-    day = dt.date().isoformat()
+    local = dt.astimezone(_SHIFT_TZ)
+    week = _iso_week_key(local)
+    day = local.date().isoformat()
     norm = (email or "").strip().lower()
     responses = max(0, int(responses or 0))
     start = _parse_iso_utc(shift_start) if shift_start else None
@@ -3582,19 +3602,24 @@ def _record_review_event(email, completed_at_iso, responses=0, shift_start=None)
     if not existing:
         existing = _find(force=True)
 
+    if undo and not existing:
+        return  # nothing was tallied, so nothing to take back
     if existing:
+        sign = -1 if undo else 1
         data = {**(existing.get("data") or {})}
         days = {**(data.get("days") or {})}
-        days[day] = int(days.get(day, 0)) + 1
+        days[day] = max(0, int(days.get(day, 0)) + sign)
         resp_days = {**(data.get("resp_days") or {})}
-        resp_days[day] = int(resp_days.get(day, 0)) + responses
+        resp_days[day] = max(0, int(resp_days.get(day, 0)) + sign * responses)
         data["days"] = days
-        data["total"] = int(data.get("total", 0)) + 1
+        data["total"] = max(0, int(data.get("total", 0)) + sign)
         data["resp_days"] = resp_days
-        data["resp_total"] = int(data.get("resp_total", 0)) + responses
-        active_days = {**(data.get("active_days") or {})}
-        active_days[day] = _widen_active_span(active_days.get(day), start.isoformat(), dt.isoformat())
-        data["active_days"] = active_days
+        data["resp_total"] = max(0, int(data.get("resp_total", 0)) + sign * responses)
+        if not undo:
+            active_days = {**(data.get("active_days") or {})}
+            active_days[day] = _widen_active_span(
+                active_days.get(day), start.isoformat(), dt.isoformat())
+            data["active_days"] = active_days
         internal_api.put(f"{_STORAGE_PATH}/{existing['id']}", json={"data": data})
         roles.cache_upsert_doc("review_tally", {"id": existing["id"], "data": data})
     else:
@@ -3656,7 +3681,8 @@ def api_shifts_leaderboard():
     if denied is not None:
         return denied
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    # Central, matching how check-offs are tallied (see _record_review_event).
+    now = datetime.datetime.now(_SHIFT_TZ)
     period = (request.args.get("period") or "week").strip().lower()
     if period == "month":
         month_arg = (request.args.get("month") or "").strip()
@@ -3873,16 +3899,19 @@ _SPLIT_OPEN_STAGGER_SECONDS = 30
 
 
 def _recent_split_opens(snap_id, job_id, now):
-    """[(opened_at, email, doc_id)] for this split job within the stagger
-    window, read authoritatively — the teammate is usually on another instance."""
+    """[(opened_at, email, doc_id, created_at)] for this split job within the
+    stagger window, read authoritatively — the teammate is usually on another
+    instance. A few seconds into the future count too: a teammate's request
+    on another instance can stamp its open just after ours."""
     out = []
     for doc in roles.list_docs_by_kind("split_open", force=True):
         data = doc.get("data") or {}
         if data.get("shift_snapshot_id") != snap_id or str(data.get("job_id")) != job_id:
             continue
         ts = _parse_iso_utc(data.get("opened_at"))
-        if ts is not None and 0 <= (now - ts).total_seconds() < _SPLIT_OPEN_STAGGER_SECONDS:
-            out.append((ts, (data.get("reviewer_email") or "").lower(), doc.get("id")))
+        if ts is not None and -10 <= (now - ts).total_seconds() < _SPLIT_OPEN_STAGGER_SECONDS:
+            out.append((ts, (data.get("reviewer_email") or "").lower(), doc.get("id"),
+                        doc.get("created_at")))
     return out
 
 
@@ -3912,8 +3941,20 @@ def api_shifts_my_split_open():
         if not partners:
             return jsonify({"data": {"wait": 0}})
 
-        def first_ahead(opens, mine=None):
-            ahead = [(ts, e) for ts, e, _ in opens if e in partners and (mine is None or (ts, e) < mine)]
+        def first_ahead(opens, mine_id=None):
+            """The earliest partner open — or, after writing our own, the
+            earliest one Storage created before ours. Creation order, because
+            opened_at is stamped before a scan that can take seconds: a
+            same-moment pair could each think they were first."""
+            mine = next((o for o in opens if o[2] == mine_id), None) if mine_id else None
+            def before_mine(o):
+                if mine is None:
+                    return True
+                if o[3] is not None and mine[3] is not None:
+                    return (o[3], o[1]) < (mine[3], mine[1])
+                return (o[0], o[1]) < (mine[0], mine[1])
+            ahead = [(ts, e) for ts, e, did, created in opens
+                     if e in partners and did != mine_id and before_mine((ts, e, did, created))]
             return min(ahead) if ahead else None
 
         def wait_for(ahead, now):
@@ -3932,6 +3973,9 @@ def api_shifts_my_split_open():
         if ahead:
             return wait_for(ahead, now)
 
+        # Stamped now, after the scan above, so the open is timed by when it's
+        # actually written.
+        now = datetime.datetime.now(datetime.timezone.utc)
         doc = {"kind": "split_open", "shift_snapshot_id": snap_id, "job_id": job_id,
                "reviewer_email": email, "opened_at": now.isoformat()}
         resp = internal_api.post(_STORAGE_PATH, json={"data": doc})
@@ -3939,7 +3983,7 @@ def api_shifts_my_split_open():
         if doc_id:
             roles.cache_upsert_doc("split_open", {"id": doc_id, "data": doc})
 
-        ahead = first_ahead(_recent_split_opens(snap_id, job_id, now), mine=(now, email))
+        ahead = first_ahead(_recent_split_opens(snap_id, job_id, now), mine_id=doc_id)
         if ahead:
             # Lost a same-instant race: withdraw, or this open would hold the
             # teammate back the next time they open it.
@@ -4077,7 +4121,16 @@ def api_shifts_my_complete():
     if done is not None:
         mine = [c for c in done if _completion_job_key(c) == job_id and c.get("id")]
         if len(mine) > 1:
-            keeper = min(mine, key=lambda c: (str(c.get("completed_at") or ""), str(c.get("id"))))
+            # Whichever doc Storage created first. completed_at is stamped
+            # before the write, so a request that stalled between stamping and
+            # writing could hold the earlier time yet land second — after the
+            # other request had already re-read, seen only itself, and gone
+            # on — and both survived. Creation order can't disagree like that.
+            created = {d.get("id"): d.get("created_at")
+                       for d in roles.list_docs_by_kind("completion")}
+            keeper = min(mine, key=lambda c: (
+                created.get(c.get("id")) if created.get(c.get("id")) is not None else float("inf"),
+                str(c.get("completed_at") or ""), str(c.get("id"))))
             if keeper.get("id") != doc_id:
                 _try_delete(doc_id)
                 roles.cache_remove_doc("completion", doc_id)
@@ -4094,11 +4147,11 @@ def api_shifts_my_complete():
         responses = _responses_to_credit(snap_id, snap_data, email, job_id, doc_id, row=row)
         _record_review_event(email, completed_at, responses,
                              shift_start=_reviewer_shift_start(snap_id, snap_data, email))
-        if _split_sharers(row):
-            # Recorded so the next sharer to finish is credited only for what's left.
-            doc["credited_responses"] = responses
-            internal_api.put(f"{_STORAGE_PATH}/{doc_id}", json={"data": doc})
-            roles.cache_upsert_doc("completion", {"id": doc_id, "data": doc})
+        # Recorded so un-checking can take exactly this credit back, and so the
+        # next sharer of a split job is credited only for what's left.
+        doc["credited_responses"] = responses
+        internal_api.put(f"{_STORAGE_PATH}/{doc_id}", json={"data": doc})
+        roles.cache_upsert_doc("completion", {"id": doc_id, "data": doc})
     except Exception as exc:  # noqa: BLE001 — leaderboard must not break completion
         logging.warning("review tally failed for %s: %s", email, exc)
     logging.warning(
@@ -4230,6 +4283,13 @@ def api_shifts_my_uncomplete(job_id):
                 return _http_error_response(e)
             roles.cache_remove_doc("completion", c["id"])
             _unlog_checkoff(c["id"])
+            # Take its leaderboard credit back, or un-checking and re-checking
+            # counts the job (and its responses) twice. Best-effort.
+            try:
+                _record_review_event(email, c.get("completed_at"),
+                                     int(c.get("credited_responses") or 0), undo=True)
+            except Exception as exc:  # noqa: BLE001 — never fail the un-check
+                logging.warning("tally undo failed for %s job=%s: %s", email, job_id, exc)
             logging.info(
                 "DELETE /api/shifts/my/complete/%s by=%s", job_id, email,
             )
@@ -4283,7 +4343,7 @@ def api_shifts_my_close():
     if not snap_id:
         return jsonify({"error": "no shift has been published yet"}), 409
 
-    if _is_closed_out(snap_id, email):
+    if _is_closed_out(snap_id, email, force=True):
         return jsonify({"data": {"snapshot_id": snap_id, "already_closed": True,
                                  "completed": 0, "released": 0}})
 
@@ -4402,7 +4462,10 @@ def _unlog_checkoff(completion_id):
     """Drop the log entry for an un-checked completion: a misclick isn't a
     check-off. Best-effort."""
     try:
-        for doc in roles.list_docs_by_kind(CHECKOFF_LOG_KIND):
+        # Forced: the entry may have been written on another instance, and a
+        # warm-cache miss left it behind — still listed, and still counting as
+        # theirs for the rest of the day (_finished_today_by).
+        for doc in roles.list_docs_by_kind(CHECKOFF_LOG_KIND, force=True):
             if (doc.get("data") or {}).get("completion_id") == completion_id:
                 _try_delete(doc.get("id"))
                 roles.cache_remove_doc(CHECKOFF_LOG_KIND, doc.get("id"))
@@ -4628,7 +4691,7 @@ def api_shifts_overview():
         done_by_reviewer.setdefault(email, set()).add(jkey)
 
     rows_by_email = {}
-    for doc in reviewer_docs:
+    for doc in _by_part(reviewer_docs):  # oldest first; see _dedup_rows
         data = doc.get("data") or {}
         email = (data.get("reviewer_email") or "").lower()
         rows_by_email.setdefault(email, []).extend(data.get("rows") or [])
@@ -4636,6 +4699,10 @@ def api_shifts_overview():
     reviewers_out = []
     for email, rows in rows_by_email.items():
         rows = _dedup_rows(rows)  # never count a duplicated row (refill-race guard)
+        # Same rows My Tasks shows them: an excluded job they can't see (after
+        # a rule or exception changed) would otherwise sit "pending" forever.
+        allowed = _reviewer_exceptions(email)
+        rows = [r for r in rows if not _is_excluded_job(r, allowed)]
         total = len(rows)
         if total == 0:
             continue
@@ -4724,7 +4791,7 @@ def api_shifts_jobs():
         live_by_job = None
 
     rows_by_email = {}
-    for doc in reviewer_docs:
+    for doc in _by_part(reviewer_docs):  # oldest first; see _dedup_rows
         data = doc.get("data") or {}
         email = (data.get("reviewer_email") or "").lower()
         rows_by_email.setdefault(email, []).extend(data.get("rows") or [])
@@ -4732,18 +4799,20 @@ def api_shifts_jobs():
     jobs_by_reviewer = []
     for email, rows in rows_by_email.items():
         rows = _dedup_rows(rows)  # never list a duplicated row (refill-race guard)
+        allowed = _reviewer_exceptions(email)
         done_set = done_by_reviewer.get(email, set())
         jobs = []
         for r in rows:
-            jid = str(r.get("jobId") or "")
-            live = live_by_job.get(jid, 0) if (live_by_job is not None and jid) else None
-            # Done = checked off only (live count is shown for context, not used
-            # to mark done — keeps this view in step with the checkmark).
-            completed = _row_job_key(r) in done_set
-            # Hide jobs with no work left (0 live unreviewed), unless they're explicitly marked done.
-            # This keeps the admin view in sync with what reviewers see.
-            if live is not None and live <= 0 and not completed:
+            # Exactly the rows My Tasks shows: everything but excluded jobs.
+            # This used to hide a job at 0 live (or missing from the feed,
+            # read as 0) unless checked off, while My Tasks keeps it until the
+            # checkmark — so the list disagreed with the overview's count.
+            if _is_excluded_job(r, allowed):
                 continue
+            jid = str(r.get("jobId") or "")
+            live = live_by_job.get(jid) if (live_by_job is not None and jid) else None
+            # Done = checked off only (live count is shown for context).
+            completed = _row_job_key(r) in done_set
             jobs.append({
                 "id": r.get("id", ""),
                 "projectId": r.get("projectId", ""),
@@ -4809,13 +4878,16 @@ def api_remove_job():
             new_rows = [r for r in rows if str(r.get("jobId") or r.get("id") or "") != job_id]
 
             if len(new_rows) < len(rows):
-                # Job was removed
-                doc_data["rows"] = new_rows
+                # Job was removed. A copy, not doc_data itself: that's the
+                # dict in the shared cache, and changing it before a PUT that
+                # then failed left this instance showing the job removed.
+                updated = {**doc_data, "rows": new_rows}
                 doc_id = doc.get("id")
                 try:
-                    internal_api.put(f"{_STORAGE_PATH}/{doc_id}", json={"data": doc_data})
+                    internal_api.put(f"{_STORAGE_PATH}/{doc_id}", json={"data": updated})
                     removed = True
                 except requests.exceptions.HTTPError as e:
+                    roles.invalidate_doc_cache()
                     return _http_error_response(e)
 
         roles.invalidate_doc_cache()
@@ -4858,6 +4930,10 @@ def api_shifts_clear():
     reviewer_email = (body.get("reviewer_email") or "").strip().lower() or None
 
     # "reset" nukes every snapshot + reviewer_shift + completion across all time.
+    # Admin-only: it erases leaderboard and Progress Tracker history for
+    # everyone, which is more than a lead's day-to-day clear-up.
+    if mode == "reset" and not roles.is_admin(g.user.get("email")):
+        return jsonify({"error": "only an admin can delete all shift history"}), 403
     if mode == "reset":
         cleared_rows = 0
         cleared_completions = 0
@@ -5022,6 +5098,12 @@ def api_bloom_probe():
     if denied is not None:
         return denied
     path = request.args.get("path") or "/api/jobs"
+    # The path is appended to the Internal API's base URL, so anything but a
+    # plain /api/ path could change the host: "@evil.example/x" sent the tool's
+    # bearer token to evil.example.
+    if (not path.startswith("/api/") or "@" in path or "\\" in path
+            or "//" in path or ".." in path or ":" in path):
+        return jsonify({"error": "path must be a plain /api/... path"}), 400
     params = {}
     for k, v in request.args.items():
         if k == "path":
