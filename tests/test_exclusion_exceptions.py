@@ -235,7 +235,11 @@ def test_top_up_lets_an_excepted_job_past_the_options_filters(
     monkeypatch.setattr(main, "_try_delete", lambda *a, **k: None)
     monkeypatch.setattr(roles, "cache_upsert_doc", lambda *a, **k: None)
     added = main._auto_refill_reviewer("snap1", email, 5)
-    assert {r["jobId"] for r in added} == expected
+    ids = [r["jobId"] for r in added]
+    # The matching (and excepted) jobs lead; the ordinary Shelf job only fills
+    # in behind them, and the screener nobody is allowed never appears.
+    assert set(ids[:len(expected)]) == expected
+    assert ids[len(expected):] == ["2"]
 
 
 # ---------- My Tasks ----------

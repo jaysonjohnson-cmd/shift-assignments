@@ -317,7 +317,7 @@ def test_retail_pipeline_only_keeps_the_refill_scoped(refill):
     feed[0]["extras"]["client"] = "retailpipeline@fieldagent.net"
     feed[1]["extras"]["client"] = "someone@acme.com"
 
-    added = refill(feed, batch_size=20, batch_responses=300,
+    added = refill(feed, batch_size=1, batch_responses=300,
                    flags={"retailPipelineOnly": True, "balanceByResponses": True})
     assert [r["jobId"] for r in added] == ["retail_job"]
 
@@ -347,7 +347,7 @@ def test_special_job_types_keeps_the_refill_scoped(refill):
     for row in feed:
         row["name"] = names[row["jobId"]]
 
-    added = refill(feed, batch_size=20, batch_responses=300,
+    added = refill(feed, batch_size=4, batch_responses=300,
                    flags={"specialJobTypes": True})
 
     assert sorted(r["jobId"] for r in added) == ["p1", "p2", "rr_plural", "rr_singular"]
@@ -646,7 +646,7 @@ def test_pg_store_walk_only_keeps_the_refill_scoped(refill):
     # A name that looks right but lacks the flag must NOT qualify.
     feed[2]["name"] = "P&G Display Store Walk (Lookalike)"
 
-    added = refill(feed, batch_size=20, batch_responses=300,
+    added = refill(feed, batch_size=2, batch_responses=300,
                    flags={"pgStoreWalkOnly": True})
 
     assert sorted(r["jobId"] for r in added) == ["walk1", "walk2"]
@@ -748,7 +748,7 @@ def test_special_job_types_refill_takes_jobs_matched_by_public_name(refill):
     feed[1]["name"] = "Acme Shelf Check"
     feed[1]["publicName"] = "FREE FOOD!"
 
-    added = refill(feed, batch_size=20, batch_responses=300,
+    added = refill(feed, batch_size=1, batch_responses=300,
                    flags={"specialJobTypes": True})
 
     assert [r["jobId"] for r in added] == ["public_rr"]
@@ -798,7 +798,7 @@ def _special_and_ordinary_feed():
 def test_refill_follows_the_team_options_over_its_own_stamp(refill):
     """Options are team-wide: a later publish that turned Special Job Types on
     for the team scopes this reviewer too, whatever they were published with."""
-    added = refill(_special_and_ordinary_feed(), batch_size=20,
+    added = refill(_special_and_ordinary_feed(), batch_size=1,
                    batch_responses=300, flags={"specialJobTypes": True},
                    own_flags={"specialJobTypes": False})
     assert [r["jobId"] for r in added] == ["special"]
@@ -813,14 +813,14 @@ def test_refill_drops_its_own_stamp_when_the_team_turns_options_off(refill):
 
 def test_exempt_reviewer_keeps_their_own_options(refill, monkeypatch):
     monkeypatch.setattr(main, "_OWN_OPTIONS_REVIEWERS", frozenset({REVIEWER}))
-    added = refill(_special_and_ordinary_feed(), batch_size=20,
+    added = refill(_special_and_ordinary_feed(), batch_size=1,
                    batch_responses=300, flags={"specialJobTypes": False},
                    own_flags={"specialJobTypes": True})
     assert [r["jobId"] for r in added] == ["special"]
 
 
 def test_refill_falls_back_to_snapshot_flags_for_older_docs(refill):
-    added = refill(_special_and_ordinary_feed(), batch_size=20,
+    added = refill(_special_and_ordinary_feed(), batch_size=1,
                    batch_responses=300, flags={"specialJobTypes": True})
     assert [r["jobId"] for r in added] == ["special"]
 
@@ -960,3 +960,24 @@ def test_releasing_a_lock_also_drops_it_from_the_cache(monkeypatch):
                         lambda kind, doc_id: removed.append((kind, doc_id)))
     main._release_refill_lock("lock-1")
     assert removed == [("refill_lock", "lock-1")]
+
+
+def test_options_fall_back_to_other_work_once_matching_work_runs_out(refill):
+    """Options steer a top-up, they don't wall it off. Matching work comes
+    first; whatever it can't fill goes to other jobs instead of leaving a
+    scoped reviewer sitting empty."""
+    feed = _feed({"ordinary1": 50, "special": 5, "ordinary2": 3})
+    feed[1]["name"] = "Acme Ratings & Reviews"
+    added = refill(feed, batch_size=3, batch_responses=300,
+                   flags={"specialJobTypes": True, "balanceByResponses": True})
+    ids = [r["jobId"] for r in added]
+    assert ids[0] == "special"
+    assert sorted(ids[1:]) == ["ordinary1", "ordinary2"]
+
+
+def test_with_no_matching_work_left_a_scoped_reviewer_gets_other_jobs(refill):
+    feed = _feed({"ordinary": 10})
+    feed[0]["extras"]["client"] = "someone@acme.com"
+    added = refill(feed, batch_size=5, batch_responses=300,
+                   flags={"retailPipelineOnly": True})
+    assert [r["jobId"] for r in added] == ["ordinary"]

@@ -3148,6 +3148,10 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         )
 
         eligible = []
+        # Jobs only the Options filters kept out. Matching work always goes
+        # first; these fill whatever it can't, so a reviewer on a scoped shift
+        # who has exhausted it moves on to other work instead of sitting empty.
+        off_scope = []
         skipped_reasons = {"no_key": 0, "already_assigned": 0, "teammates_work": 0,
                            "excluded": 0,
                            "not_retail_pipeline": 0, "not_special_job_type": 0,
@@ -3182,24 +3186,19 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             # from in Settings. That's a deliberate "give them this", so the
             # Options filters below don't scope it out (same as the composer).
             scoped = not _exclusion_rules(r)
-            # "Storesight / Retail Pipeline only" is a hard filter on the pool at
-            # publish, so honour it here rather than refilling a scoped shift with
-            # work from every other client.
+            # The Options filters scope a top-up the same way they scoped the
+            # publish — matching work first — but they're a preference, not a
+            # wall. Off-scope jobs are held back as a fallback (see off_scope).
+            # The P&G Store Walk check uses the feed's own png_store_walk flag
+            # rather than the job name, so a rename can't silently empty a
+            # scoped shift.
+            out_of_scope = None
             if scoped and retail_pipeline_only and str((r.get("extras") or {}).get("client") or "").strip().lower() != _RETAIL_PIPELINE_CLIENT:
-                skipped_reasons["not_retail_pipeline"] += 1
-                continue
-            # "Special Job Types" is likewise a hard filter on the pool at publish.
-            # Without it a shift scoped to Ratings & Reviews / Part 1-2 jobs would
-            # top up with everything else in the feed.
-            if scoped and special_job_types and not _is_special_job_type(r.get("name"), r.get("publicName")):
-                skipped_reasons["not_special_job_type"] += 1
-                continue
-            # "P&G Display Store Walk only" — same contract. Keyed off the feed's
-            # own png_store_walk flag rather than the job name, so a rename can't
-            # silently empty a scoped shift.
-            if scoped and pg_store_walk_only and not (r.get("extras") or {}).get("pngStoreWalk"):
-                skipped_reasons["not_pg_store_walk"] += 1
-                continue
+                out_of_scope = "not_retail_pipeline"
+            elif scoped and special_job_types and not _is_special_job_type(r.get("name"), r.get("publicName")):
+                out_of_scope = "not_special_job_type"
+            elif scoped and pg_store_walk_only and not (r.get("extras") or {}).get("pngStoreWalk"):
+                out_of_scope = "not_pg_store_walk"
             # Skip jobs with no reviewable work and no aged backlog — nothing
             # here for a reviewer to act on either way.
             unreviewable = int(r.get("unreviewedCount") or 0)
@@ -3212,7 +3211,11 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             total_responses = unreviewable + auto_rejected
             if total_responses <= 0:
                 continue
-            eligible.append((r, k, unreviewable))
+            if out_of_scope:
+                skipped_reasons[out_of_scope] += 1
+                off_scope.append((r, k, unreviewable))
+            else:
+                eligible.append((r, k, unreviewable))
 
         # Pick against a RESPONSE budget, biggest jobs first.
         #
@@ -3238,36 +3241,50 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         def tier_of(row):
             return _refill_tier(row, prioritize_new, prioritize_urgency, prioritize_aged)
 
-        if balance_by_responses:
-            eligible.sort(key=lambda t: (tier_of(t[0]), -t[2]))
-        else:
-            eligible.sort(key=lambda t: tier_of(t[0]))
-
-        large_threshold = _large_job_threshold([n for _, _, n in eligible])
-        available_large = sum(1 for _, _, n in eligible if n >= large_threshold)
         on_shift = max(1, len(shift_reviewers))
-        large_cap = min(_REFILL_MAX_LARGE_JOBS, max(1, available_large // on_shift))
         fresh = []
         responses_added = 0
-        large_taken = 0
-        for r, k, reviewable in eligible:
-            if len(fresh) >= count:
-                break
-            is_large = reviewable >= large_threshold
-            # Hand out only a couple of large jobs per top-up, so one reviewer
-            # can't take the whole heavy end of a skewed queue.
-            if is_large and large_taken >= large_cap:
-                continue
-            fresh.append(_compact_row(r))
-            assigned_keys.add(k)  # guard against dupes within the same feed
-            responses_added += reviewable
-            if is_large:
-                large_taken += 1
+
+        def take(candidates, label):
+            """Fill `fresh` toward `count` from one candidate list."""
+            nonlocal responses_added
+            if balance_by_responses:
+                candidates.sort(key=lambda t: (tier_of(t[0]), -t[2]))
+            else:
+                candidates.sort(key=lambda t: tier_of(t[0]))
+            large_threshold = _large_job_threshold([n for _, _, n in candidates])
+            available_large = sum(1 for _, _, n in candidates if n >= large_threshold)
+            large_cap = min(_REFILL_MAX_LARGE_JOBS, max(1, available_large // on_shift))
+            large_taken = 0
+            before = len(fresh)
+            for r, k, reviewable in candidates:
+                if len(fresh) >= count:
+                    break
+                is_large = reviewable >= large_threshold
+                # Hand out only a couple of large jobs per top-up, so one reviewer
+                # can't take the whole heavy end of a skewed queue.
+                if is_large and large_taken >= large_cap:
+                    continue
+                fresh.append(_compact_row(r))
+                assigned_keys.add(k)  # guard against dupes within the same feed
+                responses_added += reviewable
+                if is_large:
+                    large_taken += 1
+            logging.warning(
+                "auto-refill for %s (%s): candidates=%d -> %d jobs "
+                "(target=%d, large>=%d avail=%d on_shift=%d cap=%d taken=%d)",
+                email, label, len(candidates), len(fresh) - before,
+                count, large_threshold, available_large, on_shift, large_cap, large_taken,
+            )
+
+        take(eligible, "matching")
+        if len(fresh) < count and off_scope:
+            take(off_scope, "off-scope fallback")
         logging.warning(
-            "auto-refill for %s: pool=%d, eligible=%d, skipped: %s -> %d jobs / %d responses "
-            "(target=%d, large>=%d avail=%d on_shift=%d cap=%d taken=%d)",
-            email, len(pool), len(eligible), skipped_reasons, len(fresh), responses_added,
-            count, large_threshold, available_large, on_shift, large_cap, large_taken,
+            "auto-refill for %s: pool=%d, eligible=%d, off_scope=%d, skipped: %s -> "
+            "%d jobs / %d responses",
+            email, len(pool), len(eligible), len(off_scope), skipped_reasons,
+            len(fresh), responses_added,
         )
         if not fresh:
             logging.warning("auto-refill: no new jobs left for %s (reasons: %s)", email, skipped_reasons)

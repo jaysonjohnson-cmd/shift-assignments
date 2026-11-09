@@ -345,6 +345,14 @@ They were per reviewer for a while (2026-10). That left everyone published
 earlier topping up with any work after Retail Pipeline was turned on for a
 later-added reviewer, which isn't how the team is run.
 
+**In top-ups the filters steer, they don't wall off.** Retail Pipeline only,
+Special Job Types and P&G Store Walk only pick the work a top-up hands out
+*first*. Whatever matching work can't fill of the batch is filled from the
+rest of the feed (`off_scope` in `_auto_refill_reviewer`, picked with its own
+heavy-job cap). They used to be hard filters, so a reviewer who cleared the
+scoped work sat at an empty queue until an admin republished with the option
+off. The publish itself (composer and auto-publish) still scopes strictly.
+
 **Special Job Types matches two names.** A job qualifies when its internal
 name *or* its public name (the one agents see) contains a fragment from
 `_SPECIAL_JOB_TYPE_FRAGMENTS` (mirrored in `lib/types.ts`). The feed doesn't
