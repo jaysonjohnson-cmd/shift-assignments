@@ -469,20 +469,24 @@ There is intentionally **no confirmation prompt** and no block on unfinished
 work: ending the shift is always allowed, and whatever isn't checked off is
 released rather than lost.
 
-**It also closes their FieldAgent review assignments**, by opening FieldAgent's
-own "Close My Assignments" link (`CLOSE_MY_ASSIGNMENTS_URL` in
-`lib/reviewLink.ts`) in a small window on the click, which closes itself
-after `CLOSE_WINDOW_MS` (`closeFieldAgentAssignments`). It can't be invisible:
-FieldAgent identifies the reviewer by its session cookie, which browsers don't
-send on a background fetch or iframe from another site — only on a real visit. Releasing a job here doesn't
-touch FieldAgent, and the Internal API has no way to — `/api/responsegroups` is
-read-only — so it has to run on the reviewer's own FieldAgent session. Without
-it a reviewer stayed "in review" after leaving: on 2026-11-09 Laurel was still
-active on 1975675 after it went to Liam, and Grayson on three jobs after
-closing out. The window is opened before the `await`, because browsers block one
-opened later; the closed-out panel links it again in case it was blocked, and
-My Tasks has the same action as a standalone Close My Assignments link. The
-feed's `activeReviewerNames` shows who FieldAgent has in review on each job.
+**FieldAgent review assignments are separate.** Releasing a job here doesn't
+touch FieldAgent, and the Internal API can't close assignments
+(`/api/responsegroups` is read-only), so a reviewer who leaves stays "in
+review" there until they hit FieldAgent's own Close My Assignments — linked
+from My Tasks (`CLOSE_MY_ASSIGNMENTS_URL` in `lib/reviewLink.ts`) and from the
+closed-out panel. On 2026-11-09 Laurel was still in review on 1975675 after it
+went to Liam. Opening that page automatically on close-out (a new tab, then a
+self-closing window) was tried and dropped as too intrusive; a hidden iframe
+or fetch can't work, since browsers don't send FieldAgent's session cookie on
+cross-site background requests.
+
+Instead the tool reads who's in review: the feed's `activeReviewerNames`
+(usernames like `laurelm`, or emails) lands on `extras.activeReviewerNames`,
+and `_fa_name_is` matches a name to a reviewer (exact email, `first.last`, or
+first name + last initial; anything unmatched counts as someone else). A
+top-up skips a job anyone else is in review on (`in_review_elsewhere`), and My
+Tasks marks such a job with `inReviewBy` (split sharers excluded) so the card
+can say who.
 
 Each close-out sends **one DM per reviewer** to `SLACK_ADMIN_USER_ID` — a
 deliberate choice over batching them into an end-of-day digest, so the admin

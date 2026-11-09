@@ -2318,6 +2318,7 @@ def _live_counts_by_job():
             "new": int((j.get("extras") or {}).get("newCount") or 0),
             "aged": int((j.get("extras") or {}).get("agedCount") or 0),
             "possibleReject": int((j.get("extras") or {}).get("possibleRejectCount") or 0),
+            "activeReviewerNames": list((j.get("extras") or {}).get("activeReviewerNames") or []),
         }
         for j in feed
         if j.get("jobId")
@@ -2473,6 +2474,21 @@ def api_shifts_my():
         roster = []
     color = next((r.get("color") for r in roster if r["email"] == email), None)
     _attach_split_partners(snap_id, email, enriched, roster)
+    # Flag a job someone else is still in review on in FieldAgent — usually a
+    # teammate who left without closing their assignments (2026-11-09: Laurel
+    # on 1975675 after it went to Liam). A live split's sharers are expected
+    # to be in there, so they're not flagged.
+    if live_by_job is not None:
+        for it in enriched:
+            live = live_by_job.get(str(it.get("jobId") or ""))
+            if not live or it.get("completedAt"):
+                continue
+            sharers = [p["email"] for p in it.get("splitPartners") or []]
+            others = _in_review_by_others(
+                {"extras": {"activeReviewerNames": live.get("activeReviewerNames")}},
+                email, also=sharers)
+            if others:
+                it["inReviewBy"] = [_fa_display_name(n, roster) for n in others]
     # Close-out deletes every row the reviewer had, so rows existing again means
     # someone put them back to work (an admin reassigned, or a new batch landed
     # on this snapshot). Having work outranks the mark: drop it so they get a
@@ -2549,6 +2565,43 @@ def _attach_split_partners(snap_id, email, items, roster):
         else:
             it.pop("splitWith", None)
             it.pop("splitTotal", None)
+
+
+def _fa_name_is(name, email):
+    """Does a FieldAgent in-review name belong to this reviewer?
+
+    The feed's activeReviewerNames mixes emails with FieldAgent usernames,
+    which are first name + last initial ("laurelm" for laurel.mountain@,
+    "saylorw" for saylor.wilson@). A miss only ever errs toward caution: an
+    unrecognised name counts as someone else."""
+    n = (name or "").strip().lower()
+    e = (email or "").strip().lower()
+    if not n or not e:
+        return False
+    if "@" in n:
+        return n == e
+    local = e.split("@")[0]
+    parts = [p for p in local.split(".") if p]
+    candidates = {local, local.replace(".", "")}
+    if len(parts) >= 2:
+        candidates.add(parts[0] + parts[-1][:1])
+    return n in candidates
+
+
+def _in_review_by_others(row, email, also=()):
+    """FieldAgent in-review names on this feed row that aren't `email` (nor
+    anyone in `also`, e.g. the other sharers of a split job)."""
+    names = (row.get("extras") or {}).get("activeReviewerNames") or []
+    mine = [email, *also]
+    return [n for n in names if not any(_fa_name_is(n, e) for e in mine)]
+
+
+def _fa_display_name(name, roster):
+    """A roster name for a FieldAgent in-review name, else the name as given."""
+    for r in roster or []:
+        if _fa_name_is(name, r.get("email")):
+            return r.get("name") or name
+    return name
 
 
 def _job_key(row):
@@ -3153,6 +3206,7 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         # who has exhausted it moves on to other work instead of sitting empty.
         off_scope = []
         skipped_reasons = {"no_key": 0, "already_assigned": 0, "teammates_work": 0,
+                           "in_review_elsewhere": 0,
                            "excluded": 0,
                            "not_retail_pipeline": 0, "not_special_job_type": 0,
                            "not_pg_store_walk": 0,
@@ -3181,6 +3235,14 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                 continue
             if _is_excluded_job(r, allowed):
                 skipped_reasons["excluded"] += 1
+                continue
+            # Someone else is still in review on it in FieldAgent — a teammate
+            # who left without closing their assignments, or anyone working it
+            # outside the tool. Handing it out puts two people on the same
+            # responses (2026-11-09: 1975675 went to Liam with Laurel still in
+            # review). It comes back once FieldAgent shows them gone.
+            if _in_review_by_others(r, norm):
+                skipped_reasons["in_review_elsewhere"] += 1
                 continue
             # An excluded job that got this far is one this reviewer is excepted
             # from in Settings. That's a deliberate "give them this", so the

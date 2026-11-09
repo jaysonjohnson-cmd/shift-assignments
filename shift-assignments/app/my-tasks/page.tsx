@@ -3,11 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { closeMyShift, getMyTasks, markTaskDone } from "@/lib/api";
-import {
-  CLOSE_MY_ASSIGNMENTS_URL,
-  CLOSE_WINDOW_MS,
-  closeFieldAgentAssignments,
-} from "@/lib/reviewLink";
+import { CLOSE_MY_ASSIGNMENTS_URL } from "@/lib/reviewLink";
 import { useUser } from "@/lib/useUser";
 import { reviewerColor, type Row } from "@/lib/types";
 import { OpenInReviewButton, OpenedMark, isLiveSplit } from "@/components/OpenInReviewButton";
@@ -220,16 +216,7 @@ export default function MyTasksPage() {
     closedOut: false,
   });
   const [closing, setClosing] = useState(false);
-  const [faClosing, setFaClosing] = useState(false);
 
-  // Close their FieldAgent review assignments in a short-lived window. Falls
-  // back to the plain link (default click) only if the window was blocked.
-  const handleCloseFaAssignments = (e: React.MouseEvent) => {
-    if (!closeFieldAgentAssignments()) return;
-    e.preventDefault();
-    setFaClosing(true);
-    setTimeout(() => setFaClosing(false), CLOSE_WINDOW_MS);
-  };
   const [density, setDensity] = useState<Density>("comfortable");
   const [viewByPid, setViewByPid] = useState(false);
   const [emptyMsgIdx, setEmptyMsgIdx] = useState(() => pickRandomMessageIndex());
@@ -300,10 +287,6 @@ export default function MyTasksPage() {
   }, [load]);
 
   const handleCloseShift = async () => {
-    // Close their FieldAgent review assignments too, on their own FieldAgent
-    // session. Opened here, synchronously in the click, because browsers block
-    // a tab opened after an await.
-    closeFieldAgentAssignments();
     setClosing(true);
     try {
       await closeMyShift();
@@ -417,7 +400,7 @@ export default function MyTasksPage() {
               type="button"
               onClick={handleCloseShift}
               disabled={closing}
-              title="End your shift. Anything you haven't checked off goes back to the queue for the rest of the team, and your FieldAgent review assignments are closed in a new tab."
+              title="End your shift. Anything you haven't checked off goes back to the queue for the rest of the team."
               className="rounded-lg bg-storesight-primary px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-storesight-primary-dark disabled:opacity-50 dark:bg-storesight-accent dark:hover:bg-storesight-accent-light"
             >
               {closing ? "Closing…" : "Done for the shift"}
@@ -429,12 +412,10 @@ export default function MyTasksPage() {
             href={CLOSE_MY_ASSIGNMENTS_URL}
             target="_blank"
             rel="noopener noreferrer"
-            onClick={handleCloseFaAssignments}
-            aria-disabled={faClosing}
             title="Close your open review assignments in FieldAgent, so teammates don't see you in review on jobs you've left."
             className="rounded-lg border border-storesight-border px-3 py-1.5 text-xs font-medium text-storesight-primary-dark transition hover:border-storesight-accent hover:text-storesight-primary dark:border-storesight-border-dark dark:text-storesight-ink-dark dark:hover:border-storesight-accent-light dark:hover:text-storesight-accent-light"
           >
-            {faClosing ? "Closing…" : "Close My Assignments"}
+            Close My Assignments
           </a>
         </div>
       </div>
@@ -471,17 +452,16 @@ export default function MyTasksPage() {
               of the team. Jayson has been notified.
             </p>
             <p className="mt-2 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-              Your FieldAgent review assignments were closed too. If a window
-              didn&rsquo;t flash up,{" "}
+              If you still have anything open in review in FieldAgent,{" "}
               <a
                 href={CLOSE_MY_ASSIGNMENTS_URL}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="font-medium text-storesight-accent underline hover:text-storesight-primary"
               >
-                close them here
-              </a>
-              .
+                close your assignments there
+              </a>{" "}
+              so teammates can pick it up.
             </p>
           </div>
         </div>
@@ -887,6 +867,24 @@ function KeptApartBadge({ row, compact }: { row: Row; compact?: boolean }) {
 }
 
 /**
+ * Someone else is still in review on this job in FieldAgent — usually a
+ * teammate who left without closing their assignments (Close My Assignments
+ * clears them). Their loaded responses aren't yours to work until they do.
+ */
+function InReviewHint({ row }: { row: Row }) {
+  const names = row.inReviewBy ?? [];
+  if (names.length === 0 || row.completedAt) return null;
+  const who = names.join(" and ");
+  return (
+    <p className="mt-1 rounded border border-amber-400/60 bg-amber-400/10 px-1.5 py-1 text-[11px] text-amber-700 dark:text-amber-300">
+      <strong>{who}</strong> {names.length > 1 ? "are" : "is"} still in review on
+      this job in FieldAgent. Leave <strong>Include in-review</strong> unticked,
+      and if they&apos;re done with it, ask them to hit Close My Assignments.
+    </p>
+  );
+}
+
+/**
  * How to pull in exactly your share of a split job. Open in Review carries
  * `work_max` (see collectionReviewUrl), which caps the reviewer at their share.
  *
@@ -1167,6 +1165,7 @@ function TaskCard({
           ))}
         </div>
         <SplitLoadHint row={row} />
+        <InReviewHint row={row} />
       </div>
       <div className="flex flex-col items-end gap-1.5">
         {!completed && <OpenInReviewButton row={row} size="sm" variant="primary" disabled={isProcessing} />}

@@ -400,6 +400,14 @@ def _row_from_api(job, cf_denied_count=0, aged=None):
             # Informational "may need clearing, not reviewing" hint — see the
             # note on `possible_reject` above. Never affects unreviewedCount.
             "possibleRejectCount": possible_reject,
+            # Who FieldAgent has in review on this job right now — usernames
+            # ("laurelm") or emails, comma-separated upstream. Used to keep a
+            # top-up off a job a teammate is still reviewing and to flag it on
+            # My Tasks; see main._in_review_by_others.
+            "activeReviewerNames": [
+                n.strip() for n in str(job.get("activeReviewerNames") or "").split(",")
+                if n.strip()
+            ],
             # Client owner email — used to scope to Storesight / Retail Pipeline jobs.
             "client": str(job.get("client") or ""),
             # Cloud-Factory-denied responses auto-approved before human re-review.
