@@ -382,6 +382,17 @@ reviewers. It now goes back only to its own holder, on their next top-up.
 Closing out releases a reviewer's work, because it deletes their
 `reviewer_shift` docs.
 
+This carries across shifts on the same day, but only while the owner is on
+the current shift. `_finished_today_by` reads today's `checkoff_log` (which
+survives a new snapshot) for reviewers who still have `reviewer_shift` docs,
+and top-ups and auto-publish treat those jobs and projects as theirs. It used
+to read the current snapshot alone, so a mid-day clear-and-republish wiped
+ownership: on 2026-11-09, 15 jobs finished that morning went to a different
+reviewer after the 10:40 republish. Someone who has left (closed out, or not
+on the current shift) holds nothing, so a morning-only reviewer doesn't
+lock work away all afternoon. Manual publish is unaffected — an admin's pick
+is deliberate.
+
 **Rollback:** Use Cloud Run revision traffic splitting in GCP console.
 
 ---

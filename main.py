@@ -882,6 +882,7 @@ def api_shifts_auto_publish():
         # A reviewer re-published mid-shift keeps their original start, so the
         # leaderboard's responses/hr still counts the hours already worked.
         prior_starts: dict = {}
+        retained_reviewers = set()  # on the shift but not in this publish
         if existing_snap_id:
             try:
                 # Forced, like manual publish: a stale warm cache can miss a
@@ -901,6 +902,7 @@ def api_shifts_auto_publish():
                         [doc_data], prior_starts.get(doc_email))
                     _try_delete(doc.get("id"))
                 else:
+                    retained_reviewers.add(doc_email)
                     for r in doc_data.get("rows") or []:
                         jk = str(r.get("jobId") or r.get("id") or "")
                         if jk:
@@ -912,6 +914,16 @@ def api_shifts_auto_publish():
                         r for r in normalized[email]
                         if str(r.get("jobId") or r.get("id") or "") not in retained_keys
                     ]
+
+        # Don't deal out a job or project someone still on shift finished
+        # earlier today; it goes back to them on their own top-up.
+        done_jobs, done_projects = _finished_today_by(set(normalized) | retained_reviewers)
+        for email in reviewer_emails:
+            normalized[email] = [
+                r for r in normalized[email]
+                if not (done_jobs.get(_job_key(r), set()) - {email})
+                and not (done_projects.get(str(r.get("projectId") or ""), set()) - {email})
+            ]
 
         snapshot_data = {
             "kind": "shift_snapshot",
@@ -2102,6 +2114,46 @@ def _job_holders(snapshot_id, force=False):
     return holders
 
 
+def _finished_today_by(on_shift):
+    """({job_key: {email}}, {project_id: {email}}) — what each reviewer still
+    on shift has checked off earlier today, across every shift today.
+
+    "Work stays with whoever had it first" used to read only the current
+    snapshot's reviewer_shift docs, so a clear-and-republish mid-day wiped it:
+    on 2026-11-09 the 10:40 republish let 15 jobs finished that morning go to
+    a different reviewer once new responses landed on them. The check-off log
+    survives a new snapshot, so it carries the morning forward.
+
+    Only reviewers in `on_shift` count. Someone who has left — closed out
+    (which deletes their shift docs) or simply isn't on the current shift —
+    releases their finished work to the team, so a morning-only reviewer
+    doesn't hold jobs all afternoon. Best-effort: a failed read returns
+    nothing, which is the old current-shift-only behaviour.
+    """
+    jobs, projects = {}, {}
+    on_shift = {(e or "").strip().lower() for e in on_shift}
+    if not on_shift:
+        return jobs, projects
+    today = datetime.datetime.now(_SHIFT_TZ).date().isoformat()
+    try:
+        entries = roles.list_docs_by_kind(CHECKOFF_LOG_KIND)
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logging.warning("finished-today lookup failed: %s", exc)
+        return jobs, projects
+    for doc in entries:
+        data = doc.get("data") or {}
+        email = (data.get("reviewer_email") or "").strip().lower()
+        if data.get("local_date") != today or email not in on_shift:
+            continue
+        jid = str(data.get("job_id") or "")
+        pid = str(data.get("project_id") or "")
+        if jid:
+            jobs.setdefault(jid, set()).add(email)
+        if pid:
+            projects.setdefault(pid, set()).add(email)
+    return jobs, projects
+
+
 def _split_pending_from_handout(snap_data, row, job_id):
     """Unreviewed responses on a split job that were already in when it was
     split — the only ones that are anybody's share. Submissions since then
@@ -2988,6 +3040,17 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
 
         if own_flags is not None and norm in _OWN_OPTIONS_REVIEWERS:
             prioritization_flags = own_flags
+
+        # Work finished earlier today, including on an earlier shift, stays
+        # with whoever finished it while they're still on this one.
+        done_jobs, done_projects = _finished_today_by(shift_reviewers)
+        for owned, own_set, mates in ((done_jobs, own_jobs, teammate_jobs),
+                                      (done_projects, own_projects, teammate_projects)):
+            for key, emails in owned.items():
+                if norm in emails:
+                    own_set.add(key)
+                if emails - {norm}:
+                    mates.add(key)
 
         # A job is off-limits while it is actively sitting in someone's queue.
         # Once every holder has completed it, it drops out of the exclusion set
