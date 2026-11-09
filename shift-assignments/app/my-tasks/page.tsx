@@ -878,8 +878,9 @@ function InReviewHint({ row }: { row: Row }) {
   return (
     <p className="mt-1 rounded border border-amber-400/60 bg-amber-400/10 px-1.5 py-1 text-[11px] text-amber-700 dark:text-amber-300">
       <strong>{who}</strong> {names.length > 1 ? "are" : "is"} still in review on
-      this job in FieldAgent. Leave <strong>Include in-review</strong> unticked,
-      and if they&apos;re done with it, ask them to hit Close My Assignments.
+      this job in FieldAgent. Leave <strong>Include in-review</strong>{" "}
+      unticked, and if they&apos;re done with it, ask them to hit Close My
+      Assignments.
     </p>
   );
 }
