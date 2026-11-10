@@ -434,16 +434,19 @@ def test_refill_reopens_a_job_once_every_holder_has_finished(monkeypatch):
     )
 
 
-def test_a_teammates_finished_job_is_not_handed_to_someone_else(monkeypatch):
-    """Production 1974127: Austin finished it, new responses landed, and
-    Elijah's top-up two minutes later took it — same JID in two queues."""
+def test_a_teammates_finished_job_goes_to_whoever_runs_out(monkeypatch):
+    """Once its holder has checked it off, new responses on a job go to the
+    next reviewer who needs work, not back to the same person. (Production
+    1974127 once made this the other way; reverted 2026-11-10 since it kept
+    handing reviewers the same jobs. The FieldAgent in-review check covers
+    two people on the same responses.)"""
     feed = _feed({"1974127": 3, "fresh": 1})
     added = _refill_with_team(
         monkeypatch, feed,
         holders={REVIEWER: [], "austin@storesight.com": ["1974127"]},
         completions=[("austin@storesight.com", "1974127")],
     )
-    assert [r["jobId"] for r in added] == ["fresh"]
+    assert sorted(r["jobId"] for r in added) == ["1974127", "fresh"]
 
 
 def test_a_teammates_project_is_not_split_by_a_refill(monkeypatch):
@@ -981,3 +984,58 @@ def test_with_no_matching_work_left_a_scoped_reviewer_gets_other_jobs(refill):
     added = refill(feed, batch_size=5, batch_responses=300,
                    flags={"retailPipelineOnly": True})
     assert [r["jobId"] for r in added] == ["ordinary"]
+
+
+# ── A top-up takes a whole project ──────────────────────────────────────────
+
+def _in_project(feed, pid, *jobs):
+    for r in feed:
+        if r["jobId"] in jobs:
+            r["projectId"] = pid
+    return feed
+
+
+def _ids(added):
+    return sorted(r["jobId"] for r in added)
+
+
+def test_a_topup_brings_the_rest_of_the_project(monkeypatch):
+    # "a1" ranks first; its project-mates come along even though other jobs
+    # rank above them.
+    feed = _in_project(_feed({"a1": 9, "x": 8, "y": 7, "a2": 1, "a3": 1}), "PA", "a1", "a2", "a3")
+    added = _refill_with_team(monkeypatch, feed, holders={REVIEWER: []}, completions=[],
+                              batch_size=4)
+    assert {"a1", "a2", "a3"} <= set(_ids(added))
+    assert len(added) == 4
+
+
+def test_a_project_without_room_waits(monkeypatch):
+    # Room for 2 after "x": the 3-job project doesn't fit, so it's skipped
+    # whole rather than split, and smaller work fills in.
+    feed = _in_project(_feed({"x": 9, "p1": 8, "p2": 1, "p3": 1, "y": 2, "z": 1}),
+                       "PP", "p1", "p2", "p3")
+    added = _refill_with_team(monkeypatch, feed, holders={REVIEWER: []}, completions=[],
+                              batch_size=3)
+    assert not {"p1", "p2", "p3"} & set(_ids(added))
+    assert _ids(added) == ["x", "y", "z"]
+
+
+def test_a_project_bigger_than_any_batch_still_goes_out(monkeypatch):
+    jobs = {f"b{i}": 10 - i for i in range(8)}
+    feed = _in_project(_feed(jobs), "PB", *jobs)
+    added = _refill_with_team(monkeypatch, feed, holders={REVIEWER: []}, completions=[],
+                              batch_size=5)
+    assert _ids(added) == ["b0", "b1", "b2", "b3", "b4"], "biggest five"
+
+
+def test_a_project_teammate_still_works_isnt_pulled_in(monkeypatch):
+    # Austin holds a live job in PA, so none of PA comes to this reviewer.
+    feed = _in_project(_feed({"a1": 9, "a2": 1, "fresh": 1}), "PA", "a1", "a2")
+    _refill_with_team(  # sets up the shift; rerun below once Austin's row is in PA
+        monkeypatch, [],
+        holders={REVIEWER: [], "austin@storesight.com": ["held_in_pa"]}, completions=[])
+    monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda *a, **k: feed)
+    docs = main.roles.list_docs_by_kind("reviewer_shift")
+    docs[1]["data"]["rows"][0]["projectId"] = "PA"
+    added = main._auto_refill_reviewer("snap1", REVIEWER, 5)
+    assert _ids(added) == ["fresh"]

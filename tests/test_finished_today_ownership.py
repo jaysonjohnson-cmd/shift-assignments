@@ -1,9 +1,11 @@
-"""Work finished earlier today stays with whoever finished it — across shifts —
-but only while they're still on the current one.
+"""Finished work is released to the team.
 
-Production 2026-11-09: the morning shift was cleared and a new one published
-at 10:40. Ownership only read the current snapshot, so 15 jobs finished that
-morning went to a different reviewer once new responses landed on them.
+A job someone checked off — this shift or earlier today — goes to whoever runs
+out next once new responses land on it. It used to stay with whoever finished
+it (from 2026-10-02, and all day from 2026-11-09), which kept handing
+reviewers the same jobs over and over; reverted 2026-11-10. What still holds:
+a project a teammate has unfinished work in stays with them, and a job
+someone is in review on in FieldAgent goes to them (see test_fa_in_review).
 """
 
 import datetime
@@ -66,19 +68,18 @@ def _refill(monkeypatch, feed, on_shift, log, held=None, completed=()):
     return sorted(r["jobId"] for r in main._auto_refill_reviewer("snap2", ME, 5))
 
 
-def test_a_job_finished_on_an_earlier_shift_stays_with_its_finisher(monkeypatch):
-    # 1975893: Saylor finished it at 8:55, Laurel was topped up with it at 11:57.
+def test_a_job_a_teammate_finished_earlier_today_is_released(monkeypatch):
     feed = _feed(("1975893", "p1"), ("fresh", "p2"))
     added = _refill(monkeypatch, feed, on_shift=[SAYLOR],
                     log=[_checkoff(SAYLOR, "1975893", "p1")])
-    assert added == ["fresh"]
+    assert added == ["1975893", "fresh"]
 
 
-def test_its_project_stays_with_them_too(monkeypatch):
+def test_its_project_is_released_too(monkeypatch):
     feed = _feed(("other_in_p1", "p1"), ("fresh", "p2"))
     added = _refill(monkeypatch, feed, on_shift=[SAYLOR],
                     log=[_checkoff(SAYLOR, "1975893", "p1")])
-    assert added == ["fresh"]
+    assert added == ["fresh", "other_in_p1"]
 
 
 def test_it_comes_back_to_the_reviewer_who_finished_it(monkeypatch):
@@ -104,16 +105,22 @@ def test_yesterdays_checkoffs_dont_count(monkeypatch):
     assert added == ["old"]
 
 
-def test_my_morning_checkoff_doesnt_take_a_job_a_teammate_holds_now(monkeypatch):
-    # 2026-11-09: Saylor finished 1976141 in the morning; Liam held it on the
-    # current shift and checked it off; Saylor's top-up took it back anyway.
+def test_a_job_a_teammate_holds_unfinished_stays_theirs(monkeypatch):
     LIAM = "liam@storesight.com"
     feed = _feed(("1976141", "p1"), ("fresh", "p2"))
     added = _refill(monkeypatch, feed, on_shift=[LIAM],
                     log=[_checkoff(ME, "1976141", "p1")],
+                    held={LIAM: [("1976141", "p1")]})
+    assert added == ["fresh"]
+
+
+def test_a_job_a_teammate_checked_off_this_shift_is_released(monkeypatch):
+    LIAM = "liam@storesight.com"
+    feed = _feed(("1976141", "p1"), ("fresh", "p2"))
+    added = _refill(monkeypatch, feed, on_shift=[LIAM], log=[],
                     held={LIAM: [("1976141", "p1")]},
                     completed=[(LIAM, "1976141")])
-    assert added == ["fresh"]
+    assert added == ["1976141", "fresh"]
 
 
 def test_my_morning_checkoff_doesnt_open_a_project_a_teammate_holds_now(monkeypatch):
@@ -132,20 +139,19 @@ def test_two_people_who_both_finished_it_earlier_can_either_get_it(monkeypatch):
     assert added == ["shared"]
 
 
-def test_auto_publish_skips_a_teammates_finished_work(monkeypatch):
-    jobs, projects = {"j1": {SAYLOR}}, {"p9": {SAYLOR}}
-    monkeypatch.setattr(main, "_finished_today_by", lambda on_shift: (
-        (jobs, projects) if SAYLOR in on_shift else ({}, {})))
+def test_auto_publish_deals_finished_work_to_anyone(monkeypatch):
     docs = []
     monkeypatch.setattr(internal_api, "post", lambda path, json=None: (
         docs.append(json["data"]) or {"data": {"id": f"d{len(docs)}"}}))
-    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind, force=False: [])
+    log = [_checkoff(SAYLOR, "j1", "p1"), _checkoff(SAYLOR, "j2", "p2")]
+    monkeypatch.setattr(main.roles, "list_docs_by_kind", lambda kind, force=False: (
+        log if kind == main.CHECKOFF_LOG_KIND else []))
     monkeypatch.setattr(main.roles, "list_reviewers", lambda: [])
     monkeypatch.setattr(main, "_get_auto_publish_enabled", lambda *a, **k: True)
     monkeypatch.setattr(main, "_get_todays_scheduled_reviewers", lambda **k: [ME, SAYLOR])
     monkeypatch.setattr(main, "_send_slack_notification", lambda *a, **k: None)
     monkeypatch.setattr(main.bloom, "fetch_prioritized_jobs", lambda *a, **k: _feed(
-        ("j1", "p1"), ("j2", "p9"), ("j3", "p3"), ("j4", "p4")))
+        ("j1", "p1"), ("j2", "p2"), ("j3", "p3"), ("j4", "p4")))
 
     monkeypatch.setattr(main.roles, "get_role", lambda email: "admin")
     monkeypatch.setattr(main, "_purge_stale_shift_docs", lambda: None)
@@ -156,10 +162,9 @@ def test_auto_publish_skips_a_teammates_finished_work(monkeypatch):
         main.api_shifts_auto_publish()
     held = {d["reviewer_email"]: sorted(r["jobId"] for r in d["rows"])
             for d in docs if d.get("kind") == "reviewer_shift"}
-    # j1 and j2 (Saylor's job and project) go to Saylor, not dropped.
-    assert {"j1", "j2"} <= set(held.get(SAYLOR, []))
-    assert set(held.get(ME, [])) <= {"j3", "j4"}
-    assert held.get(ME), "sanity: Sam still gets the unowned work"
+    # Saylor's finished jobs are dealt evenly, not reserved for her.
+    assert sorted(held.get(ME, []) + held.get(SAYLOR, [])) == ["j1", "j2", "j3", "j4"]
+    assert len(held[ME]) == len(held[SAYLOR]) == 2
 
 
 def test_deal_gives_owned_work_to_an_owner_in_the_batch():

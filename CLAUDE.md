@@ -275,7 +275,7 @@ simultaneous runs would race over that shared state.
 merge as a manual publish — never a new snapshot over a running shift (it used
 to, which hid every reviewer outside the batch). Before dealing it skips
 projects held by a reviewer who isn't in the batch, deals a job someone is in
-review on in FieldAgent (or finished earlier today) only to them, keeps each
+review on in FieldAgent only to them, keeps each
 project with one reviewer, and caps everyone at 20 live jobs including what
 they already hold. Callers: the scheduler's OIDC identity or an admin/lead —
 it was open to any signed-in user.
@@ -333,6 +333,16 @@ total. That reads well in theory and failed in practice: two heavy jobs spent
 the whole budget, so reviewers were topped up with 2 jobs while the feed still
 held hundreds, and a 2-job queue reads as empty. `batch_responses` is still
 stamped on the docs but no longer bounds anything.
+
+**A top-up takes whole projects.** Taking one job brings every other job in
+its project that the top-up could hand out, the same as the composer — a
+By-PID card opens the whole project. A project that doesn't fit the room left
+is skipped whole and waits for a top-up with room; one bigger than the
+reviewer's entire batch goes out a batch's worth at a time, biggest jobs
+first, or nobody could ever take it. The large-job cap is checked per
+project: a project is skipped when the cap is already reached, never broken
+up to stay under it. Auto-publish's deal already keeps a project together,
+but its 20-job cap can trim the tail of one.
 
 **Keeping the heavy end spread.** A top-up takes at most the heavy jobs on
 offer divided by the reviewers on shift, capped at `_REFILL_MAX_LARGE_JOBS`
@@ -404,30 +414,25 @@ dropped it. Rule keys are stored on reviewer
 docs, so renaming one silently drops those exceptions. `update_record`
 carries the field over, since a PUT replaces the whole doc.
 
-**Work stays with whoever had it first.** A top-up never takes a job or project
-already handed to a teammate this shift, even one they've checked off. The feed
-gets new responses all day, so a finished job comes back into the pool, and it
-used to go to whoever ran out next. That's how JID 1974127 ended up with two
-reviewers. It now goes back only to its own holder, on their next top-up.
-Closing out releases a reviewer's work, because it deletes their
-`reviewer_shift` docs.
+**Finished work goes back to the team.** Once a job's holder checks it off,
+new responses that land on it go to whoever runs out next, the same as any
+other job. What a top-up still won't take: a job sitting unfinished in a
+teammate's queue (`assigned_keys`), and a project a teammate still has
+unfinished work in (`teammate_live_projects`) — a By-PID card opens the
+whole project, so sharing it shows each the other's responses. Auto-publish
+skips projects with unfinished work held outside its batch, for the same
+reason. A job someone is in review on in FieldAgent is skipped either way
+(see "FieldAgent review assignments are separate").
 
-This carries across shifts on the same day, but only while the owner is on
-the current shift. `_finished_today_by` reads today's `checkoff_log` (which
-survives a new snapshot) for reviewers who still have `reviewer_shift` docs,
-and top-ups and auto-publish treat those jobs and projects as theirs. In
-top-ups that's a separate, *additional* exclusion (`earlier_mates_jobs`),
-never merged into `own_jobs`: merged, a morning check-off exempted a reviewer
-from a teammate holding the job now, and Saylor's top-ups took back three
-jobs Liam held (2026-11-09). Auto-publish deals an owned job straight to an
-owner in the batch (`_distribute_evenly(..., owners=)`) and holds it back
-when none is, rather than dealing first and dropping it after. It used
-to read the current snapshot alone, so a mid-day clear-and-republish wiped
-ownership: on 2026-11-09, 15 jobs finished that morning went to a different
-reviewer after the 10:40 republish. Someone who has left (closed out, or not
-on the current shift) holds nothing, so a morning-only reviewer doesn't
-lock work away all afternoon. Manual publish is unaffected — an admin's pick
-is deliberate.
+This was the other way from 2026-10-02 to 2026-11-10: finished work stayed
+with whoever had it first (after JID 1974127 went from Austin to Elijah two
+minutes after he finished it), and from 2026-11-09 for the whole day via the
+`checkoff_log`. In practice it kept handing reviewers the same jobs a response
+or two at a time while untouched work waited, so it was removed. Holding
+repeats back (a 10-new-response wait, fresh work first) was tried and
+rejected too. The case the rule existed for — two people on the same
+responses — is now covered by the in-review check. Don't reintroduce
+ownership of finished work without asking.
 
 **Rollback:** Use Cloud Run revision traffic splitting in GCP console.
 
@@ -548,7 +553,7 @@ to let the job sit on several shifts.
   out. Reviewers on the shift but not in this run's batch aren't added. It
   never splits a job already on the shift, one in a project anyone
   holds or with other jobs in the feed (By-PID cards open the whole project),
-  or one that's owned (finished earlier today, or in review in FieldAgent).
+  or one someone is in review on in FieldAgent.
   Top-ups never split.
 - Every copy of the row carries `splitWith` (all sharers' emails). Publish's
   cross-reviewer dedupe lets a job repeat only when every copy agrees on that

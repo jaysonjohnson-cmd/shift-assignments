@@ -745,11 +745,11 @@ def _distribute_evenly(rows, reviewers, exceptions=None, owners=None):
     it blind used to land it on whoever was next, where publish then dropped
     it, so jobs a reviewer was allowed rarely reached them.
 
-    `owners` is (jobs, projects) from _finished_today_by: work someone still on
-    shift finished earlier today. Such a job goes only to one of its owners
-    in this batch, and is held back for their top-up when none is — dealing
-    first and filtering after used to drop it from everyone and leave short
-    (or empty) batches that nothing refilled.
+    `owners` is (jobs, projects) -> {emails}: work that must go to one of
+    those reviewers (auto-publish uses it for a job someone is in review on in
+    FieldAgent). Such a job goes only to one of its owners in this batch, and
+    is held back when none is — dealing first and filtering after used to
+    drop it from everyone and leave short (or empty) batches.
     """
     if not reviewers or not rows:
         return {r: [] for r in reviewers}
@@ -808,8 +808,7 @@ def _pick_auto_splits(rows, reviewers, exceptions=None, owner_jobs=None,
     shift (`taken_keys`), its project not held (`taken_projects`) and the only
     job of its project in `rows` — a By-PID card opens the whole project, so
     sharing one job of a bigger project would show each sharer the other's
-    responses — and not owned (finished earlier today, or someone in review on
-    it in FieldAgent). A two-way split goes to the least-loaded reviewers
+    responses — and not owned (someone in review on it in FieldAgent). A two-way split goes to the least-loaded reviewers
     allowed the job, by `load` (live jobs held, plus splits taken this run)
     then email, so pairs rotate through the batch. A reviewer at `cap` takes
     no more splits, so the job cap never trims one sharer out of a split.
@@ -930,26 +929,24 @@ def api_shifts_auto_publish():
 
         done = {((c.get("reviewer_email") or "").lower(), _completion_job_key(c))
                 for c in completions}
-        project_holders: dict = {}
+        project_holders: dict = {}  # projects with unfinished work -> who has it
         pending_held: dict = {}
         for d in current_docs:
             data = d.get("data") or {}
             email = (data.get("reviewer_email") or "").strip().lower()
             for r in data.get("rows") or []:
                 pid = str(r.get("projectId") or "")
-                if pid:
-                    project_holders.setdefault(pid, set()).add(email)
                 if (email, _job_key(r)) not in done:
                     pending_held[email] = pending_held.get(email, 0) + 1
-        on_shift = batch | {((d.get("data") or {}).get("reviewer_email") or "").strip().lower()
-                            for d in current_docs}
+                    if pid:
+                        project_holders.setdefault(pid, set()).add(email)
 
-        # Who a job must go to (or not go to at all). Work someone still on
-        # shift finished earlier today stays theirs; so does a job FieldAgent
-        # shows someone in review on. A project held by a reviewer who isn't
-        # in this batch stays with them.
-        done_jobs, done_projects = _finished_today_by(on_shift)
-        owner_jobs = {k: set(v) for k, v in done_jobs.items()}
+        # Who a job must go to (or not go to at all). A job FieldAgent shows
+        # someone in review on goes to them; a project someone outside this
+        # batch still has unfinished work in stays with them. Work finished
+        # earlier today is dealt like any other — it used to stay with whoever
+        # finished it, which kept handing reviewers the same jobs.
+        owner_jobs = {}
         try:
             roster = roles.list_reviewers()
         except Exception:  # noqa: BLE001 — unmatched names just skip their jobs
@@ -978,13 +975,13 @@ def api_shifts_auto_publish():
         # Big jobs are split first, among reviewers with room to take one.
         splits, candidates = _pick_auto_splits(
             candidates,
-            sorted(batch), exceptions, owner_jobs, done_projects,
+            sorted(batch), exceptions, owner_jobs,
             taken_keys=held_keys, taken_projects=set(project_holders),
             load=pending_held, cap=MAX_JOBS_PER_REVIEWER)
 
         dealt = _distribute_evenly(
             candidates, sorted(batch), exceptions,
-            owners=(owner_jobs, done_projects))
+            owners=(owner_jobs, {}))
 
         assignments = {}
         for email, job_rows in dealt.items():
@@ -2196,46 +2193,6 @@ def _job_holders(snapshot_id, force=False):
     return holders
 
 
-def _finished_today_by(on_shift):
-    """({job_key: {email}}, {project_id: {email}}) — what each reviewer still
-    on shift has checked off earlier today, across every shift today.
-
-    "Work stays with whoever had it first" used to read only the current
-    snapshot's reviewer_shift docs, so a clear-and-republish mid-day wiped it:
-    on 2026-11-09 the 10:40 republish let 15 jobs finished that morning go to
-    a different reviewer once new responses landed on them. The check-off log
-    survives a new snapshot, so it carries the morning forward.
-
-    Only reviewers in `on_shift` count. Someone who has left — closed out
-    (which deletes their shift docs) or simply isn't on the current shift —
-    releases their finished work to the team, so a morning-only reviewer
-    doesn't hold jobs all afternoon. Best-effort: a failed read returns
-    nothing, which is the old current-shift-only behaviour.
-    """
-    jobs, projects = {}, {}
-    on_shift = {(e or "").strip().lower() for e in on_shift}
-    if not on_shift:
-        return jobs, projects
-    today = datetime.datetime.now(_SHIFT_TZ).date().isoformat()
-    try:
-        entries = roles.list_docs_by_kind(CHECKOFF_LOG_KIND)
-    except Exception as exc:  # noqa: BLE001 — best-effort
-        logging.warning("finished-today lookup failed: %s", exc)
-        return jobs, projects
-    for doc in entries:
-        data = doc.get("data") or {}
-        email = (data.get("reviewer_email") or "").strip().lower()
-        if data.get("local_date") != today or email not in on_shift:
-            continue
-        jid = str(data.get("job_id") or "")
-        pid = str(data.get("project_id") or "")
-        if jid:
-            jobs.setdefault(jid, set()).add(email)
-        if pid:
-            projects.setdefault(pid, set()).add(email)
-    return jobs, projects
-
-
 def _split_pending_from_handout(snap_data, row, job_id):
     """Unreviewed responses on a split job that were already in when it was
     split — the only ones that are anybody's share. Submissions since then
@@ -3115,12 +3072,11 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             roles.cache_upsert_doc("refill_lock", {"id": lock_id, "data": lock_doc})
 
         held_pairs = set()  # (reviewer_email, job_key) — who is holding what
-        # Every job and project a teammate has been handed this shift, finished
-        # or not. Work stays with whoever had it first; see the pool loop.
-        # Work the reviewer held themselves is exempt, so a job that somehow
-        # ended up with two people can still come back to either.
-        teammate_jobs, teammate_projects = set(), set()
-        own_jobs, own_projects = set(), set()
+        # (reviewer, job, project) for every row a teammate holds, so the
+        # projects they still have live work in can be found once completions
+        # are read. Projects this reviewer holds themselves are exempt.
+        teammate_rows = []
+        own_projects = set()
         own_rows = []
         shift_reviewers = set()
         max_part = -1
@@ -3168,12 +3124,11 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                 if k:
                     held_pairs.add((doc_reviewer, k))
                 pid = str(r.get("projectId") or "")
-                jobs, projects = ((own_jobs, own_projects) if doc_reviewer == norm
-                                  else (teammate_jobs, teammate_projects))
-                if k:
-                    jobs.add(k)
-                if pid:
-                    projects.add(pid)
+                if doc_reviewer == norm:
+                    if pid:
+                        own_projects.add(pid)
+                else:
+                    teammate_rows.append((doc_reviewer, k, pid))
             if doc_reviewer == norm:
                 own_rows.extend(data.get("rows") or [])
                 part = int(data.get("part") or 0)
@@ -3193,24 +3148,11 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         if own_flags is not None and norm in _OWN_OPTIONS_REVIEWERS:
             prioritization_flags = own_flags
 
-        # Work finished earlier today, including on an earlier shift, stays
-        # with whoever finished it while they're still on this one. This only
-        # ever ADDS exclusions: it's checked separately from the current-shift
-        # rule below, never merged into own_jobs. Merged, a reviewer's morning
-        # check-off exempted her from a teammate holding the job right now —
-        # on 2026-11-09 Saylor's top-ups took 1976141, 1976144 and 1975893 back
-        # while Liam held all three.
-        done_jobs, done_projects = _finished_today_by(shift_reviewers)
-        earlier_mates_jobs = {k for k, who in done_jobs.items()
-                              if norm not in who and who - {norm}}
-        earlier_mates_projects = {p for p, who in done_projects.items()
-                                  if norm not in who and who - {norm}}
-
         # A job is off-limits while it is actively sitting in someone's queue.
         # Once every holder has completed it, it drops out of the exclusion set
         # so fresh unreviewed responses that land on it later (this feed gets
-        # continuous new submissions all day) are reachable again — by the
-        # reviewers who held it, never a teammate (see teammate_jobs). Without that
+        # continuous new submissions all day) are reachable again — by whoever
+        # runs out next, not just the reviewer who finished it. Without that
         # release, every job touched during the shift stayed excluded forever
         # and the "fresh" pool only ever shrank.
         #
@@ -3232,6 +3174,9 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             if _completion_job_key(c)
         }
         assigned_keys = {k for (rev, k) in held_pairs if (rev, k) not in completed_pairs}
+        # Projects a teammate still has unfinished work in.
+        teammate_live_projects = {pid for rev, k, pid in teammate_rows
+                                  if pid and (rev, k) not in completed_pairs}
         logging.info("auto-refill for %s: held=%d, completed=%d, excluded-from-pool=%d",
                      email, len(held_pairs), len(completed_pairs), len(assigned_keys))
 
@@ -3320,24 +3265,16 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
                 else:
                     skipped_reasons["already_assigned"] += 1
                 continue
-            # A job or project already handed to a teammate this shift stays
-            # theirs, even after they've checked it off. New responses landing
-            # on a finished job used to send it to whoever ran out next, so two
-            # reviewers ended up with the same JID (production 1974127: Austin
-            # finished it at 9:04, Elijah's top-up took it at 9:06). Projects
-            # count too: a My Tasks "By PID" card opens the whole project, so a
-            # project split across reviewers shows each the other's responses.
-            # The owner gets it back on their own top-up; a reviewer who closes
-            # out has their shift docs deleted, which releases their work.
+            # A project a teammate still has unfinished work in stays with them:
+            # a My Tasks "By PID" card opens the whole project, so sharing it
+            # shows each the other's responses. A job a teammate has checked
+            # off is NOT held back — new responses on it go to whoever runs out
+            # next. It used to stay with whoever finished it (2026-10-02, then
+            # all day from 2026-11-09), which kept reviewers reopening the same
+            # jobs; the FieldAgent in-review check below now covers the case
+            # that rule was for (1974127, two people on the same responses).
             pid = str(r.get("projectId") or "")
-            if ((k in teammate_jobs and k not in own_jobs)
-                    or (pid in teammate_projects and pid not in own_projects)):
-                skipped_reasons["teammates_work"] += 1
-                continue
-            # Same, for a teammate still on shift who finished it earlier
-            # today — unless this reviewer finished it too, or holds it now.
-            if ((k in earlier_mates_jobs and k not in own_jobs)
-                    or (pid in earlier_mates_projects and pid not in own_projects)):
+            if pid in teammate_live_projects and pid not in own_projects:
                 skipped_reasons["teammates_work"] += 1
                 continue
             if _is_excluded_job(r, allowed):
@@ -3414,8 +3351,19 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
         fresh = []
         responses_added = 0
 
+        # Every candidate job by project, across both lists, so taking one job
+        # brings the rest of its project along — the same as the composer. A
+        # By-PID card opens the whole project, and a top-up that took one job
+        # of a ten-job PID used to leave the other nine for later top-ups.
+        project_jobs: dict = {}
+        for t in eligible + off_scope:
+            pid = str(t[0].get("projectId") or "")
+            if pid:
+                project_jobs.setdefault(pid, []).append(t)
+
         def take(candidates, label):
-            """Fill `fresh` toward `count` from one candidate list."""
+            """Fill `fresh` toward `count` from one candidate list, a whole
+            project at a time."""
             nonlocal responses_added
             if balance_by_responses:
                 candidates.sort(key=lambda t: (tier_of(t[0]), -t[2]))
@@ -3426,19 +3374,36 @@ def _auto_refill_reviewer(snap_id, email, fallback_count):
             large_cap = min(_REFILL_MAX_LARGE_JOBS, max(1, available_large // on_shift))
             large_taken = 0
             before = len(fresh)
-            for r, k, reviewable in candidates:
+            for t in candidates:
+                r, k, reviewable = t
                 if len(fresh) >= count:
                     break
-                is_large = reviewable >= large_threshold
+                if k in assigned_keys:
+                    continue  # already came along with its project
+                pid = str(r.get("projectId") or "")
+                group = ([g for g in project_jobs.get(pid, [t]) if g[1] not in assigned_keys]
+                         if pid else [t])
+                room = count - len(fresh)
+                if len(group) > room:
+                    # A project that fits a whole batch waits for a top-up with
+                    # room for all of it. One bigger than any batch could never
+                    # fit, so it goes out a batch's worth at a time, biggest
+                    # jobs first — otherwise nobody would ever get it.
+                    if len(group) <= count:
+                        continue
+                    group = sorted(group, key=lambda g: -g[2])[:room]
                 # Hand out only a couple of large jobs per top-up, so one reviewer
-                # can't take the whole heavy end of a skewed queue.
-                if is_large and large_taken >= large_cap:
+                # can't take the whole heavy end of a skewed queue. Checked per
+                # project: one already at the cap waits, but a project isn't
+                # broken up to stay under it.
+                large_in = sum(1 for g in group if g[2] >= large_threshold)
+                if large_in and large_taken >= large_cap:
                     continue
-                fresh.append(_compact_row(r))
-                assigned_keys.add(k)  # guard against dupes within the same feed
-                responses_added += reviewable
-                if is_large:
-                    large_taken += 1
+                for gr, gk, gn in group:
+                    fresh.append(_compact_row(gr))
+                    assigned_keys.add(gk)  # guard against dupes within the same feed
+                    responses_added += gn
+                large_taken += large_in
             logging.warning(
                 "auto-refill for %s (%s): candidates=%d -> %d jobs "
                 "(target=%d, large>=%d avail=%d on_shift=%d cap=%d taken=%d)",
@@ -4542,7 +4507,7 @@ def _unlog_checkoff(completion_id):
     try:
         # Forced: the entry may have been written on another instance, and a
         # warm-cache miss left it behind — still listed, and still counting as
-        # theirs for the rest of the day (_finished_today_by).
+        # a check-off.
         for doc in roles.list_docs_by_kind(CHECKOFF_LOG_KIND, force=True):
             if (doc.get("data") or {}).get("completion_id") == completion_id:
                 _try_delete(doc.get("id"))
