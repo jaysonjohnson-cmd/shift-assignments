@@ -788,6 +788,71 @@ def _distribute_evenly(rows, reviewers, exceptions=None, owners=None):
     return assignments
 
 
+# Auto-publish splits a job by size: 50+ reviewable responses goes to two
+# reviewers, over 100 to everyone in the batch who can take it. Manual splits
+# (the composer) are unaffected.
+_AUTO_SPLIT_PAIR_AT = 50
+_AUTO_SPLIT_ALL_OVER = 100
+
+
+def _pick_auto_splits(rows, reviewers, exceptions=None, owner_jobs=None,
+                      owner_projects=None, taken_keys=(), taken_projects=(),
+                      load=None, cap=None):
+    """Split the big jobs in `rows` across `reviewers` for auto-publish.
+
+    Returns ({email: [split rows]}, the rows left to deal normally). Each split
+    row is a copy carrying `splitWith`; _publish_assignments does the rest
+    (splitAt, the dedupe exception) exactly as for a composer split.
+
+    A job is only split when nothing ties it to one person: not held on the
+    shift (`taken_keys`), its project not held (`taken_projects`) and the only
+    job of its project in `rows` — a By-PID card opens the whole project, so
+    sharing one job of a bigger project would show each sharer the other's
+    responses — and not owned (finished earlier today, or someone in review on
+    it in FieldAgent). A two-way split goes to the least-loaded reviewers
+    allowed the job, by `load` (live jobs held, plus splits taken this run)
+    then email, so pairs rotate through the batch. A reviewer at `cap` takes
+    no more splits, so the job cap never trims one sharer out of a split.
+    """
+    exceptions = exceptions or {}
+    owner_jobs = owner_jobs or {}
+    owner_projects = owner_projects or {}
+    load = dict(load or {})
+    taken_keys, taken_projects = set(taken_keys), set(taken_projects)
+    pid_count: dict = {}
+    for r in rows:
+        pid = str(r.get("projectId") or "")
+        if pid:
+            pid_count[pid] = pid_count.get(pid, 0) + 1
+
+    splits = {}
+    rest = []
+    # Biggest first: they're the ones that matter most if the 20-job cap trims.
+    for row in sorted(rows, key=_row_responses, reverse=True):
+        key, pid = _job_key(row), str(row.get("projectId") or "")
+        free = sorted(
+            (r for r in reviewers
+             if not _is_excluded_job(row, exceptions.get(r, ()))
+             and (cap is None or load.get(r, 0) < cap)),
+            key=lambda r: (load.get(r, 0), r))
+        n = _row_responses(row)
+        ways = len(free) if n > _AUTO_SPLIT_ALL_OVER else 2 if n >= _AUTO_SPLIT_PAIR_AT else 0
+        ways = min(ways, len(free))
+        if (ways < 2 or not key or key in taken_keys or owner_jobs.get(key)
+                or (pid and (pid in taken_projects or owner_projects.get(pid)
+                             or pid_count.get(pid, 0) > 1))):
+            rest.append(row)
+            continue
+        sharers = free[:ways]
+        for email in sharers:
+            splits.setdefault(email, []).append({**row, "splitWith": list(sharers)})
+            load[email] = load.get(email, 0) + 1
+    # The deal keeps the feed's priority order.
+    order = {id(r): i for i, r in enumerate(rows)}
+    rest.sort(key=lambda r: order[id(r)])
+    return splits, rest
+
+
 # Filters a scheduled publish runs with. Auto-published shifts used to carry no
 # flags at all, so every refill on them fell back to defaults; response
 # balancing is what the team wants on a scheduled run.
@@ -905,15 +970,28 @@ def api_shifts_auto_publish():
                 owner_jobs.setdefault(_job_key(r), set()).update(matched)
             candidates.append(r)
 
-        dealt = _distribute_evenly(
-            candidates, sorted(batch), {e: _reviewer_exceptions(e) for e in batch},
-            owners=(owner_jobs, done_projects))
-
         # Up to 20 live jobs each, counting what they already hold.
         MAX_JOBS_PER_REVIEWER = 20
+        exceptions = {e: _reviewer_exceptions(e) for e in batch}
+        held_keys = {_job_key(r) for d in current_docs
+                     for r in (d.get("data") or {}).get("rows") or [] if _job_key(r)}
+        # Big jobs are split first, among reviewers with room to take one.
+        splits, candidates = _pick_auto_splits(
+            candidates,
+            sorted(batch), exceptions, owner_jobs, done_projects,
+            taken_keys=held_keys, taken_projects=set(project_holders),
+            load=pending_held, cap=MAX_JOBS_PER_REVIEWER)
+
+        dealt = _distribute_evenly(
+            candidates, sorted(batch), exceptions,
+            owners=(owner_jobs, done_projects))
+
         assignments = {}
         for email, job_rows in dealt.items():
             room = max(0, MAX_JOBS_PER_REVIEWER - pending_held.get(email, 0))
+            # A split job counts toward the cap like any other, and goes first
+            # so the cap never trims a sharer out of a split.
+            job_rows = splits.get(email, []) + job_rows
             if room and job_rows:
                 assignments[email] = job_rows[:room]
         if not assignments:

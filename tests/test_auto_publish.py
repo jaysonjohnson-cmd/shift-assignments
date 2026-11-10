@@ -152,3 +152,119 @@ def test_deal_keeps_a_project_together():
     out = main._distribute_evenly(rows, [SAM, ALEX])
     owners = {e for e, v in out.items() if any(r["projectId"] == "PA" for r in v)}
     assert len(owners) == 1
+
+
+# ── Size-threshold splits ───────────────────────────────────────────────────
+
+def _big(jid, n, pid=None):
+    return {**_job(jid, pid), "unreviewedCount": n}
+
+
+def _rows_of(env, email):
+    return [r for x in env["docs"] if x["data"].get("kind") == "reviewer_shift"
+            and x["data"]["reviewer_email"] == email for r in x["data"]["rows"]]
+
+
+def test_a_big_job_is_split_across_the_batch(env):
+    _scheduled(env, [SAM, ALEX])
+    _feed(env, [_big("big", 320), _job("1"), _job("2")])
+    resp = env["client"].post("/api/shifts/auto-publish")
+    assert resp.status_code == 200, resp.get_json()
+    for email in (SAM, ALEX):
+        row = next(r for r in _rows_of(env, email) if r["jobId"] == "big")
+        assert row["splitWith"] == sorted([SAM, ALEX])
+        assert row.get("splitAt")
+    small = [j for e in (SAM, ALEX) for j in _held(env)[e] if j != "big"]
+    assert sorted(small) == ["1", "2"], "the rest is dealt normally, once each"
+
+
+def test_under_50_is_not_split():
+    out, rest = main._pick_auto_splits([_big("j", 49)], [SAM, ALEX])
+    assert out == {} and [r["jobId"] for r in rest] == ["j"]
+
+
+def test_50_to_100_goes_to_two():
+    for n in (50, 100):
+        out, _ = main._pick_auto_splits([_big("j", n)], [SAM, ALEX, STAYING])
+        assert len(out) == 2, n
+
+
+def test_over_100_goes_to_everyone():
+    out, _ = main._pick_auto_splits([_big("j", 101)], [SAM, ALEX, STAYING])
+    assert set(out) == {SAM, ALEX, STAYING}
+    assert out[SAM][0]["splitWith"] == sorted([SAM, ALEX, STAYING])
+
+
+def test_one_reviewer_cannot_split():
+    out, _ = main._pick_auto_splits([_big("j", 500)], [SAM])
+    assert out == {}
+
+
+def test_every_big_job_is_split_and_pairs_rotate():
+    rows = [_big("a", 60), _big("b", 70), _big("c", 500)]
+    out, rest = main._pick_auto_splits(rows, [SAM, ALEX, STAYING])
+    assert rest == []
+    by_job = {}
+    for email, v in out.items():
+        for r in v:
+            by_job.setdefault(r["jobId"], set()).add(email)
+    assert by_job["c"] == {SAM, ALEX, STAYING}
+    assert len(by_job["a"]) == len(by_job["b"]) == 2
+    assert by_job["a"] != by_job["b"], "pairs rotate by load"
+
+
+def test_sharers_are_the_least_loaded():
+    out, _ = main._pick_auto_splits([_big("j", 60)], [SAM, ALEX, STAYING],
+                                    load={SAM: 9, ALEX: 1, STAYING: 0})
+    assert set(out) == {ALEX, STAYING}
+
+
+def test_a_reviewer_at_the_cap_takes_no_splits():
+    out, _ = main._pick_auto_splits([_big("j", 500)], [SAM, ALEX, STAYING],
+                                    load={SAM: 20}, cap=20)
+    assert set(out) == {ALEX, STAYING}
+
+
+def test_an_excluded_reviewer_is_left_out_of_everyone(env):
+    env["mp"].setattr(main, "_is_excluded_job",
+                      lambda row, allowed=(): row.get("jobId") == "vid" and "video" not in allowed)
+    out, _ = main._pick_auto_splits([_big("vid", 500)], [SAM, ALEX, STAYING],
+                                    exceptions={ALEX: {"video"}, STAYING: {"video"}})
+    assert set(out) == {ALEX, STAYING}
+
+
+def test_tied_jobs_are_never_split():
+    rows = [_big("held", 900), _big("projheld", 900, "PH"), _big("owned", 900),
+            _big("multi", 900, "PM"), _job("m2", "PM")]
+    out, rest = main._pick_auto_splits(
+        rows, [SAM, ALEX], owner_jobs={"owned": {SAM}},
+        taken_keys={"held"}, taken_projects={"PH"})
+    assert out == {}
+    assert [r["jobId"] for r in rest] == [r["jobId"] for r in rows], "feed order kept"
+
+
+def test_a_job_someone_is_in_review_on_is_not_split(env):
+    _scheduled(env, [SAM, ALEX])
+    _feed(env, [{**_big("big", 900), "extras": {"activeReviewerNames": ["samS"]}}])
+    env["client"].post("/api/shifts/auto-publish")
+    assert _held(env) == {SAM: ["big"]}
+    assert not _rows_of(env, SAM)[0].get("splitWith")
+
+
+def test_a_full_reviewer_is_not_made_a_sharer(env):
+    env["docs"].extend([
+        {"id": "snap-0", "created_at": -2, "data": {
+            "kind": "shift_snapshot", "published_at": _today(), "reviewer_emails": [SAM]}},
+        {"id": "rs-sam", "created_at": -1, "data": {
+            "kind": "reviewer_shift", "shift_snapshot_id": "snap-0", "reviewer_email": SAM,
+            "part": 0, "batch_size": 20,
+            "rows": [{"jobId": f"S{i}", "id": f"S{i}", "projectId": f"PS{i}",
+                      "unreviewedCount": 3} for i in range(20)]}},
+    ])
+    _scheduled(env, [SAM, ALEX, STAYING])
+    _feed(env, [_big("big", 320)])
+    env["client"].post("/api/shifts/auto-publish")
+    assert "big" not in _held(env).get(SAM, [])
+    for email in (ALEX, STAYING):
+        row = next(r for r in _rows_of(env, email) if r["jobId"] == "big")
+        assert row["splitWith"] == sorted([ALEX, STAYING])

@@ -539,6 +539,17 @@ in the shift composer). It's the one sanctioned exception to one-job-one-reviewe
 Collection Review keeps sharers off each other's responses, so the tool only has
 to let the job sit on several shifts.
 
+- Auto-publish splits by size (`_pick_auto_splits`): 50+ reviewable responses
+  goes to two reviewers (`_AUTO_SPLIT_PAIR_AT`), over 100 to everyone in the
+  run's batch who can take it (`_AUTO_SPLIT_ALL_OVER`). Every qualifying job is
+  split, heaviest first; pairs go to the least-loaded (splits taken this run
+  count), so they rotate. Each split row counts toward the 20-job cap, and a
+  reviewer at the cap takes no more splits so the cap never trims a sharer
+  out. Reviewers on the shift but not in this run's batch aren't added. It
+  never splits a job already on the shift, one in a project anyone
+  holds or with other jobs in the feed (By-PID cards open the whole project),
+  or one that's owned (finished earlier today, or in review in FieldAgent).
+  Top-ups never split.
 - Every copy of the row carries `splitWith` (all sharers' emails). Publish's
   cross-reviewer dedupe lets a job repeat only when every copy agrees on that
   list and names its own reviewer; anything else is deduped as before. A
