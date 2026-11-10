@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { getShiftOverview, type ShiftOverview, getShiftJobs, type ShiftJobs, type ShiftJob, clearShift, type ClearMode, removeJobFromReviewer } from "@/lib/api";
 import { formatRelative } from "@/lib/relativeTime";
@@ -25,20 +25,28 @@ export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
   const [showCloseModal, setShowCloseModal] = useState(false);
   const [clearTarget, setClearTarget] = useState<{ email: string; name: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [removingJob, setRemovingJob] = useState<string | null>(null);
+  // Removals run one at a time (each rewrites the reviewer's whole shift doc,
+  // so overlapping ones could put a job back), and the page refreshes once
+  // the last one lands.
+  const removeQueue = useRef<Promise<void>>(Promise.resolve());
+  const removalsPending = useRef(0);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  // `quiet` refreshes without the Refreshing… state, for the background
+  // refresh after a removal. A quiet result that lands while another removal
+  // is still pending is dropped: it may still list that job.
+  const load = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
     setError(null);
     try {
       const [o, j] = await Promise.all([getShiftOverview(), getShiftJobs()]);
+      if (quiet && removalsPending.current > 0) return;
       setData(o);
       setJobs(j);
       setRefreshedAt(Date.now());
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load overview");
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, []);
 
@@ -97,17 +105,46 @@ export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
     }
   };
 
-  const handleRemoveJob = async (reviewerEmail: string, jobId: string) => {
-    setRemovingJob(jobId);
+  // The row goes the moment the X is clicked; the server catches up behind
+  // it. This used to wait for the removal and then a full reload before the
+  // row went anywhere, which took ages.
+  const handleRemoveJob = (reviewerEmail: string, job: ShiftJob) => {
+    const email = reviewerEmail.toLowerCase();
     setError(null);
-    try {
-      await removeJobFromReviewer(reviewerEmail, jobId);
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to remove job");
-    } finally {
-      setRemovingJob(null);
-    }
+    setJobs((prev) => prev && {
+      ...prev,
+      jobs_by_reviewer: prev.jobs_by_reviewer.map((rj) =>
+        rj.email.toLowerCase() === email
+          ? { ...rj, jobs: rj.jobs.filter((j) => j.id !== job.id) }
+          : rj,
+      ),
+    });
+    setData((prev) => prev && {
+      ...prev,
+      reviewers: prev.reviewers.map((r) =>
+        r.email.toLowerCase() === email
+          ? {
+              ...r,
+              total: Math.max(0, r.total - 1),
+              completed: job.completed ? Math.max(0, r.completed - 1) : r.completed,
+              pending: job.completed ? r.pending : Math.max(0, r.pending - 1),
+            }
+          : r,
+      ),
+    });
+    removalsPending.current += 1;
+    removeQueue.current = removeQueue.current.then(async () => {
+      try {
+        await removeJobFromReviewer(reviewerEmail, job.id);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Failed to remove job");
+      } finally {
+        removalsPending.current -= 1;
+        // A failed removal comes back with this refresh, so the page never
+        // shows a job as gone when it isn't.
+        if (removalsPending.current === 0) void load(true);
+      }
+    });
   };
 
   return (
@@ -135,7 +172,7 @@ export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={load}
+            onClick={() => void load()}
             disabled={loading || busy}
             className="rounded-lg border border-storesight-border bg-white px-3 py-2 text-sm font-medium text-storesight-ink-muted transition hover:border-storesight-accent hover:text-storesight-primary disabled:opacity-50 dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-muted-dark dark:hover:border-storesight-accent-light dark:hover:text-storesight-accent-light"
           >
@@ -296,8 +333,8 @@ export function AssignmentsOverview({ onBack }: { onBack: () => void }) {
                                 {canManage && (
                                   <button
                                     type="button"
-                                    onClick={() => handleRemoveJob(r.email, job.id)}
-                                    disabled={busy || removingJob === job.id}
+                                    onClick={() => handleRemoveJob(r.email, job)}
+                                    disabled={busy}
                                     title="Remove this job from the assignment"
                                     aria-label="Remove job"
                                     className="shrink-0 rounded p-1 text-storesight-ink-muted transition hover:bg-storesight-hot-pink/10 hover:text-storesight-hot-pink disabled:opacity-40 dark:text-storesight-ink-muted-dark dark:hover:bg-storesight-hot-pink/10"

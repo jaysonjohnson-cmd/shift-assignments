@@ -4887,6 +4887,12 @@ def api_shifts_jobs():
     })
 
 
+# One removal at a time on this instance: each is a read-modify-write of the
+# reviewer's whole shift doc, so two quick X clicks for the same reviewer
+# could each read the doc before the other's PUT and put the other job back.
+_REMOVE_JOB_LOCK = threading.Lock()
+
+
 @app.route("/api/shifts/remove-job", methods=["POST"])
 def api_remove_job():
     """Remove a specific job from a reviewer's assignment. Admin or lead only."""
@@ -4901,54 +4907,61 @@ def api_remove_job():
         return jsonify({"error": "reviewer_email and job_id are required"}), 400
 
     try:
-        # Only remove from the current snapshot, not old ones
-        snap_id, _ = _latest_snapshot()
-        if not snap_id:
-            return jsonify({"error": "no shift has been published yet"}), 409
-
-        all_shift_docs = roles.list_docs_by_kind("reviewer_shift")
-        removed = False
-
-        for doc in all_shift_docs:
-            doc_data = doc.get("data") or {}
-            # Only process docs for the current snapshot
-            if doc_data.get("shift_snapshot_id") != snap_id:
-                continue
-            if (doc_data.get("reviewer_email") or "").strip().lower() != reviewer_email:
-                continue
-
-            rows = doc_data.get("rows") or []
-            new_rows = [r for r in rows if str(r.get("jobId") or r.get("id") or "") != job_id]
-
-            if len(new_rows) < len(rows):
-                # Job was removed. A copy, not doc_data itself: that's the
-                # dict in the shared cache, and changing it before a PUT that
-                # then failed left this instance showing the job removed.
-                updated = {**doc_data, "rows": new_rows}
-                doc_id = doc.get("id")
-                try:
-                    internal_api.put(f"{_STORAGE_PATH}/{doc_id}", json={"data": updated})
-                    removed = True
-                except requests.exceptions.HTTPError as e:
-                    roles.invalidate_doc_cache()
-                    return _http_error_response(e)
-
-        roles.invalidate_doc_cache()
-
-        if removed:
-            logging.info(
-                "POST /api/shifts/remove-job by=%s job=%s reviewer=%s",
-                g.user.get("email"), job_id, reviewer_email,
-            )
-            return jsonify({"ok": True})
-        else:
-            return jsonify({"error": "job not found for this reviewer"}), 404
-
+        with _REMOVE_JOB_LOCK:
+            return _remove_job(reviewer_email, job_id)
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e)
     except Exception as e:
         logging.error("Remove job failed: %s", e)
         return jsonify({"error": str(e)}), 500
+
+
+def _remove_job(reviewer_email, job_id):
+    """The removal itself, under _REMOVE_JOB_LOCK."""
+    # Only remove from the current snapshot, not old ones
+    snap_id, _ = _latest_snapshot()
+    if not snap_id:
+        return jsonify({"error": "no shift has been published yet"}), 409
+
+    all_shift_docs = roles.list_docs_by_kind("reviewer_shift")
+    removed = False
+
+    for doc in all_shift_docs:
+        doc_data = doc.get("data") or {}
+        # Only process docs for the current snapshot
+        if doc_data.get("shift_snapshot_id") != snap_id:
+            continue
+        if (doc_data.get("reviewer_email") or "").strip().lower() != reviewer_email:
+            continue
+
+        rows = doc_data.get("rows") or []
+        new_rows = [r for r in rows if str(r.get("jobId") or r.get("id") or "") != job_id]
+
+        if len(new_rows) < len(rows):
+            # Job was removed. A copy, not doc_data itself: that's the
+            # dict in the shared cache, and changing it before a PUT that
+            # then failed left this instance showing the job removed.
+            updated = {**doc_data, "rows": new_rows}
+            doc_id = doc.get("id")
+            try:
+                internal_api.put(f"{_STORAGE_PATH}/{doc_id}", json={"data": updated})
+                removed = True
+            except requests.exceptions.HTTPError as e:
+                roles.invalidate_doc_cache("reviewer_shift")
+                return _http_error_response(e)
+            # Just this doc, in place. This used to clear the WHOLE doc
+            # cache (every kind), so the reload right after the X had to
+            # rescan all of Storage under the 60 req/min limit — the
+            # removal itself was quick, the page took ages to show it.
+            roles.cache_upsert_doc("reviewer_shift", {"id": doc_id, "data": updated})
+
+    if removed:
+        logging.info(
+            "POST /api/shifts/remove-job by=%s job=%s reviewer=%s",
+            g.user.get("email"), job_id, reviewer_email,
+        )
+        return jsonify({"ok": True})
+    return jsonify({"error": "job not found for this reviewer"}), 404
 
 
 @app.route("/api/shifts/clear", methods=["POST"])
