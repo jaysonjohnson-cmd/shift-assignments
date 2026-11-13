@@ -87,8 +87,8 @@ def test_credit_uses_bloom_count_from_shift_start(monkeypatch):
 
     def fake_count(job_id, since):
         seen["since"] = since
-        return 17
-    monkeypatch.setattr(main.bloom, "count_reviewed_since", fake_count)
+        return {1: 9, 2: 8}  # two reviewers: too mixed to learn an id from
+    monkeypatch.setattr(main.bloom, "reviewed_since_by_reviewer", fake_count)
 
     snap = {"published_at": PUBLISHED.isoformat()}
     # Stored row says 12, but 17 were actually cleared — credit 17.
@@ -104,8 +104,8 @@ def test_rehanded_job_only_credits_reviews_since_the_last_checkmark(monkeypatch)
         {"id": "me", "job_id": "J1", "completed_at": "2026-09-23T17:00:00+00:00"},
     ])
     seen = {}
-    monkeypatch.setattr(main.bloom, "count_reviewed_since",
-                        lambda job_id, since: seen.setdefault("since", since) and 4)
+    monkeypatch.setattr(main.bloom, "reviewed_since_by_reviewer",
+                        lambda job_id, since: seen.setdefault("since", since) and {7: 4})
 
     snap = {"published_at": PUBLISHED.isoformat()}
     assert main._responses_to_credit("snap1", snap, "r@x.com", "J1", "me") == 4
@@ -114,7 +114,7 @@ def test_rehanded_job_only_credits_reviews_since_the_last_checkmark(monkeypatch)
 
 def test_falls_back_to_stored_count_when_bloom_unreachable(monkeypatch):
     _stub_shift(monkeypatch, [], stored_count=12)
-    monkeypatch.setattr(main.bloom, "count_reviewed_since", lambda job_id, since: None)
+    monkeypatch.setattr(main.bloom, "reviewed_since_by_reviewer", lambda job_id, since: None)
 
     snap = {"published_at": PUBLISHED.isoformat()}
     assert main._responses_to_credit("snap1", snap, "r@x.com", "J1", "me") == 12

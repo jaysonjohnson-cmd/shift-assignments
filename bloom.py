@@ -272,14 +272,23 @@ MAX_REVIEWED_PAGES = 10
 def count_reviewed_since(job_id, since):
     """Response groups on a job a human reviewed at or after `since` (aware
     datetime), across every reviewed outcome. Returns None if Bloom can't be
-    read, so the caller can fall back.
+    read, so the caller can fall back. See reviewed_since_by_reviewer."""
+    by_reviewer = reviewed_since_by_reviewer(job_id, since)
+    return None if by_reviewer is None else sum(by_reviewer.values())
+
+
+def reviewed_since_by_reviewer(job_id, since):
+    """Human reviews on a job at or after `since` (aware datetime), as
+    {FieldAgent reviewer id: count}, across every reviewed outcome. Returns
+    None if Bloom can't be read, so the caller can fall back.
 
     There's no review-date filter on /api/responsegroups, so this sorts by
     review_ts descending and pages until it passes `since` — usually one page
     per status. Nulls sort first, so rows without a review_ts are skipped
-    rather than treated as the end.
+    rather than treated as the end. FieldAgent's automation
+    (SYSTEM_REVIEWER_ID) is left out.
     """
-    count = 0
+    counts = {}
     try:
         for status in REVIEWED_STATUSES:
             page = 1
@@ -303,15 +312,74 @@ def count_reviewed_since(job_id, since):
                     if reviewed_at < since:
                         passed = True
                         break
-                    if rg.get("reviewed_by_id") != SYSTEM_REVIEWER_ID:
-                        count += 1
+                    by = rg.get("reviewed_by_id")
+                    if by != SYSTEM_REVIEWER_ID:
+                        counts[by] = counts.get(by, 0) + 1
                 if passed or len(batch) < PAGE_SIZE:
                     break
                 page += 1
     except Exception as exc:  # noqa: BLE001 — caller falls back to the stored count
         logging.warning("reviewed-count lookup failed for job %s: %s", job_id, exc)
         return None
-    return count
+    return counts
+
+
+# reviews_by_day scans every job's reviews at once. Filtering on submission
+# date is what makes that fast: unfiltered, the -review_ts sort puts millions of
+# never-reviewed legacy rows first, and an unbounded sort took 40s. Reviews of
+# responses submitted longer ago than this are missed.
+REVIEW_SCAN_SUBMITTED_DAYS = 60
+# About 40 pages of approvals is a full day, so this covers two weeks and stops
+# a runaway scan.
+MAX_REVIEW_SCAN_PAGES = 800
+
+
+def reviews_by_day(since, tz):
+    """Every human review across all jobs at or after `since` (aware
+    datetime), bucketed by local day in `tz`:
+    {"YYYY-MM-DD": {reviewer id: {"A": n, "X": n, "P": n}}}. Returns None if
+    Bloom can't be read or the scan runs past its page cap, so the caller
+    keeps what it had rather than storing a short count.
+
+    Like reviewed_since_by_reviewer, but for every job, so it also counts
+    reviews on jobs nobody checks off. FieldAgent's automation is left out.
+    """
+    submitted_from = (since - datetime.timedelta(days=REVIEW_SCAN_SUBMITTED_DAYS)).date()
+    out = {}
+    try:
+        for status in REVIEWED_STATUSES:
+            page = 1
+            while True:
+                if page > MAX_REVIEW_SCAN_PAGES:
+                    logging.warning("review scan hit the %d-page cap", MAX_REVIEW_SCAN_PAGES)
+                    return None
+                resp = internal_api.get("/api/responsegroups", params={
+                    "status": status, "sort": "-review_ts",
+                    "submission_date_from": submitted_from.isoformat(),
+                    "page": page, "per_page": PAGE_SIZE,
+                })
+                batch = resp.get("data", []) if isinstance(resp, dict) else []
+                passed = False
+                for rg in batch:
+                    reviewed_at = _parse_submission_date(rg.get("review_ts"))
+                    if reviewed_at is None:
+                        continue
+                    if reviewed_at < since:
+                        passed = True
+                        break
+                    by = rg.get("reviewed_by_id")
+                    if by is None or by == SYSTEM_REVIEWER_ID:
+                        continue
+                    day = reviewed_at.astimezone(tz).date().isoformat()
+                    per = out.setdefault(day, {}).setdefault(by, {})
+                    per[status] = per.get(status, 0) + 1
+                if passed or len(batch) < PAGE_SIZE:
+                    break
+                page += 1
+    except Exception as exc:  # noqa: BLE001 — caller keeps its last good counts
+        logging.warning("review scan failed: %s", exc)
+        return None
+    return out
 
 
 def _safe_int(value):

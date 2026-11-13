@@ -3708,6 +3708,122 @@ _DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 _MONTH_KEY_RE = re.compile(r"^(\d{4})-(\d{2})$")
 
 
+# ── Review counts straight from Bloom ───────────────────────────────────────
+#
+# The leaderboard's responses used to come only from check-offs, so reviews on
+# a job nobody checked off (released by "Done for the shift", open at the 5:30
+# clear, never assigned in the tool) never counted. Now each reviewer's
+# responses are what Bloom says they reviewed that day, across every job,
+# matched through their learned FieldAgent id (_fa_reviewer_ids). Reviewers
+# not learned yet, and days outside the scan window, keep the check-off count.
+#
+# One `review_day_counts` doc per Central day holds {fa id: {A, X, P}}. The
+# scan runs in the background when the leaderboard is opened: today is
+# refreshed when its doc is older than _REVIEW_SYNC_TTL, and a past day that
+# was never finished is scanned once and marked final. A full day is about 40
+# calls, so opening the board doesn't strain the 60/min limit.
+_REVIEW_DAY_KIND = "review_day_counts"
+_REVIEW_SYNC_TTL = 600  # seconds
+_REVIEW_BACKFILL_DAYS = 14
+_review_sync_lock = threading.Lock()
+
+
+def _review_day_docs(force=False):
+    """{day: doc} for the stored per-day review counts. Concurrent instances
+    can each write a day; the most recently computed one wins."""
+    out = {}
+    for d in roles.list_docs_by_kind(_REVIEW_DAY_KIND, force=force):
+        day = (d.get("data") or {}).get("day")
+        if not day:
+            continue
+        cur = out.get(day)
+        if cur is None or str((d["data"]).get("computed_at") or "") > str(
+                (cur["data"]).get("computed_at") or ""):
+            out[day] = d
+    return out
+
+
+def _review_days_needing_sync(day_keys, now=None):
+    """Days in `day_keys` the scan should (re)compute: today when stale, and
+    any finished day inside the backfill window not yet marked final."""
+    now = now or datetime.datetime.now(_SHIFT_TZ)
+    today = now.date()
+    stored = _review_day_docs()
+    need = []
+    for k in day_keys:
+        try:
+            day = datetime.date.fromisoformat(k)
+        except ValueError:
+            continue
+        if day > today or (today - day).days > _REVIEW_BACKFILL_DAYS:
+            continue
+        data = (stored.get(k) or {}).get("data") or {}
+        if day < today:
+            if not data.get("final"):
+                need.append(k)
+            continue
+        at = _parse_iso_utc(data.get("computed_at"))
+        if at is None or (now - at).total_seconds() > _REVIEW_SYNC_TTL:
+            need.append(k)
+    return need
+
+
+def _sync_review_days(days):
+    """Scan Bloom back to the earliest of `days` and store each day's counts.
+    Single-flight per instance; best-effort."""
+    if not days or not _review_sync_lock.acquire(blocking=False):
+        return
+    try:
+        started = datetime.datetime.now(_SHIFT_TZ)
+        earliest = min(datetime.date.fromisoformat(d) for d in days)
+        since = datetime.datetime.combine(earliest, datetime.time(), tzinfo=_SHIFT_TZ)
+        counts = bloom.reviews_by_day(since, _SHIFT_TZ)
+        if counts is None:
+            return
+        stored = _review_day_docs(force=True)
+        for day in days:
+            doc = {
+                "kind": _REVIEW_DAY_KIND,
+                "day": day,
+                "counts": {str(k): v for k, v in (counts.get(day) or {}).items()},
+                "computed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                # Scanned after the day ended, so nothing more will land on it.
+                "final": datetime.date.fromisoformat(day) < started.date(),
+            }
+            existing = stored.get(day)
+            if existing:
+                internal_api.put(f"{_STORAGE_PATH}/{existing['id']}", json={"data": doc})
+                roles.cache_upsert_doc(_REVIEW_DAY_KIND, {"id": existing["id"], "data": doc})
+            else:
+                resp = internal_api.post(_STORAGE_PATH, json={"data": doc})
+                new_id = (resp.get("data") or {}).get("id")
+                roles.cache_upsert_doc(_REVIEW_DAY_KIND, {"id": new_id, "data": doc})
+    except Exception as exc:  # noqa: BLE001 — the leaderboard falls back to check-offs
+        logging.warning("review day sync failed: %s", exc)
+    finally:
+        _review_sync_lock.release()
+
+
+def _bloom_review_days(day_keys, fa_ids):
+    """{email: {day: {"reviewed": n, "approved": n}}} from the stored day
+    counts, for learned reviewers and days that have been scanned."""
+    by_id = {str(v): e for e, v in fa_ids.items()}
+    stored = _review_day_docs()
+    out = {}
+    for k in day_keys:
+        doc = stored.get(k)
+        if not doc:
+            continue
+        counts = (doc.get("data") or {}).get("counts") or {}
+        for email in fa_ids:
+            per = counts.get(str(fa_ids[email])) or {}
+            out.setdefault(email, {})[k] = {
+                "reviewed": sum(int(n) for n in per.values()),
+                "approved": int(per.get("A", 0)),
+            }
+    return out
+
+
 @app.route("/api/shifts/leaderboard", methods=["GET"])
 def api_shifts_leaderboard():
     """Reviewer leaderboard: jobs completed per reviewer, with a daily
@@ -3803,6 +3919,27 @@ def api_shifts_leaderboard():
             m["days"][i] += row_days[i]
             m["resp_days"][i] += row_resp[i]
 
+    # Responses from Bloom for learned reviewers, on days that were scanned;
+    # the check-off count stays for everything else. A reviewer who reviewed
+    # but never checked anything off shows up too, if they're on the roster.
+    fa_ids = _fa_reviewer_ids()
+    if fa_ids:
+        _run_in_background(_sync_review_days, _review_days_needing_sync(day_keys))
+    from_bloom = _bloom_review_days(day_keys, fa_ids) if fa_ids else {}
+    for email, per_day in from_bloom.items():
+        if email not in merged:
+            if email not in roster or not any(v["reviewed"] for v in per_day.values()):
+                continue
+            merged[email] = {"total": 0, "responses": 0, "days": [0] * n,
+                             "resp_days": [0] * n, "spans": [None] * n}
+        m = merged[email]
+        m["approved_days"] = [None] * n
+        for i, k in enumerate(day_keys):
+            if k in per_day:
+                m["resp_days"][i] = per_day[k]["reviewed"]
+                m["approved_days"][i] = per_day[k]["approved"]
+        m["responses"] = sum(m["resp_days"])
+
     reviewers = []
     for email, m in merged.items():
         info = roster.get(email) or {}
@@ -3824,6 +3961,11 @@ def api_shifts_leaderboard():
             "hours_days": hours_days,
             "timed_responses": sum(
                 m["resp_days"][i] for i in range(n) if m["spans"][i]),
+            # Approvals alone, on days counted from Bloom; None where the day
+            # came from check-offs, which don't split reviews by outcome.
+            "approved_days": m.get("approved_days") or [None] * n,
+            "approved": (sum(v for v in m["approved_days"] if v is not None)
+                         if m.get("approved_days") else None),
         })
     reviewers.sort(key=lambda r: (-r["total"], r["name"]))
 
@@ -3859,6 +4001,69 @@ def _parse_iso_utc(value):
     return ts if ts.tzinfo else ts.replace(tzinfo=datetime.timezone.utc)
 
 
+# Each reviewer's FieldAgent user id, as Bloom's `reviewed_by_id` names them.
+# No API maps a reviewer's email to it, so it's learned from their solo
+# check-offs (_learn_fa_reviewer_id) and kept as one small doc per reviewer.
+# Split jobs need it to credit each sharer their own reviews.
+_FA_ID_KIND = "fa_reviewer_id"
+# A solo check-off teaches the id only when one reviewer did nearly all of the
+# window's reviews and there were enough of them to tell.
+_FA_ID_MIN_REVIEWS = 5
+_FA_ID_MIN_SHARE = 0.9
+
+
+def _fa_reviewer_ids():
+    """{email: FieldAgent reviewer id} for every reviewer learned so far."""
+    out = {}
+    for d in roles.list_docs_by_kind(_FA_ID_KIND):
+        data = d.get("data") or {}
+        email = (data.get("reviewer_email") or "").strip().lower()
+        if email and data.get("fa_id") is not None:
+            out[email] = data["fa_id"]
+    return out
+
+
+def _learn_fa_reviewer_id(email, by_reviewer):
+    """Record `email`'s FieldAgent id from the reviews on a job only they held.
+
+    Most check-offs are solo, so nearly every reviewer is learned within a
+    shift. The latest clear evidence wins: an id that changes hands moves to
+    the reviewer it now points at, so a bad guess corrects itself. Best-effort.
+    """
+    norm = (email or "").strip().lower()
+    total = sum((by_reviewer or {}).values())
+    if not norm or total < _FA_ID_MIN_REVIEWS:
+        return
+    fa_id, n = max(by_reviewer.items(), key=lambda kv: kv[1])
+    if fa_id is None or n < _FA_ID_MIN_SHARE * total:
+        return
+    try:
+        docs = roles.list_docs_by_kind(_FA_ID_KIND)
+        mine = None
+        for d in docs:
+            data = d.get("data") or {}
+            owner = (data.get("reviewer_email") or "").strip().lower()
+            if owner == norm:
+                mine = d
+            elif data.get("fa_id") == fa_id:
+                # Someone else was credited with this id; it's this reviewer's.
+                _try_delete(d["id"])
+                roles.cache_remove_doc(_FA_ID_KIND, d["id"])
+                logging.warning("fa id %s moved from %s to %s", fa_id, owner, norm)
+        doc = {"kind": _FA_ID_KIND, "reviewer_email": norm, "fa_id": fa_id}
+        if mine is not None:
+            if (mine.get("data") or {}).get("fa_id") == fa_id:
+                return
+            internal_api.put(f"{_STORAGE_PATH}/{mine['id']}", json={"data": doc})
+            roles.cache_upsert_doc(_FA_ID_KIND, {"id": mine["id"], "data": doc})
+        else:
+            resp = internal_api.post(_STORAGE_PATH, json={"data": doc})
+            new_id = (resp.get("data") or {}).get("id")
+            roles.cache_upsert_doc(_FA_ID_KIND, {"id": new_id, "data": doc})
+    except Exception as exc:  # noqa: BLE001 — learning must not break a check-off
+        logging.warning("fa id learn failed for %s: %s", norm, exc)
+
+
 def _responses_to_credit(snap_id, snap_data, email, job_id, completion_id, row=None):
     """How many responses a completed job is worth on the leaderboard.
 
@@ -3873,7 +4078,9 @@ def _responses_to_credit(snap_id, snap_data, email, job_id, completion_id, row=N
     new responses arrived is credited only for the new ones, not recounted.
     Falls back to the stored row count if Bloom can't be read.
 
-    A split job (pass its `row`) is credited by _split_responses_to_credit.
+    A solo check-off also teaches the reviewer's FieldAgent id, which split
+    jobs need. A split job (pass its `row`) is credited by
+    _split_responses_to_credit.
     """
     if _split_sharers(row):
         return _split_responses_to_credit(snap_id, snap_data, email, job_id, completion_id, row)
@@ -3889,9 +4096,10 @@ def _responses_to_credit(snap_id, snap_data, email, job_id, completion_id, row=N
         if ts and (since is None or ts > since):
             since = ts
     if since is not None:
-        reviewed = bloom.count_reviewed_since(job_id, since)
-        if reviewed is not None:
-            return reviewed
+        by_reviewer = bloom.reviewed_since_by_reviewer(job_id, since)
+        if by_reviewer is not None:
+            _learn_fa_reviewer_id(email, by_reviewer)
+            return sum(by_reviewer.values())
     for r in (_rows_for_reviewer(snap_id, email) or []):
         if _row_job_key(r) == job_id:
             return int(r.get("unreviewedCount") or 0)
@@ -3901,32 +4109,48 @@ def _responses_to_credit(snap_id, snap_data, email, job_id, completion_id, row=N
 def _split_responses_to_credit(snap_id, snap_data, email, job_id, completion_id, row):
     """Leaderboard credit for one sharer of a split job.
 
-    Bloom counts every human review on the job, not who did it, so crediting
-    each sharer the plain count would pay the job out once per sharer. Instead
-    the reviews not yet credited to a teammate are divided among the sharers
-    still on the job: finishing first takes an even share of what's been done
-    so far, and the last one to finish takes whatever remains. The total paid
-    out matches what Bloom counted; who did slightly more is approximate.
+    Each sharer is credited the reviews Bloom says they did themselves
+    (`reviewed_by_id`, mapped through _fa_reviewer_ids), less anything an
+    earlier check-off of theirs on this job already took. Sharers' work no
+    longer moves between them: it was divided evenly, which on 2026-11-13 gave
+    the first sharer to finish half of what they'd done (46 of 92) and the
+    last one the rest, and held a share for a sharer who never checked off.
+
+    A sharer whose id isn't learned yet falls back to the even division, over
+    only what the learned sharers didn't do.
     """
     sharers = _split_sharers(row)
+    norm = (email or "").strip().lower()
     try:
-        completions = _list_completions_for_snapshot(snap_id)
+        completions = _list_completions_for_snapshot(snap_id, include_superseded=True)
     except requests.exceptions.HTTPError:
         completions = []
-    already = sum(
-        int(c.get("credited_responses") or 0)
-        for c in completions
-        if _completion_job_key(c) == job_id
-        and c.get("id") != completion_id
-        and (c.get("reviewer_email") or "").strip().lower() in sharers
-    )
-    on_job = 1 + len(_open_split_partners(snap_id, email, row, completions))
+    on_this_job = [c for c in completions
+                   if _completion_job_key(c) == job_id and c.get("id") != completion_id]
     since = _parse_iso_utc((snap_data or {}).get("published_at"))
-    reviewed = bloom.count_reviewed_since(job_id, since) if since is not None else None
-    if reviewed is None:
+    by_reviewer = (bloom.reviewed_since_by_reviewer(job_id, since)
+                   if since is not None else None)
+    if by_reviewer is None:
         # Bloom unreachable: an even share of the count at hand-out.
         return -(-int(row.get("unreviewedCount") or 0) // len(sharers))
-    return int(round(max(0, reviewed - already) / on_job))
+
+    def credited_to(who):
+        return sum(int(c.get("credited_responses") or 0) for c in on_this_job
+                   if (c.get("reviewer_email") or "").strip().lower() == who)
+
+    fa_ids = _fa_reviewer_ids()
+    if norm in fa_ids:
+        return max(0, by_reviewer.get(fa_ids[norm], 0) - credited_to(norm))
+
+    # Not learned yet: the old even division, but the learned sharers' own
+    # reviews are theirs whether or not they've checked off.
+    learned = {fa_ids[s] for s in sharers if s in fa_ids}
+    pool = sum(n for rid, n in by_reviewer.items() if rid not in learned)
+    already = sum(credited_to(s) for s in sharers if s not in fa_ids)
+    open_partners = _open_split_partners(snap_id, email, row,
+                                         [c for c in completions if not c.get("superseded_at")])
+    on_job = 1 + sum(1 for p in open_partners if p not in fa_ids)
+    return int(round(max(0, pool - already) / on_job))
 
 
 # ── Staggering split-job opens ──────────────────────────────────────────────

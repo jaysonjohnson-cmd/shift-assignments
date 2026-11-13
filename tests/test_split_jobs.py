@@ -176,7 +176,9 @@ def _live_split_shift(storage, monkeypatch, live_unreviewed, reviewed_total=None
     # No submissions since the split unless a test says otherwise.
     monkeypatch.setattr(main.bloom, "fetch_job_pending_count_before",
                         lambda job_id, cutoff: live_unreviewed)
-    monkeypatch.setattr(main.bloom, "count_reviewed_since", lambda job_id, since: reviewed_total)
+    # Reviewed by an id no sharer is known by, so credit takes the even split.
+    monkeypatch.setattr(main.bloom, "reviewed_since_by_reviewer", lambda job_id, since: (
+        None if reviewed_total is None else {999: reviewed_total}))
     monkeypatch.setattr(main, "_auto_refill_reviewer", lambda *a, **k: [])
     credited = []
     monkeypatch.setattr(main, "_record_review_event",
@@ -248,10 +250,98 @@ def test_last_sharer_is_credited_the_remainder(client, storage, monkeypatch):
     # Alex clears the rest: 100 reviewed in all, 30 already credited to Sam.
     monkeypatch.setattr(main, "_live_unreviewed_count", lambda job_id, force=False: 0)
     monkeypatch.setattr(main.bloom, "fetch_job_pending_count_before", lambda job_id, cutoff: 0)
-    monkeypatch.setattr(main.bloom, "count_reviewed_since", lambda job_id, since: 100)
+    monkeypatch.setattr(main.bloom, "reviewed_since_by_reviewer", lambda job_id, since: {999: 100})
     token_file.write_text(_token(ALEX))
     assert c.post("/api/shifts/my/complete", json={"job_id": "BIG"}).status_code == 201
     assert credited == [(SAM, 30), (ALEX, 70)]
+
+
+def _learned(storage, **ids):
+    for email, fa_id in ids.items():
+        storage.append({"id": f"fa-{email}", "data": {
+            "kind": main._FA_ID_KIND, "reviewer_email": email, "fa_id": fa_id}})
+
+
+def test_sharers_are_credited_their_own_reviews(client, storage, monkeypatch):
+    """Job 1975726 on 2026-11-13: Amber did 88, Elijah 4, then Amber checked
+    off. The even split credited her 46 and gave Elijah the other 42."""
+    c, token_file = client
+    credited = _live_split_shift(storage, monkeypatch, live_unreviewed=60)
+    _learned(storage, **{SAM: 1, ALEX: 2})
+    monkeypatch.setattr(main.bloom, "reviewed_since_by_reviewer",
+                        lambda job_id, since: {1: 88, 2: 4})
+    token_file.write_text(_token(SAM))
+    assert c.post("/api/shifts/my/complete",
+                  json={"job_id": "BIG", "override": True}).status_code == 201
+    monkeypatch.setattr(main, "_live_unreviewed_count", lambda job_id, force=False: 0)
+    monkeypatch.setattr(main.bloom, "fetch_job_pending_count_before", lambda job_id, cutoff: 0)
+    monkeypatch.setattr(main.bloom, "reviewed_since_by_reviewer",
+                        lambda job_id, since: {1: 88, 2: 85})
+    token_file.write_text(_token(ALEX))
+    assert c.post("/api/shifts/my/complete", json={"job_id": "BIG"}).status_code == 201
+    assert credited == [(SAM, 88), (ALEX, 85)]
+
+
+def test_a_sharer_who_never_checks_off_holds_nothing_back(client, storage, monkeypatch):
+    """Job 1975773: Zach finished first while Austin never started. Half of
+    Zach's work was held for Austin and never paid out."""
+    c, token_file = client
+    credited = _live_split_shift(storage, monkeypatch, live_unreviewed=0)
+    _learned(storage, **{SAM: 1, ALEX: 2})
+    monkeypatch.setattr(main.bloom, "reviewed_since_by_reviewer",
+                        lambda job_id, since: {1: 28})
+    token_file.write_text(_token(SAM))
+    assert c.post("/api/shifts/my/complete", json={"job_id": "BIG"}).status_code == 201
+    assert credited == [(SAM, 28)]
+
+
+def test_unlearned_sharer_splits_only_what_learned_sharers_did_not_do(
+        client, storage, monkeypatch):
+    c, token_file = client
+    credited = _live_split_shift(storage, monkeypatch, live_unreviewed=0)
+    _learned(storage, **{SAM: 1})  # Alex's id isn't known yet
+    monkeypatch.setattr(main.bloom, "reviewed_since_by_reviewer",
+                        lambda job_id, since: {1: 50, 999: 30})
+    token_file.write_text(_token(ALEX))
+    assert c.post("/api/shifts/my/complete", json={"job_id": "BIG"}).status_code == 201
+    # Sam's 50 are his; Sam is learned, so Alex doesn't halve the rest with him.
+    assert credited == [(ALEX, 30)]
+
+
+def test_rechecking_a_split_job_credits_only_the_new_reviews(storage, monkeypatch):
+    _learned(storage, **{SAM: 1})
+    monkeypatch.setattr(main, "_list_completions_for_snapshot", lambda *a, **k: [
+        {"id": "old", "job_id": "BIG", "reviewer_email": SAM, "credited_responses": 40,
+         "superseded_at": "x"}])
+    monkeypatch.setattr(main.bloom, "reviewed_since_by_reviewer",
+                        lambda job_id, since: {1: 55})
+    row = _job("BIG", 100, split=[SAM, ALEX])
+    snap = {"published_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+    assert main._split_responses_to_credit("snap1", snap, SAM, "BIG", "me", row) == 15
+
+
+# ---------- learning reviewers' FieldAgent ids ----------
+
+def _fa_ids(storage):
+    return {d["data"]["reviewer_email"]: d["data"]["fa_id"]
+            for d in storage if d["data"].get("kind") == main._FA_ID_KIND}
+
+
+def test_a_solo_check_off_teaches_the_reviewers_id(storage):
+    main._learn_fa_reviewer_id(SAM, {1: 19, 5: 1})
+    assert _fa_ids(storage) == {SAM: 1}
+
+
+def test_too_few_or_too_mixed_reviews_teach_nothing(storage):
+    main._learn_fa_reviewer_id(SAM, {1: 4})
+    main._learn_fa_reviewer_id(SAM, {1: 6, 2: 4})
+    assert _fa_ids(storage) == {}
+
+
+def test_an_id_moves_to_the_reviewer_it_now_points_at(storage):
+    _learned(storage, **{ALEX: 1, SAM: 7})
+    main._learn_fa_reviewer_id(SAM, {1: 10})
+    assert _fa_ids(storage) == {SAM: 1}
 
 
 def test_my_tasks_names_split_partners(client, storage, monkeypatch):

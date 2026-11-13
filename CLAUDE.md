@@ -605,15 +605,45 @@ to let the job sit on several shifts.
   plus `rejectsClearedBy`. Response Search has no `work_max`, so every
   sharer used to see the whole count and work the same rejects. When the
   clearer checks off, the next sharer picks them up.
-- Bloom's reviewed count isn't per-person, so leaderboard credit is divided:
-  each finisher takes an even share of what's not yet credited, the last takes
-  the remainder (`credited_responses` on the completion doc).
+- Leaderboard credit on a split job is each sharer's own reviews: Bloom's
+  `reviewed_by_id`, less what their earlier check-offs on the job already took
+  (`credited_responses` on the completion doc). No API maps an email to that
+  id. `_learn_fa_reviewer_id` learns it from solo check-offs (5+ reviews, 90%+
+  by one id) into `fa_reviewer_id` docs; the latest clear evidence wins, so a
+  wrong guess corrects itself. Credit used to be divided evenly, which on
+  2026-11-13 gave the first sharer half their work (46 of 92) and the last one
+  the rest. It also held a share for a sharer who never checked off. A sharer
+  whose id isn't learned yet still gets the even division, but only over the
+  reviews the learned sharers didn't do.
 - After every sharer finishes, new responses on the job can come back to any of
   them through refill, as a normal unsplit row. That row is written to a later
   part, and `_dedup_rows` keeps the *newest* copy of a job (callers pass rows
   oldest part first, via `_by_part`): keeping the first left the old
   `splitWith`/`splitAt` in charge, so the check-off guard only counted
   responses from before the old split and credit was paid twice.
+
+## Leaderboard counts
+
+**Jobs** come from check-offs (`review_tally` docs, written by
+`_record_review_event`). **Responses** come from Bloom for any reviewer whose
+FieldAgent id is learned (`fa_reviewer_id` docs, see Split JIDs). That's
+everything Bloom says they reviewed that day, across every job, by `reviewed_by_id`.
+Check-off credit missed reviews on jobs nobody checked off: work released at
+close-out, jobs open at the 5:30 clear, and unassigned jobs. A 2026-11-13
+reconcile also found check-off credit counting other people's reviews on a
+reviewer's jobs. Unlearned reviewers, and days outside the 14-day scan window,
+keep the check-off count. `approved` / `approved_days` are the `A` reviews
+alone, and `None` where a day came from check-offs.
+
+`bloom.reviews_by_day` scans `/api/responsegroups` for all jobs with
+`sort=-review_ts`. The `submission_date_from` bound (60 days back) is what makes
+it fast: without it the sort puts millions of never-reviewed legacy rows first
+and took 40s, and reviews of older submissions are missed. One
+`review_day_counts` doc per Central day holds `{fa id: {A, X, P}}`. Opening the
+leaderboard starts a background scan when today's doc is over 10 minutes old,
+or a past day in view isn't `final`. A past day is rescanned once after it ends,
+then left alone. A full day is ~40 calls. The page shows the stored counts, so
+the first view after a gap can be a scan behind.
 
 ## Key Files and Their Roles
 
