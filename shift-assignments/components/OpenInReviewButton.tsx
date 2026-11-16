@@ -147,11 +147,15 @@ export function OpenInReviewButton({ row, size = "md", variant = "default", disa
  * catches up.
  */
 export function OpenedMark({ row }: { row: Row }) {
-  const opened = useOpened(row);
-  if (!opened || row.completedAt) return null;
+  const openedHere = useOpened(row);
+  if (!(openedHere || row.inReviewByMe) || row.completedAt) return null;
   return (
     <span
-      title="You've opened this in Collection Review today"
+      title={
+        row.inReviewByMe
+          ? "You're in review on this in FieldAgent"
+          : "You've opened this in Collection Review today"
+      }
       aria-label="Opened in Review"
       className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-storesight-accent/40 bg-storesight-accent/10 text-storesight-primary dark:border-storesight-accent-light/40 dark:bg-storesight-accent/20 dark:text-storesight-accent-light"
     >

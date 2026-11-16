@@ -7,6 +7,7 @@ import { CLOSE_MY_ASSIGNMENTS_URL } from "@/lib/reviewLink";
 import { useUser } from "@/lib/useUser";
 import { reviewerColor, type Row } from "@/lib/types";
 import { OpenInReviewButton, OpenedMark, isLiveSplit } from "@/components/OpenInReviewButton";
+import { markOpened } from "@/lib/openedReviews";
 import { collectionReviewUrl, projectsWithLiveSplit } from "@/lib/reviewLink";
 import { MarkDoneButton } from "@/components/MarkDoneButton";
 import { Confetti } from "@/components/Confetti";
@@ -120,6 +121,8 @@ function groupByProject(rows: Row[]): Row[] {
       unreviewedCount,
       autoRejected: list.reduce((s, r) => s + (r.autoRejected || 0), 0),
       oldestSubmission,
+      // The card opens the whole project, so being in review on any of it counts.
+      inReviewByMe: list.some((r) => r.inReviewByMe),
       // Per-job rejects, so the badge can link each job's Responses page — the
       // page only filters by job, and the group itself has no jobId.
       extras: {
@@ -970,6 +973,7 @@ function JobLink({
       href={collectionReviewUrl(row)}
       target="_blank"
       rel="noopener noreferrer"
+      onClick={() => markOpened(row)}
       className={className}
       title={`Open Job ${row.jobId} in Collection Review`}
     >

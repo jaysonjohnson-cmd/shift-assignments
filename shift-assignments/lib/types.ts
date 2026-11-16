@@ -33,6 +33,9 @@ export type Row = {
    *  now (not split sharers) — usually a teammate who left without closing
    *  their assignments. */
   inReviewBy?: string[];
+  /** My Tasks only: FieldAgent shows this reviewer in review on the job, so
+   *  they've opened it whichever way they got there. */
+  inReviewByMe?: boolean;
   /** My Tasks only: the project also holds a job the tool excludes (video,
    *  …), so a By-PID card would open it in Collection Review. */
   projectHasExcluded?: boolean;

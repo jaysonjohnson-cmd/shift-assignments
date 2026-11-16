@@ -140,6 +140,15 @@ def test_my_tasks_flags_a_teammate_still_in_review(my_tasks):
     assert "inReviewBy" not in rows["mine"]
 
 
+def test_my_tasks_marks_jobs_i_am_in_review_on(my_tasks):
+    """Drives My Tasks' eye however the job was opened, not just via the
+    Open in Review button in this browser."""
+    rows = {r["jobId"]: r for r in my_tasks.get("/api/shifts/my").get_json()["data"]["rows"]}
+    assert rows["mine"].get("inReviewByMe") is True
+    assert "inReviewByMe" not in rows["plain"]
+    assert "inReviewByMe" not in rows["1975675"]
+
+
 def test_a_failed_top_up_write_reports_nothing_and_keeps_checkmarks(monkeypatch):
     """The refill used to retire old checkmarks up front and report the whole
     batch even when the write then failed."""

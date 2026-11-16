@@ -2541,6 +2541,11 @@ def api_shifts_my():
                 email, also=sharers)
             if others:
                 it["inReviewBy"] = [_fa_display_name(n, roster) for n in others]
+            # The reviewer's own FieldAgent review, however they opened it —
+            # My Tasks' eye otherwise only knows about Open in Review clicks
+            # made in this browser.
+            if any(_fa_name_is(n, email) for n in live.get("activeReviewerNames") or []):
+                it["inReviewByMe"] = True
     # Close-out deletes every row the reviewer had, so rows existing again means
     # someone put them back to work (an admin reassigned, or a new batch landed
     # on this snapshot). Having work outranks the mark: drop it so they get a
