@@ -1,8 +1,8 @@
-"""Read-only diagnostic: dump raw /api/prioritized-jobs records so we can see
+"""Read-only diagnostic: dump raw Prioritized Jobs feed records so we can see
 which field actually holds the FieldAgent job id used by collection-review.
 
 Usage (from repo root, with a fresh dev token):
-    TOOL_SLUG=qc-shift-assignments LOCAL_DEV=1 python3 scripts/inspect_prioritized_job.py
+    FA_API_KEY=... python3 scripts/inspect_prioritized_job.py
 Optionally filter to a needle (project id, job id, or name substring):
     ... python3 scripts/inspect_prioritized_job.py 1632244
 """
@@ -10,13 +10,13 @@ Optionally filter to a needle (project id, job id, or name substring):
 import json
 import sys
 
-import internal_api
+import bloom
 
 NEEDLE = sys.argv[1] if len(sys.argv) > 1 else "1632244"
 
 
 def main():
-    resp = internal_api.get("/api/prioritized-jobs")
+    resp = bloom._post_prioritized_jobs()
     records = resp.get("data") if isinstance(resp, dict) else resp
     records = records or []
     print(f"Total records returned: {len(records)}")

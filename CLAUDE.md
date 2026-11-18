@@ -240,6 +240,9 @@ not which commit is live.
   to call the auto-publish path with an OIDC token. Both must be set or that path
   stays cookie-only (see Automatic shift assignment below).
 - `BLOOM_WARMER=0` — opt out of the background Bloom cache warmer (tests set this)
+- `FA_API_KEY` — Field Agent client API key for the Prioritized Jobs feed
+  (a platform secret on this tool; see "The Prioritized Jobs feed" below).
+  Unset = the feed reads fail with an auth error.
 - `SLACK_ADMIN_USER_ID` — Slack *user* id (`U...`) DM'd when a reviewer closes
   out their shift. Unset = close-out still works, it just doesn't notify.
 
@@ -309,7 +312,18 @@ contents — an earlier change added `/api/shifts/clear` here and the whole suit
 still passed, because nothing asserted what was in it. A valid scheduler token
 must never unlock the rest of the API.
 
-**The Bloom feed is slow.** `/api/prioritized-jobs` is a single unpaginated
+**The Prioritized Jobs feed is a direct Field Agent call.** Since 2026-11-18
+it's `POST https://my.fieldagent.net/admin/fieldagent/prioritizedJobs/api/`
+with `{"api_key": FA_API_KEY}` in the body (`bloom._post_prioritized_jobs`),
+not internal-tool-api's `/api/prioritized-jobs` proxy, which Field Agent
+retired. It's the one sanctioned exception to "no external APIs directly".
+Same response shape (`data` / `count` / `generated_at`). A 401 means the key is
+missing/invalid; a 403 means the key lacks `client_api.view_prioritized_jobs`
+(granted by Jeremy on the FA side). Both raise `bloom.FieldAgentAuthError` and
+are never retried; the warmer backs off 10 minutes. Tests route the POST back
+through the old `internal_api.get` fakes (see `tests/conftest.py`).
+
+**The Bloom feed is slow.** The Prioritized Jobs feed is a single unpaginated
 request, but the upstream ranks ~500 jobs and takes 10-12 seconds. A background
 warmer keeps the 60s cache hot so no user-facing request pays that, concurrent
 misses are single-flighted into one call, and auto-refill reads the warm cache
@@ -736,6 +750,7 @@ curl -H "Authorization: Bearer $(cat ~/.storesight/dev-token)" \
 - ❌ Store sensitive data (passwords, PII, tokens) in Storage API without CTO approval
 - ❌ Deploy to GCP projects other than `storesight-internal-tools`
 - ❌ Call Slack, Google AI, or external APIs directly — use Internal API proxies
+  (sole exception: the Field Agent Prioritized Jobs feed, see above)
 
 ---
 

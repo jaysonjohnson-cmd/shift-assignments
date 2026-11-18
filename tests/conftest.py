@@ -17,6 +17,12 @@ reviewer inside the cooldown window and silently skip its refill. Reset it too.
 The stale-shift purge deletes on a background thread. Tests mock `_try_delete`,
 and a thread outliving that mock would hit real Storage, so run it inline and
 unpaced.
+
+The Prioritized Jobs feed is now a direct POST to Field Agent
+(`bloom._post_prioritized_jobs`). Most tests fake the feed through
+`internal_api.get("/api/prioritized-jobs")` from when it was proxied; rather
+than rewrite every fake, the POST is routed there by default. The real POST is
+covered in tests/test_fa_prioritized_jobs_api.py, which undoes this.
 """
 
 import os
@@ -39,6 +45,7 @@ def _reset_doc_cache(monkeypatch):
     monkeypatch.setattr(internal_api, "get", lambda *a, **k: {"data": []})
     _clear_self_heal_cooldown()
     _run_purge_inline(monkeypatch)
+    _route_feed_through_fakes(monkeypatch)
     yield
     with roles._CACHE_LOCK:
         roles._DOC_CACHE.clear()
@@ -68,3 +75,10 @@ def _run_purge_inline(monkeypatch):
     monkeypatch.setattr(main, "_run_in_background", lambda fn, *a: fn(*a))
     monkeypatch.setattr(main, "_BG_DELETE_INTERVAL", 0)
     main._purge_running = False
+
+
+def _route_feed_through_fakes(monkeypatch):
+    import bloom
+    # Looked up at call time, so a test's own internal_api.get fake applies.
+    monkeypatch.setattr(bloom, "_post_prioritized_jobs",
+                        lambda: internal_api.get("/api/prioritized-jobs"))

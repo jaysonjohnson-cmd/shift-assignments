@@ -912,7 +912,11 @@ def api_shifts_auto_publish():
         if not batch:
             return jsonify({"skipped": True, "reason": f"nobody is scheduled{label}"}), 200
 
-        rows = bloom.fetch_prioritized_jobs(status=bloom.DEFAULT_STATUS)
+        try:
+            rows = bloom.fetch_prioritized_jobs(status=bloom.DEFAULT_STATUS)
+        except bloom.FieldAgentAuthError as exc:
+            logging.error("Auto-publish refused: %s", exc)
+            return jsonify({"error": f"{exc} Nothing was published.", "auth": True}), 503
         if not rows:
             return jsonify({"error": "no jobs available to publish"}), 400
 
@@ -1348,6 +1352,8 @@ def api_bloom_jobs():
     try:
         rows = bloom.fetch_prioritized_jobs(status=status, include_aged=include_aged,
                                             use_cache=not force)
+    except bloom.FieldAgentAuthError as e:
+        return jsonify({"error": str(e), "auth": True}), 502
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e, source="bloom api")
 

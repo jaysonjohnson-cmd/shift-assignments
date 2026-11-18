@@ -23,6 +23,8 @@ import threading
 import time
 from zoneinfo import ZoneInfo
 
+import requests
+
 import internal_api
 
 # No status filtering needed — /api/prioritized-jobs only returns jobs with
@@ -41,7 +43,7 @@ def is_excluded_client(client):
 _CACHE = {"fetched_at": 0.0, "rows": []}
 _CACHE_TTL_SECONDS = 60
 
-# /api/prioritized-jobs is a single unpaginated request, but the upstream ranks
+# The Prioritized Jobs feed is a single unpaginated request, but the upstream ranks
 # ~500 jobs per call and takes 10-12 seconds to answer. Request count is not the
 # problem here; latency is. Two things keep that off any user-facing request:
 #
@@ -51,6 +53,7 @@ _CACHE_TTL_SECONDS = 60
 #     one upstream call instead of N of them (a burst of reviewers finishing
 #     around the same time used to mean a 10-12s call each).
 _WARMER_INTERVAL_SECONDS = 45   # < _CACHE_TTL_SECONDS so the cache never expires
+_WARMER_AUTH_RETRY_SECONDS = 600  # after a 401/403: a config fix, not a blip
 _FETCH_LOCK = threading.Lock()
 _WARMER_STARTED = False
 _WARMER_LOCK = threading.Lock()
@@ -64,6 +67,11 @@ def _warmer_loop():
             fetch_prioritized_jobs(use_cache=False)
             retry_delay = 15
             time.sleep(_WARMER_INTERVAL_SECONDS)
+        except FieldAgentAuthError as exc:
+            # Config problem (bad key / missing grant): no fast retry, just look
+            # again occasionally so a fixed key or new grant is picked up.
+            logging.error("bloom warmer: %s", exc)
+            time.sleep(_WARMER_AUTH_RETRY_SECONDS)
         except Exception as exc:  # noqa: BLE001 — warmer must never die
             logging.warning("bloom warmer refresh failed: %s", exc)
             time.sleep(retry_delay)
@@ -189,12 +197,51 @@ def _g(d, *keys):
     return ""
 
 
+# The Prioritized Jobs feed is called on Field Agent directly with a client API
+# key, not through internal-tool-api's /api/prioritized-jobs proxy (retired by
+# Field Agent, 2026-11). The key arrives as the FA_API_KEY secret and goes in
+# the JSON body; there is no Authorization header. Response shape is unchanged.
+FA_PRIORITIZED_JOBS_URL = os.environ.get(
+    "FA_PRIORITIZED_JOBS_URL",
+    "https://my.fieldagent.net/admin/fieldagent/prioritizedJobs/api/",
+)
+_FA_PRIORITIZED_JOBS_TIMEOUT = 60  # upstream ranks ~500 jobs, 10-12s typical
+
+
+class FieldAgentAuthError(RuntimeError):
+    """FA rejected the client API key (401) or the key lacks the feed's
+    permission (403). A configuration problem, not a transient one: don't retry."""
+
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+
+
+def _post_prioritized_jobs():
+    """POST to Field Agent's Prioritized Jobs API and return the parsed payload."""
+    key = (os.environ.get("FA_API_KEY") or "").strip()
+    if not key:
+        raise FieldAgentAuthError(401, "FA_API_KEY is not set, so the Prioritized "
+                                       "Jobs feed can't be read.")
+    resp = requests.post(FA_PRIORITIZED_JOBS_URL, json={"api_key": key},
+                         timeout=_FA_PRIORITIZED_JOBS_TIMEOUT)
+    if resp.status_code == 401:
+        raise FieldAgentAuthError(401, "Field Agent rejected FA_API_KEY (401): missing, "
+                                       "invalid or inactive. Check the secret is current.")
+    if resp.status_code == 403:
+        raise FieldAgentAuthError(403, "FA_API_KEY isn't permitted to read Prioritized "
+                                       "Jobs (403): it needs client_api.view_prioritized_jobs "
+                                       "granted on the Field Agent side (Jeremy).")
+    resp.raise_for_status()
+    return resp.json()
+
+
 def _fetch_prioritized_jobs_raw():
-    """Fetch jobs from /api/prioritized-jobs (unpaginated, pre-prioritized).
+    """Fetch the Prioritized Jobs feed (unpaginated, pre-prioritized).
 
     Returns list of job records already ranked by FA-web's algorithm.
     """
-    resp = internal_api.get("/api/prioritized-jobs")
+    resp = _post_prioritized_jobs()
     return resp.get("data", []) if isinstance(resp, dict) else []
 
 
