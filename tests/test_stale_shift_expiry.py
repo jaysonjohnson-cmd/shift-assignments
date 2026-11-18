@@ -152,6 +152,7 @@ def test_purge_does_not_block_on_deletes(monkeypatch):
     _seed_cache("completion", [])
     _seed_cache("shift_closeout", [])
     _seed_cache("checkoff_log", [])
+    _seed_cache("checkoff_day", [])
 
     assert main._purge_stale_shift_docs() == (1, 1, 0)
     assert len(started) == 1
@@ -173,6 +174,7 @@ def test_purge_keeps_the_cache_warm(monkeypatch):
     _seed_cache("shift_closeout", [])
     _seed_cache("split_open", [])
     _seed_cache("checkoff_log", [])
+    _seed_cache("checkoff_day", [])
 
     main._purge_stale_shift_docs()
 

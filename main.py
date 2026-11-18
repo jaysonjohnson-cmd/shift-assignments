@@ -1983,11 +1983,11 @@ def _purge_stale_shift_docs():
             stale_ids.add(doc.get("id"))
     # The check-off log outlives shifts by design, so it ages out on its own
     # clock rather than with a stale snapshot.
-    expired_logs = _expired_checkoff_log_ids()
+    expired_logs = _expired_checkoff_log_docs()
     if not stale_ids and not expired_logs:
         return 0, 0, 0
 
-    queued = [(CHECKOFF_LOG_KIND, doc_id) for doc_id in expired_logs]  # (kind, doc_id), deletion order
+    queued = list(expired_logs)  # (kind, doc_id), deletion order
     for doc in roles.list_docs_by_kind("reviewer_shift"):
         data = doc.get("data") or {}
         if data.get("shift_snapshot_id") in stale_ids:
@@ -4699,33 +4699,89 @@ def api_shifts_list_completions():
 
 # The Check-offs tab's history. Completion docs can't hold it: clearing a
 # shift (End shift, the 5:30 PM auto-clear) deletes them, and the next day's
-# first publish purges what's left. So every checkmark also writes one of
-# these, which only ages out — CHECKOFF_LOG_DAYS days, today included.
-CHECKOFF_LOG_KIND = "checkoff_log"
+# first publish purges what's left. So every checkmark is also logged here,
+# and the log only ages out — CHECKOFF_LOG_DAYS days, today included.
+#
+# One `checkoff_day` doc per reviewer per local day holds that day's entries
+# (a second doc starts when one nears the 50 KB Storage cap). It used to be
+# one `checkoff_log` doc per checkmark: 400-850 a day, 6,000+ docs over the
+# two weeks — 85% of the namespace. Every forced read scans the whole
+# namespace, a check-off does several, and at 8 pages a scan they ate the
+# 60 req/min budget and queued every request behind them (2026-11-18:
+# /health answering in 43s). Legacy `checkoff_log` docs are still read and
+# aged out; scripts/migrate_checkoff_log.py converts them.
+CHECKOFF_LOG_KIND = "checkoff_log"   # legacy, one doc per checkmark
+CHECKOFF_DAY_KIND = "checkoff_day"
 CHECKOFF_LOG_DAYS = 14
+_CHECKOFF_DAY_MAX_BYTES = 40_000     # under Storage's 50 KB per doc
+_CHECKOFF_ENTRY_FIELDS = ("completion_id", "shift_snapshot_id", "job_id", "job_name",
+                          "project_id", "completed_at", "overridden", "note")
+# Serializes this instance's read-modify-writes of a day doc. Another instance
+# can still race one; the cost is a lost history line, never a lost check-off.
+_checkoff_log_lock = threading.Lock()
 
 
-def _log_checkoff(completion_id, completion):
-    """Record a checkmark in the check-off log. Best-effort: the log must
-    never fail the check-off itself."""
-    day = _local_shift_date(completion.get("completed_at"))
-    entry = {
-        "kind": CHECKOFF_LOG_KIND,
+def _checkoff_entry(completion_id, completion):
+    """The compact entry a day doc holds for one checkmark."""
+    return {
         "completion_id": completion_id,
         "shift_snapshot_id": completion.get("shift_snapshot_id"),
-        "reviewer_email": completion.get("reviewer_email"),
         "job_id": completion.get("job_id"),
         "job_name": completion.get("job_name") or "",
         "project_id": completion.get("project_id") or "",
         "completed_at": completion.get("completed_at"),
-        "local_date": day.isoformat() if day else "",
         "overridden": bool(completion.get("overridden")),
         "note": completion.get("note") or "",
     }
+
+
+def _fetch_doc_data(doc_id):
+    """A doc's data straight from Storage, or None when it's gone."""
     try:
-        resp = internal_api.post(_STORAGE_PATH, json={"data": entry})
-        roles.cache_upsert_doc(
-            CHECKOFF_LOG_KIND, {"id": (resp.get("data") or {}).get("id"), "data": entry})
+        resp = internal_api.get(f"{_STORAGE_PATH}/{doc_id}")
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code == 404:
+            return None
+        raise
+    return ((resp or {}).get("data") or {}).get("data")
+
+
+def _log_checkoff(completion_id, completion):
+    """Record a checkmark in the check-off log. Best-effort: the log must
+    never fail the check-off itself.
+
+    Appends to the reviewer's day doc, re-read by id first (one call) so a
+    write from another instance isn't overwritten by a stale cached copy.
+    A doc the cache doesn't know about just means a second doc for that
+    day — readers merge them."""
+    day = _local_shift_date(completion.get("completed_at"))
+    email = (completion.get("reviewer_email") or "").strip().lower()
+    entry = _checkoff_entry(completion_id, completion)
+    day_iso = day.isoformat() if day else ""
+    try:
+        with _checkoff_log_lock:
+            for doc in roles.list_docs_by_kind(CHECKOFF_DAY_KIND):
+                data = doc.get("data") or {}
+                if data.get("reviewer_email") != email or data.get("local_date") != day_iso:
+                    continue
+                fresh = _fetch_doc_data(doc.get("id"))
+                if fresh is None:
+                    roles.cache_remove_doc(CHECKOFF_DAY_KIND, doc.get("id"))
+                    continue
+                entries = list(fresh.get("entries") or [])
+                if any(e.get("completion_id") == completion_id for e in entries):
+                    return
+                if len(json.dumps(entries + [entry])) > _CHECKOFF_DAY_MAX_BYTES:
+                    continue
+                fresh = {**fresh, "entries": entries + [entry]}
+                internal_api.put(f"{_STORAGE_PATH}/{doc.get('id')}", json={"data": fresh})
+                roles.cache_upsert_doc(CHECKOFF_DAY_KIND, {"id": doc.get("id"), "data": fresh})
+                return
+            fresh = {"kind": CHECKOFF_DAY_KIND, "reviewer_email": email,
+                     "local_date": day_iso, "entries": [entry]}
+            resp = internal_api.post(_STORAGE_PATH, json={"data": fresh})
+            roles.cache_upsert_doc(
+                CHECKOFF_DAY_KIND, {"id": (resp.get("data") or {}).get("id"), "data": fresh})
     except Exception as exc:  # noqa: BLE001 — best-effort
         logging.warning("check-off log write failed for completion %s: %s", completion_id, exc)
 
@@ -4736,13 +4792,50 @@ def _unlog_checkoff(completion_id):
     try:
         # Forced: the entry may have been written on another instance, and a
         # warm-cache miss left it behind — still listed, and still counting as
-        # a check-off.
-        for doc in roles.list_docs_by_kind(CHECKOFF_LOG_KIND, force=True):
+        # a check-off. One forced scan refreshes both kinds.
+        day_docs = roles.list_docs_by_kind(CHECKOFF_DAY_KIND, force=True)
+        for doc in roles.list_docs_by_kind(CHECKOFF_LOG_KIND):
             if (doc.get("data") or {}).get("completion_id") == completion_id:
                 _try_delete(doc.get("id"))
                 roles.cache_remove_doc(CHECKOFF_LOG_KIND, doc.get("id"))
+        for doc in day_docs:
+            if not any(e.get("completion_id") == completion_id
+                       for e in (doc.get("data") or {}).get("entries") or []):
+                continue
+            with _checkoff_log_lock:
+                fresh = _fetch_doc_data(doc.get("id"))
+                if fresh is None:
+                    roles.cache_remove_doc(CHECKOFF_DAY_KIND, doc.get("id"))
+                    continue
+                entries = [e for e in fresh.get("entries") or []
+                           if e.get("completion_id") != completion_id]
+                if entries:
+                    fresh = {**fresh, "entries": entries}
+                    internal_api.put(f"{_STORAGE_PATH}/{doc.get('id')}", json={"data": fresh})
+                    roles.cache_upsert_doc(CHECKOFF_DAY_KIND, {"id": doc.get("id"), "data": fresh})
+                else:
+                    _try_delete(doc.get("id"))
+                    roles.cache_remove_doc(CHECKOFF_DAY_KIND, doc.get("id"))
     except Exception as exc:  # noqa: BLE001 — best-effort
         logging.warning("check-off log delete failed for completion %s: %s", completion_id, exc)
+
+
+def _checkoff_log_entries(day_iso):
+    """Every logged checkmark on one local day, from both doc shapes, each
+    once (by completion id) — a migration in progress has some in both."""
+    out = {}
+    for doc in roles.list_docs_by_kind(CHECKOFF_LOG_KIND):
+        data = doc.get("data") or {}
+        if data.get("local_date") == day_iso:
+            out[data.get("completion_id") or doc.get("id")] = {"id": doc.get("id"), **data}
+    for doc in roles.list_docs_by_kind(CHECKOFF_DAY_KIND):
+        data = doc.get("data") or {}
+        if data.get("local_date") != day_iso:
+            continue
+        for e in data.get("entries") or []:
+            out[e.get("completion_id") or f"{doc.get('id')}:{e.get('job_id')}"] = {
+                **e, "reviewer_email": data.get("reviewer_email"), "local_date": day_iso}
+    return list(out.values())
 
 
 def _checkoff_log_window():
@@ -4751,14 +4844,16 @@ def _checkoff_log_window():
     return today - datetime.timedelta(days=CHECKOFF_LOG_DAYS - 1), today
 
 
-def _expired_checkoff_log_ids():
+def _expired_checkoff_log_docs():
+    """[(kind, doc id)] for log docs older than the window, both shapes."""
     oldest, _ = _checkoff_log_window()
     out = []
-    for doc in roles.list_docs_by_kind(CHECKOFF_LOG_KIND):
-        day = (doc.get("data") or {}).get("local_date") or ""
-        # A missing date sorts first, so an undatable entry ages out too.
-        if day < oldest.isoformat():
-            out.append(doc.get("id"))
+    for kind in (CHECKOFF_LOG_KIND, CHECKOFF_DAY_KIND):
+        for doc in roles.list_docs_by_kind(kind):
+            day = (doc.get("data") or {}).get("local_date") or ""
+            # A missing date sorts first, so an undatable entry ages out too.
+            if day < oldest.isoformat():
+                out.append((kind, doc.get("id")))
     return out
 
 
@@ -4792,11 +4887,7 @@ def api_shifts_checkoffs():
     window = {"oldest": oldest.isoformat(), "newest": today.isoformat()}
 
     try:
-        entries = [
-            {"id": d.get("id"), **(d.get("data") or {})}
-            for d in roles.list_docs_by_kind(CHECKOFF_LOG_KIND)
-            if (d.get("data") or {}).get("local_date") == day.isoformat()
-        ]
+        entries = _checkoff_log_entries(day.isoformat())
     except requests.exceptions.HTTPError as e:
         return _http_error_response(e)
 

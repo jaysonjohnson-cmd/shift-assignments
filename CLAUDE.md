@@ -622,6 +622,22 @@ to let the job sit on several shifts.
   `splitWith`/`splitAt` in charge, so the check-off guard only counted
   responses from before the old split and credit was paid twice.
 
+## Check-off log and Storage scan cost
+
+The Check-offs tab reads a 14-day log kept as **one `checkoff_day` doc per
+reviewer per local day** (entries list; a second doc starts near 40 KB). It
+used to be one `checkoff_log` doc per checkmark: 6,000+ docs, 85% of the
+namespace. Every `force=True` read scans the *whole* namespace, a check-off
+does several, and at 8 pages a scan they ate the 60 req/min budget. With one
+gunicorn worker and 8 threads, everything queued behind them: on 2026-11-18
+`/health` took 43s, My Tasks crawled and checked-off cards hung.
+
+So keep per-event docs out of Storage — anything written per click, per job
+or per response should be folded into a per-day or per-reviewer doc. The
+namespace size is the cost of every forced read. Legacy `checkoff_log` docs
+are still read and aged out; `scripts/migrate_checkoff_log.py` converts them
+(run only after the new code is live).
+
 ## Leaderboard counts
 
 **Jobs** come from check-offs (`review_tally` docs, written by

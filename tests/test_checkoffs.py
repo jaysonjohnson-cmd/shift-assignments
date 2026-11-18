@@ -9,6 +9,7 @@ import os
 
 import jwt
 import pytest
+import requests
 
 os.environ["LOCAL_DEV"] = "1"
 
@@ -55,8 +56,28 @@ def storage(monkeypatch):
         docs[:] = [d for d in docs if d["id"] != doc_id]
         return {"data": {}}
 
+    def get(path, params=None):
+        doc_id = path.rsplit("/", 1)[-1]
+        for d in docs:
+            if d["id"] == doc_id:
+                return {"data": {"id": doc_id, "data": d["data"]}}
+        resp = requests.Response()
+        resp.status_code = 404
+        raise requests.exceptions.HTTPError(response=resp)
+
+    def put(path, json=None):
+        doc_id = path.rsplit("/", 1)[-1]
+        for d in docs:
+            if d["id"] == doc_id:
+                d["data"] = json["data"]
+        return {"data": {"id": doc_id}}
+
     monkeypatch.setattr(internal_api, "post", post)
+    monkeypatch.setattr(internal_api, "get", get)
+    monkeypatch.setattr(internal_api, "put", put)
     monkeypatch.setattr(internal_api, "delete", delete)
+    monkeypatch.setattr(roles, "cache_upsert_doc", lambda *a, **k: None)
+    monkeypatch.setattr(roles, "cache_remove_doc", lambda *a, **k: None)
     monkeypatch.setattr(roles, "list_docs_by_kind", lambda kind, force=False: [
         d for d in reversed(docs) if (d["data"] or {}).get("kind") == kind])
     monkeypatch.setattr(roles, "is_admin", lambda email: email == BOSS)
@@ -183,28 +204,78 @@ def _kind(storage, kind):
     return [d for d in storage if d["data"]["kind"] == kind]
 
 
+def _entries(storage):
+    """Every logged checkmark across the day docs, with its doc's reviewer/day."""
+    return [{**e, "reviewer_email": d["data"]["reviewer_email"],
+             "local_date": d["data"]["local_date"]}
+            for d in _kind(storage, "checkoff_day") for e in d["data"]["entries"]]
+
+
 def test_checking_off_writes_a_log_entry(client, storage, monkeypatch):
     c, token_file = client
     _check_off(c, token_file, storage, monkeypatch)
-    (log,) = _kind(storage, "checkoff_log")
+    assert _kind(storage, "checkoff_log") == []
+    (day_doc,) = _kind(storage, "checkoff_day")
+    (entry,) = _entries(storage)
     (comp,) = _kind(storage, "completion")
-    assert log["data"]["completion_id"] == comp["id"]
-    assert log["data"]["local_date"] == _today().isoformat()
-    assert log["data"]["job_name"] == "Shelf photos"
+    assert entry["completion_id"] == comp["id"]
+    assert entry["local_date"] == _today().isoformat()
+    assert entry["reviewer_email"] == SAM
+    assert entry["job_name"] == "Shelf photos"
     assert [x["jobId"] for x in _checkoffs(c)] == ["J3"]  # listed once, not twice
+
+
+def test_a_reviewers_day_shares_one_doc(client, storage, monkeypatch):
+    """The point of the day doc: N checkmarks are one Storage doc, not N."""
+    c, token_file = client
+    _check_off(c, token_file, storage, monkeypatch, job_id="J3")
+    _check_off(c, token_file, storage, monkeypatch, job_id="J4")
+    assert len(_kind(storage, "checkoff_day")) == 1
+    assert sorted(e["job_id"] for e in _entries(storage)) == ["J3", "J4"]
+
+
+def test_a_full_day_doc_starts_another(storage, monkeypatch):
+    monkeypatch.setattr(main, "_CHECKOFF_DAY_MAX_BYTES", 400)
+    at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    for i in range(4):
+        main._log_checkoff(f"c{i}", {"reviewer_email": SAM, "job_id": f"J{i}",
+                                     "completed_at": at, "job_name": "x" * 60})
+    assert len(_kind(storage, "checkoff_day")) > 1
+    assert sorted(e["completion_id"] for e in _entries(storage)) == ["c0", "c1", "c2", "c3"]
+
+
+def test_logging_the_same_completion_twice_keeps_one(storage):
+    at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    for _ in range(2):
+        main._log_checkoff("c1", {"reviewer_email": SAM, "job_id": "J1", "completed_at": at})
+    assert len(_entries(storage)) == 1
 
 
 def test_log_survives_the_shift_being_cleared(client, storage, monkeypatch):
     c, token_file = client
     _check_off(c, token_file, storage, monkeypatch)
-    storage[:] = [d for d in storage if d["data"]["kind"] == "checkoff_log"]
+    storage[:] = [d for d in storage if d["data"]["kind"] == "checkoff_day"]
     (only,) = _checkoffs(c)
     assert only["reviewerEmail"] == SAM and only["jobName"] == "Shelf photos"
 
 
 def test_unchecking_removes_the_log_entry(client, storage, monkeypatch):
     c, token_file = client
+    _check_off(c, token_file, storage, monkeypatch, job_id="J3")
+    _check_off(c, token_file, storage, monkeypatch, job_id="J4")
+    token_file.write_text(_token(SAM))
+    c.delete("/api/shifts/my/complete/J3")
+    assert [e["job_id"] for e in _entries(storage)] == ["J4"]
+    c.delete("/api/shifts/my/complete/J4")
+    assert _kind(storage, "checkoff_day") == []  # an emptied day doc is deleted
+
+
+def test_unchecking_removes_a_legacy_log_entry(client, storage, monkeypatch):
+    c, token_file = client
     _check_off(c, token_file, storage, monkeypatch)
+    (comp,) = _kind(storage, "completion")
+    storage[:] = [d for d in storage if d["data"]["kind"] != "checkoff_day"]
+    _log(storage, SAM, "J3", _today(), completion_id=comp["id"])
     token_file.write_text(_token(SAM))
     c.delete("/api/shifts/my/complete/J3")
     assert _kind(storage, "checkoff_log") == []
@@ -215,11 +286,31 @@ def test_an_earlier_day_reads_from_the_log(client, storage):
     yesterday = _today() - datetime.timedelta(days=1)
     _log(storage, ALEX, "J8", yesterday, job_name="Old job", overridden=True)
     _log(storage, SAM, "J9", _today() - datetime.timedelta(days=2))
+    storage.append({"id": "day-1", "data": {
+        "kind": "checkoff_day", "reviewer_email": SAM,
+        "local_date": yesterday.isoformat(), "entries": [
+            {"completion_id": "cX", "job_id": "J10", "job_name": "New shape",
+             "completed_at": f"{yesterday.isoformat()}T16:00:00+00:00"}]}})
     data = c.get(f"/api/shifts/checkoffs?date={yesterday.isoformat()}").get_json()["data"]
-    (only,) = data["checkoffs"]
-    assert only["jobName"] == "Old job" and only["overridden"] is True
-    assert only["unreviewedNow"] is None  # live counts are today only
+    by_job = {x["jobId"]: x for x in data["checkoffs"]}
+    assert set(by_job) == {"J8", "J10"}
+    assert by_job["J8"]["jobName"] == "Old job" and by_job["J8"]["overridden"] is True
+    assert by_job["J10"]["jobName"] == "New shape" and by_job["J10"]["reviewerEmail"] == SAM
+    assert by_job["J8"]["unreviewedNow"] is None  # live counts are today only
     assert data["window"]["newest"] == _today().isoformat()
+
+
+def test_a_migrated_entry_in_both_shapes_is_listed_once(client, storage):
+    c, _ = client
+    yesterday = _today() - datetime.timedelta(days=1)
+    _log(storage, SAM, "J8", yesterday, completion_id="c8")
+    storage.append({"id": "day-1", "data": {
+        "kind": "checkoff_day", "reviewer_email": SAM,
+        "local_date": yesterday.isoformat(), "entries": [
+            {"completion_id": "c8", "job_id": "J8",
+             "completed_at": f"{yesterday.isoformat()}T15:00:00+00:00"}]}})
+    data = c.get(f"/api/shifts/checkoffs?date={yesterday.isoformat()}").get_json()["data"]
+    assert [x["jobId"] for x in data["checkoffs"]] == ["J8"]
 
 
 def test_dates_outside_two_weeks_are_refused(client, storage):
@@ -234,5 +325,10 @@ def test_dates_outside_two_weeks_are_refused(client, storage):
 def test_purge_drops_log_entries_older_than_two_weeks(storage):
     _log(storage, SAM, "OLD", _today() - datetime.timedelta(days=14))
     _log(storage, SAM, "KEEP", _today() - datetime.timedelta(days=13))
+    for days, doc_id in ((14, "day-old"), (13, "day-keep")):
+        storage.append({"id": doc_id, "data": {
+            "kind": "checkoff_day", "reviewer_email": SAM, "entries": [],
+            "local_date": (_today() - datetime.timedelta(days=days)).isoformat()}})
     main._purge_stale_shift_docs()
     assert [d["data"]["job_id"] for d in _kind(storage, "checkoff_log")] == ["KEEP"]
+    assert [d["id"] for d in _kind(storage, "checkoff_day")] == ["day-keep"]
