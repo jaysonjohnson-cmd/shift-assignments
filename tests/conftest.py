@@ -43,6 +43,11 @@ def _reset_doc_cache(monkeypatch):
     with roles._CACHE_LOCK:
         roles._DOC_CACHE.clear()
     monkeypatch.setattr(internal_api, "get", lambda *a, **k: {"data": []})
+    roles._READ_STATE.failed = False
+    # Writes never leave a test: one that forgets to fake them fails loudly
+    # here rather than reaching production Storage with the dev token.
+    for name in ("post", "put", "delete"):
+        monkeypatch.setattr(internal_api, name, _no_network_write(name))
     _clear_self_heal_cooldown()
     _run_purge_inline(monkeypatch)
     _route_feed_through_fakes(monkeypatch)
@@ -50,6 +55,12 @@ def _reset_doc_cache(monkeypatch):
     with roles._CACHE_LOCK:
         roles._DOC_CACHE.clear()
     _clear_self_heal_cooldown()
+
+
+def _no_network_write(name):
+    def refuse(path, *a, **k):
+        raise RuntimeError(f"test made an unfaked internal_api.{name}({path!r})")
+    return refuse
 
 
 def _clear_self_heal_cooldown():

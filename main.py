@@ -1062,30 +1062,24 @@ def api_shifts_auto_clear():
         logging.info("Auto-clear: no shift to clear")
         return jsonify({"data": {"cleared_rows": 0, "cleared_completions": 0}})
 
-    cleared_rows = 0
-    cleared_completions = 0
+    by_scheduler = (g.user.get("email") or "").strip().lower() in _OIDC_SERVICE_ACCOUNTS
     try:
-        for doc in roles.list_docs_by_kind("reviewer_shift"):
-            data = doc.get("data") or {}
-            if data.get("shift_snapshot_id") != snap_id:
-                continue
-            cleared_rows += len(data.get("rows") or [])
-            _try_delete(doc.get("id"))
-        for doc in roles.list_docs_by_kind("completion"):
-            if ((doc.get("data") or {}).get("shift_snapshot_id")) != snap_id:
-                continue
-            _try_delete(doc.get("id"))
-            cleared_completions += 1
-        for doc in roles.list_docs_by_kind("shift_closeout"):
-            if ((doc.get("data") or {}).get("shift_snapshot_id")) == snap_id:
-                _try_delete(doc.get("id"))
-        _try_delete(snap_id)
-    except requests.exceptions.HTTPError as e:
-        return _http_error_response(e)
+        cleared_rows, cleared_completions = _end_shift(snap_id)
+    except (ShiftEndIncomplete, roles.StorageReadError) as e:
+        roles.invalidate_doc_cache(
+            "shift_snapshot", "reviewer_shift", "completion", "shift_closeout")
+        logging.warning("Auto-clear incomplete, shift kept: %s", e)
+        if not by_scheduler:
+            _notify_admin_shift_ended(g.user.get("email"), 0, "end-of-day clear", error=str(e))
+        # 503 so Cloud Scheduler retries it.
+        return jsonify({"error": f"The shift wasn't fully cleared ({e}), so it was kept. "
+                                 "Try again in a moment."}), 503
 
     roles.invalidate_doc_cache(
         "shift_snapshot", "reviewer_shift", "completion", "shift_closeout"
     )
+    if not by_scheduler:
+        _notify_admin_shift_ended(g.user.get("email"), cleared_rows, "end-of-day clear")
     logging.info(
         "POST /api/shifts/auto-clear by=%s snapshot=%s rows=%d completions=%d",
         g.user.get("email"), snap_id, cleared_rows, cleared_completions,
@@ -1473,6 +1467,109 @@ def _try_delete(doc_id):
         internal_api.delete(f"{_STORAGE_PATH}/{doc_id}")
     except Exception:  # noqa: BLE001 — rollback is best-effort
         logging.warning("rollback delete failed for doc_id=%s", doc_id)
+
+
+def _delete_doc(doc_id):
+    """Delete one Storage doc. True if it's gone (a 404 counts: someone got
+    there first), False if the delete failed. Never raises."""
+    if not doc_id:
+        return True
+    try:
+        internal_api.delete(f"{_STORAGE_PATH}/{doc_id}")
+        return True
+    except requests.exceptions.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            return True
+        logging.warning("delete failed for doc_id=%s: %s", doc_id, exc)
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("delete failed for doc_id=%s: %s", doc_id, exc)
+    return False
+
+
+class ShiftEndIncomplete(Exception):
+    """Some of a shift's assignments couldn't be deleted, so it was kept."""
+
+    def __init__(self, failed, cleared_rows, cleared_completions):
+        super().__init__(f"{failed} assignment doc(s) couldn't be deleted")
+        self.failed = failed
+        self.cleared_rows = cleared_rows
+        self.cleared_completions = cleared_completions
+
+
+def _end_shift(snap_id):
+    """Delete a whole shift: every reviewer's rows, its completions and
+    close-out marks, then the snapshot. Returns (cleared_rows,
+    cleared_completions).
+
+    All or nothing for the part that matters. The rows are read straight from
+    Storage, not the warm cache, and the snapshot goes only once every
+    reviewer_shift doc is confirmed gone. On 2026-11-19 two clears read a
+    cache that was missing the newest assignments (or had their deletes
+    fail quietly), deleted the snapshot anyway, and left those assignments
+    pointing at a shift that no longer existed. The next publish saw no
+    shift running and started a fresh one, so the reviewers it left out
+    vanished. Raises ShiftEndIncomplete (snapshot kept, safe to retry) or
+    roles.StorageReadError (nothing deleted).
+    """
+    reviewer_docs = [
+        d for d in _read_docs("reviewer_shift", force=True, strict=True)
+        if (d.get("data") or {}).get("shift_snapshot_id") == snap_id
+    ]
+    cleared_rows = 0
+    failed = 0
+    for d in reviewer_docs:
+        if _delete_doc(d.get("id")):
+            cleared_rows += len((d.get("data") or {}).get("rows") or [])
+            roles.cache_remove_doc("reviewer_shift", d.get("id"))
+        else:
+            failed += 1
+
+    # Completions and close-out marks don't decide whether the shift is gone;
+    # a leftover one is purged with the day's shift docs.
+    cleared_completions = 0
+    for c in _list_completions_for_snapshot(snap_id, include_superseded=True):
+        if _delete_doc(c.get("id")):
+            cleared_completions += 1
+    for doc in roles.list_docs_by_kind("shift_closeout"):
+        if (doc.get("data") or {}).get("shift_snapshot_id") == snap_id:
+            _delete_doc(doc.get("id"))
+
+    if failed or not _delete_doc(snap_id):
+        raise ShiftEndIncomplete(failed or 1, cleared_rows, cleared_completions)
+    return cleared_rows, cleared_completions
+
+
+def _notify_admin_shift_ended(by_email, cleared_rows, how, error=None):
+    """DM the admin whenever someone ends the whole shift, so a clear never
+    goes unexplained again: on 2026-11-19 two shifts were ended mid-morning
+    and nothing recorded who. Never raises."""
+    target = (os.environ.get("SLACK_ADMIN_USER_ID") or "").strip() or _ADMIN_SLACK_USER_ID
+    name = _person_display_name(by_email)
+    now = datetime.datetime.now(_SHIFT_TZ).strftime("%-I:%M %p")
+    if error:
+        text = (f":warning: *{name}* tried to end the shift ({how}) at {now}, "
+                f"but it didn't finish: {error}. The shift was kept.")
+    else:
+        text = (f":stop_sign: *{name}* ended the shift ({how}) at {now} — "
+                f"{cleared_rows} assigned job{'' if cleared_rows == 1 else 's'} cleared "
+                f"for every reviewer.")
+    try:
+        internal_api.post("/api/slack/post", json={"channel": target, "text": text})
+    except Exception as exc:  # noqa: BLE001 — DM is best-effort
+        logging.warning("failed to send shift-ended DM: %s", exc)
+
+
+def _person_display_name(email):
+    """Roster name for an admin, lead or reviewer, else the email."""
+    norm = (email or "").strip().lower()
+    for lister in (roles.list_admins, roles.list_leads, roles.list_reviewers):
+        try:
+            for r in lister():
+                if (r.get("email") or "").strip().lower() == norm and r.get("name"):
+                    return r["name"]
+        except Exception:  # noqa: BLE001 — name lookup is best-effort
+            continue
+    return email
 
 
 # Spacing between background deletes. ~30/min leaves half the 60 req/min
@@ -2063,12 +2160,18 @@ def _latest_snapshot(reviewer_shift_docs=None, include_stale=False, strict=False
     Pass pre-fetched reviewer_shift_docs to avoid a duplicate storage scan when
     the caller already has them.
 
-    `strict=True` raises roles.StorageReadError when Storage can't be read,
-    rather than answering "no shift". Publish paths must use it: they start a
-    brand-new shift on (None, None), which hides everyone else's work and
-    clears the published reviewers' completions.
+    `strict=True` reads straight from Storage and raises
+    roles.StorageReadError when it can't, rather than answering "no shift".
+    Publish paths must use it: they start a brand-new shift on (None, None),
+    which hides everyone else's work and clears the published reviewers'
+    completions.
     """
-    snaps = _read_docs("shift_snapshot", strict=strict)
+    # Strict callers also read authoritatively. The warm cache can be minutes
+    # behind (or behind another instance's writes), and to a publish a missing
+    # shift means "start a new one", which hides everyone else's work. One
+    # forced scan refreshes every kind, so the reviewer_shift read below
+    # comes from the same scan.
+    snaps = _read_docs("shift_snapshot", force=strict, strict=strict)
     if not snaps:
         return None, None
 
@@ -5339,6 +5442,7 @@ def api_shifts_clear():
             "POST /api/shifts/clear mode=reset by=%s snapshots=%d rows=%d completions=%d",
             g.user.get("email"), cleared_snapshots, cleared_rows, cleared_completions,
         )
+        _notify_admin_shift_ended(g.user.get("email"), cleared_rows, "full history reset")
         return jsonify({"data": {"mode": "reset", "cleared_rows": cleared_rows, "cleared_completions": cleared_completions, "cleared_snapshots": cleared_snapshots}})
 
     try:
@@ -5349,6 +5453,28 @@ def api_shifts_clear():
         return _http_error_response(e)
     if not snap_id:
         return jsonify({"data": {"mode": mode, "cleared_rows": 0, "cleared_completions": 0}})
+
+    if mode == "all" and reviewer_email is None:
+        # Ending the whole shift: all or nothing, and the admin hears who did it.
+        try:
+            cleared_rows, cleared_completions = _end_shift(snap_id)
+        except (ShiftEndIncomplete, roles.StorageReadError) as e:
+            roles.invalidate_doc_cache(
+                "shift_snapshot", "reviewer_shift", "completion", "shift_closeout")
+            logging.warning("clear all by=%s incomplete, shift kept: %s",
+                            g.user.get("email"), e)
+            _notify_admin_shift_ended(g.user.get("email"), 0, "End shift", error=str(e))
+            return jsonify({"error": "The shift couldn't be fully cleared, so it was kept "
+                                     "running. Try again in a moment."}), 503
+        roles.invalidate_doc_cache(
+            "shift_snapshot", "reviewer_shift", "completion", "shift_closeout")
+        logging.info(
+            "POST /api/shifts/clear by=%s mode=all reviewer=* snapshot_id=%s rows=%d completions=%d",
+            g.user.get("email"), snap_id, cleared_rows, cleared_completions,
+        )
+        _notify_admin_shift_ended(g.user.get("email"), cleared_rows, "End shift")
+        return jsonify({"data": {"mode": mode, "cleared_rows": cleared_rows,
+                                 "cleared_completions": cleared_completions}})
 
     try:
         reviewer_docs = [
@@ -5407,10 +5533,8 @@ def api_shifts_clear():
                     and (data.get("reviewer_email") or "").strip().lower() != reviewer_email):
                 continue
             _try_delete(doc.get("id"))
-        # Only end the whole shift on a global clear. A per-reviewer clear must
-        # leave the snapshot intact so the shift stays live for everyone else.
-        if reviewer_email is None:
-            _try_delete(snap_id)
+        # Per-reviewer only (a global "all" ends the shift above): the snapshot
+        # stays so the shift stays live for everyone else.
     else:
         # Surgical modes rewrite each reviewer_shift doc to filter rows.
         keep_done = mode == "active"  # active: keep done rows, drop pending
@@ -5448,13 +5572,15 @@ def api_shifts_clear():
     if mode != "all" and reviewer_email is None:
         try:
             remaining = [
-                d for d in roles.list_docs_by_kind("reviewer_shift", force=True)
+                # Strict: a failed read falls back to [] when cold, which
+                # would read as "every row is gone" and end a live shift.
+                d for d in _read_docs("reviewer_shift", force=True, strict=True)
                 if (d.get("data") or {}).get("shift_snapshot_id") == snap_id
                 and (d.get("data") or {}).get("rows")
             ]
             if not remaining:
                 _try_delete(snap_id)
-        except requests.exceptions.HTTPError:
+        except (requests.exceptions.HTTPError, roles.StorageReadError):
             pass  # best-effort cleanup; the zombie is harmless to a re-publish
 
     roles.invalidate_doc_cache(

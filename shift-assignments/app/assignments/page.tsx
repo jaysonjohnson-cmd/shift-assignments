@@ -12,7 +12,7 @@ import {
 import { useStore } from "@/lib/store";
 import { useUser } from "@/lib/useUser";
 import { useReviewerSync } from "@/lib/useReviewerSync";
-import { getBloomJobs, getBloomProjects, publishShift, clearShift, getShiftJobs, getSubmissionAges, type ShiftJobs } from "@/lib/api";
+import { getBloomJobs, getBloomProjects, publishShift, getShiftJobs, getSubmissionAges, type ShiftJobs } from "@/lib/api";
 import { activeSplitSharers, assignShift, pinnedCountsByReviewer, plannedTotal, splitJidCounts, withSplitJobs } from "@/lib/assign";
 import {
   emptyShiftDraft,
@@ -64,7 +64,6 @@ export default function AssignmentsPage() {
   const [retailPipelineOnly, setRetailPipelineOnly] = useState(false);
   const [pgStoreWalkOnly, setPgStoreWalkOnly] = useState(false);
   const [specialJobTypes, setSpecialJobTypes] = useState(false);
-  const [showCloseModal, setShowCloseModal] = useState(false);
   const [liveJobs, setLiveJobs] = useState<ShiftJobs | null>(null);
 
   useReviewerSync();
@@ -379,24 +378,6 @@ export default function AssignmentsPage() {
     }
   };
 
-  const handleCloseAssignment = async () => {
-    setShowCloseModal(false);
-    setBusy(true);
-    setError(null);
-    try {
-      await clearShift("all");
-      setMode({ kind: "menu" });
-      // Best-effort Bloom refresh — never block the UI clear
-      getBloomJobs(true, "N").then((fetched) =>
-        setRows(fetched, `Bloom · ${fetched.length} jobs (unreviewed)`)
-      ).catch(() => undefined);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to end shift");
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <div className="px-6 py-8">
       <header className="mb-6 flex flex-wrap items-start justify-between gap-3">
@@ -568,15 +549,6 @@ export default function AssignmentsPage() {
           </button>
           <button
             type="button"
-            onClick={() => setShowCloseModal(true)}
-            disabled={busy}
-            className="rounded-lg border border-storesight-hot-pink/40 bg-storesight-hot-pink/10 px-3 py-2 text-sm font-medium text-storesight-hot-pink hover:border-storesight-hot-pink/60 hover:bg-storesight-hot-pink/20 transition disabled:opacity-50 dark:border-storesight-hot-pink/40 dark:bg-storesight-hot-pink/10 dark:text-storesight-hot-pink"
-            title="End shift and clear all assigned jobs for every reviewer"
-          >
-            End shift (clear all)
-          </button>
-          <button
-            type="button"
             onClick={() => handlePublishShift(mode.draft)}
             disabled={busy || !canPublishShift(mode.draft, shiftPool)}
             className="rounded-lg border border-storesight-accent bg-storesight-accent/10 px-4 py-2 text-sm font-semibold text-storesight-primary transition hover:bg-storesight-accent/20 disabled:opacity-50 dark:border-storesight-accent-light dark:bg-storesight-accent/20 dark:text-storesight-accent-light"
@@ -604,45 +576,6 @@ export default function AssignmentsPage() {
         onChange={(next) => setMode({ kind: "shift", draft: next })}
       />
 
-      {showCloseModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="mx-4 rounded-2xl border border-storesight-hot-pink/40 bg-storesight-surface-dark p-8 shadow-2xl dark:bg-storesight-surface-dark max-w-md w-full animate-in fade-in zoom-in duration-300">
-            <div className="mb-6 flex h-12 w-12 items-center justify-center rounded-full bg-storesight-hot-pink/15">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" className="text-storesight-hot-pink">
-                <path
-                  d="M18 6L6 18M6 6l12 12"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </div>
-            <h2 className="text-lg font-semibold text-storesight-ink dark:text-storesight-ink-dark">
-              End shift and clear all assignments?
-            </h2>
-            <p className="mt-2 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-              This will clear all assigned jobs for every reviewer in this shift. You'll need to publish a new shift to reassign them.
-            </p>
-            <div className="mt-6 flex gap-3">
-              <button
-                type="button"
-                onClick={() => setShowCloseModal(false)}
-                className="flex-1 rounded-lg border border-storesight-border bg-white px-4 py-2 text-sm font-medium text-storesight-ink hover:border-storesight-accent hover:text-storesight-primary transition dark:border-storesight-border-dark dark:bg-storesight-surface-raised-dark dark:text-storesight-ink-dark"
-              >
-                Keep working
-              </button>
-              <button
-                type="button"
-                onClick={handleCloseAssignment}
-                className="flex-1 rounded-lg border border-storesight-hot-pink/60 bg-storesight-hot-pink/10 px-4 py-2 text-sm font-semibold text-storesight-hot-pink hover:bg-storesight-hot-pink/20 transition"
-              >
-                End shift
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -67,6 +67,7 @@ def shift(monkeypatch):
         "shift_snapshot": [snap], "reviewer_shift": shifts, "completion": comps,
     }.get(kind, []))
     monkeypatch.setattr(main, "_try_delete", lambda did: deleted.append(did))
+    monkeypatch.setattr(main, "_delete_doc", lambda did: deleted.append(did) or True)
     monkeypatch.setattr(roles, "invalidate_doc_cache", lambda *a, **k: None)
     return deleted
 

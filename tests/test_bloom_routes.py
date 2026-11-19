@@ -442,7 +442,7 @@ def test_publish_then_latest_round_trip(client, monkeypatch):
         published_docs.append({"id": doc_id, "data": json["data"]})
         return {"data": {"id": doc_id}}
 
-    def fake_list_docs_by_kind(kind):
+    def fake_list_docs_by_kind(kind, force=False):
         return [d for d in reversed(published_docs) if (d["data"] or {}).get("kind") == kind]
 
     monkeypatch.setattr(internal_api, "post", fake_post)

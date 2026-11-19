@@ -498,6 +498,28 @@ in `tests/test_bloom_routes.py`).
 
 ---
 
+## Ending the whole shift
+
+End shift (clear all), the Clear menu's "all" and the end-of-day auto-clear go
+through `_end_shift`. It reads the shift's `reviewer_shift` docs straight from
+Storage (not the warm cache), deletes them, and deletes the snapshot **only**
+once every one is confirmed gone. Otherwise it answers 503 and keeps the
+shift, so a retry finishes the job.
+
+On 2026-11-19 two clears read a cache missing the newest assignments (or had
+their deletes fail quietly), deleted the snapshot anyway and orphaned those
+assignments. The next publish saw no shift running and started a new one, so
+Zach and Saylor vanished when Jayson published only himself. Nothing recorded
+who clicked, so every whole-shift end (and reset, and any failed attempt) now
+DMs `_ADMIN_SLACK_USER_ID` with who did it. The scheduler's 5:30 clear doesn't
+DM. Per-reviewer clears don't either, since they never end the shift.
+
+The same day's fix made `_latest_snapshot(strict=True)` (both publish paths)
+force a Storage read: a stale "no shift running" starts a new shift over the
+live one. The End shift button was also taken out of the shift composer, where
+it sat between Cancel and Publish; it's still on Team Assignments and the
+overview.
+
 ## Closing out a shift
 
 A reviewer ends their own shift from My Tasks ("Done for the shift" →
