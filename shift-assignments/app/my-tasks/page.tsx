@@ -407,7 +407,7 @@ export default function MyTasksPage() {
               type="button"
               onClick={handleCloseShift}
               disabled={closing}
-              title="End your shift. Anything you haven't checked off goes back to the queue for the rest of the team."
+              title="End your shift. Anything you haven't checked off goes back to the queue for the rest of the team. Then close your assignments in FieldAgent."
               className="rounded-lg bg-storesight-primary px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-storesight-primary-dark disabled:opacity-50 dark:bg-storesight-accent dark:hover:bg-storesight-accent-light"
             >
               {closing ? "Closing…" : "Done for the shift"}
@@ -458,18 +458,26 @@ export default function MyTasksPage() {
               Anything you didn&rsquo;t finish went back to the queue for the rest
               of the team. Jayson has been notified.
             </p>
-            <p className="mt-2 text-sm text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
-              If you still have anything open in review in FieldAgent,{" "}
+            {/* Done for the shift releases jobs here only. FieldAgent keeps
+                them "in review" until the reviewer closes them there, and
+                teammates handed those jobs see them in review. */}
+            <div className="mx-auto mt-6 max-w-md rounded-xl border-2 border-storesight-accent bg-storesight-accent/10 px-5 py-4 dark:border-storesight-accent-light dark:bg-storesight-accent-light/10">
+              <p className="text-sm font-semibold text-storesight-ink dark:text-storesight-ink-dark">
+                One more step: close your assignments in FieldAgent.
+              </p>
+              <p className="mt-1 text-xs text-storesight-ink-muted dark:text-storesight-ink-muted-dark">
+                Ending your shift here doesn&rsquo;t close them there, so teammates
+                handed your jobs would still see you in review.
+              </p>
               <a
                 href={CLOSE_MY_ASSIGNMENTS_URL}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="font-medium text-storesight-accent underline hover:text-storesight-primary"
+                className="mt-3 inline-block rounded-lg bg-storesight-primary px-4 py-2 text-sm font-semibold text-white transition hover:bg-storesight-primary-dark dark:bg-storesight-accent dark:hover:bg-storesight-accent-light"
               >
-                close your assignments there
-              </a>{" "}
-              so teammates can pick it up.
-            </p>
+                Close My Assignments
+              </a>
+            </div>
           </div>
         </div>
       )}
